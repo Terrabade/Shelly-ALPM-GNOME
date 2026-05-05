@@ -153,7 +153,7 @@ sealed class Program
         ServiceCollection serviceCollection = new();
         var serviceProvider = ServiceBuilder.CreateDependencyInjection(serviceCollection);
 
-        var application = Application.New(ShellyConstants.Service,
+        var application = Adw.Application.New(ShellyConstants.Service,
             Gio.ApplicationFlags.DefaultFlags | Gio.ApplicationFlags.HandlesCommandLine);
 
         application.OnCommandLine += (sender, e) =>
