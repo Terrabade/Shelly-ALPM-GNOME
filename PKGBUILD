@@ -1,17 +1,17 @@
-# Maintainer: Zoey Bauer <zoey.erin.bauer@gmail.com>
-# Maintainer: Caroline Snyder <hirpeng@gmail.com>
-pkgname=shelly
-pkgver=2.2.3
+# Maintainer: Terrabade <terrabade@protonmail.com>
+pkgname=shelly-gnome
+pkgver=2.2.3.gnome1
 pkgrel=1
-pkgdesc="Shelly: A Modern Arch Package Manager"
+pkgdesc="Shelly for GNOME: Libadwaita port of the Shelly Arch Linux Package Manager."
 arch=('x86_64')
-url="https://github.com/Seafoam-Labs/Shelly-ALPM"
+url="https://github.com/Terrabade/Shelly-ALPM"
 license=('GPL-3.0-only')
 provides=('shelly')
-conflicts=('shelly-git' 'shelly-bin')
+conflicts=('shelly' 'shelly-bin' 'shelly-git')
 depends=(
     'pacman'
     'gtk4'
+    'libadwaita'
     'glib2'
     'sudo'
     'tar'
@@ -30,10 +30,9 @@ optdepends=(
 )
 makedepends=('dotnet-sdk-10.0' 'clang')
 
-# Source tarball from GitHub release
-source=("${pkgname}-${pkgver}.tar.gz::https://github.com/Seafoam-Labs/Shelly-ALPM/archive/v${pkgver}.tar.gz")
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/Terrabade/Shelly-ALPM/archive/v${pkgver}.tar.gz")
 
-sha256sums=('a2eac842bd3b32cc3edc7a1f12153fb1b7920f91f24c09ae0fe3d67f8ad71de0')
+sha256sums=('SKIP')
 
 build() {
   cd "$srcdir/Shelly-ALPM-${pkgver}"
