@@ -1,3 +1,8 @@
+### What is Shelly-ALPM-GNOME?
+`shelly-gnome` is a simple fork of Shelly-ALPM that attempts to implement Libadwaita for the GTK UI. This fixes integration issues with the GNOME desktop environment, making Shelly pretty and obedient to light/dark mode and accent colours from GNOME settings.
+This project mostly exists for a combination of my own use, and an exercise in git/package maintenance. I will do my best to keep it up to date. `cachyos-gnome` is also available on the AUR. I may add -bin and/or -git if people start using it at all.
+Of course all credit and respect goes to [upstream](https://github.com/Seafoam-Labs/Shelly-ALPM) authors, doing all the actual work.
+
 ![shelly_banner.png](shelly_banner.png)
 
 ![Shelly Wiki](https://img.shields.io/badge/Shelly-Wiki-blue)
@@ -80,7 +85,7 @@ paru -Rns shelly
 Upcoming features and development targets:
 
 - **Repository Modification**: Allow modification of supported repositories (In progress).
-- **App Image Support**: Further app image support similar to [AppLever](https://github.com/mijorus/gearlever). (In
+- **App Image Support**: Further app image support similar to [](https://github.com/mijorus/gearlever). (In
   progress)
 - **Package Import**: Allow for import of a previously existing package list to bring the system back to a saved package
   state. (Not yet started)
@@ -95,7 +100,7 @@ Upcoming features and development targets:
 - **libalpm** (provided by `pacman`)
 
 #### Optional Prerequisites
-
+AppLever
 - **Flatpak**: Can be installed via shelly inside settings by turning flatpak on.
 
 ## Installation
