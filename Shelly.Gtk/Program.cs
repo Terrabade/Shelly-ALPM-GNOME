@@ -141,6 +141,7 @@ sealed class Program
 
         if (DesktopDetector.DetectDesktop() == "GNOME")
         {
+            Console.WriteLine("GNOME detected");
             if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GTK_THEME")))
             {
                 var s = Gio.Settings.New("org.gnome.desktop.interface");
