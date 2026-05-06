@@ -142,26 +142,21 @@ sealed class Program
         if (DesktopDetector.DetectDesktop() == "GNOME")
         {
             Console.WriteLine("GNOME detected");
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GTK_THEME")))
+
+            var s = Gio.Settings.New("org.gnome.desktop.interface");
+            var scheme = s.GetString("color-scheme"); // "prefer-dark" / "default" / "prefer-light"
+            var theme = s.GetString("gtk-theme");
+
+            var preferDark = string.Equals(scheme, "prefer-dark", StringComparison.OrdinalIgnoreCase);
+
+            if (string.IsNullOrEmpty(theme))
             {
-                var s = Gio.Settings.New("org.gnome.desktop.interface");
-                var scheme = s.GetString("color-scheme"); // "prefer-dark" / "default" / "prefer-light"
-                var theme  = s.GetString("gtk-theme");
-                
-                var preferDark = string.Equals(scheme, "prefer-dark", StringComparison.OrdinalIgnoreCase);
-                
-                if (string.IsNullOrEmpty(theme))
-                {
-                    theme = "Adwaita";
-                }
-                var fullTheme = preferDark ? $"{theme}:dark" : theme;
-                Environment.SetEnvironmentVariable("GTK_THEME", fullTheme);
-                Environment.SetEnvironmentVariable("GTK_APPLICATION_PREFER_DARK_THEME", preferDark ? "1" : "0");
-                
-                
+                theme = "Adwaita";
             }
-            
-            
+
+            var fullTheme = preferDark ? $"{theme}:dark" : theme;
+            Environment.SetEnvironmentVariable("GTK_THEME", fullTheme);
+            Environment.SetEnvironmentVariable("GTK_APPLICATION_PREFER_DARK_THEME", preferDark ? "1" : "0");
         }
 
 
