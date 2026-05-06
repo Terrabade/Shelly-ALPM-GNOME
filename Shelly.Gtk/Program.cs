@@ -198,6 +198,7 @@ sealed class Program
             });
 
             var settingsStack = (Stack)mainBuilder.GetObject("settings_stack")!;
+            var recommendPageBox = (Box)mainBuilder.GetObject("recommend_page_box")!;
             var packagesPageBox = (Box)mainBuilder.GetObject("packages_page_box")!;
             var aurPageBox = (Box)mainBuilder.GetObject("aur_page_box")!;
             var flatpakPageBox = (Box)mainBuilder.GetObject("flatpak_page_box")!;
@@ -211,6 +212,7 @@ sealed class Program
             var sidebarBox = (Box)mainBuilder.GetObject("SidebarBox")!;
             var sidebarToggle = (ToggleButton)mainBuilder.GetObject("SidebarToggleButton")!;
             var topHeaderBar = (HeaderBar)mainBuilder.GetObject("TopHeaderBar")!;
+            var sidebarRecommendBtn = (ToggleButton)mainBuilder.GetObject("SidebarRecommendButton")!;
             var sidebarPackagesBtn = (ToggleButton)mainBuilder.GetObject("SidebarPackagesButton")!;
             var sidebarAurBtn = (ToggleButton)mainBuilder.GetObject("SidebarAurButton")!;
             var sidebarFlatpakBtn = (ToggleButton)mainBuilder.GetObject("SidebarFlatpakButton")!;
@@ -220,6 +222,7 @@ sealed class Program
             var sidebarAurLabel = (Label)mainBuilder.GetObject("SidebarAurLabel")!;
             var sidebarFlatpakLabel = (Label)mainBuilder.GetObject("SidebarFlatpakLabel")!;
             var sidebarAppImageLabel = (Label)mainBuilder.GetObject("SidebarAppImageLabel")!;
+            var sidebarRecommendLabel = (Label)mainBuilder.GetObject("SidebarRecommendLabel")!;
             var sidebarSearchLabel = (Label)mainBuilder.GetObject("SidebarSearchLabel")!;
 
             var quitAction = Gio.SimpleAction.New("quit", null);
@@ -256,6 +259,7 @@ sealed class Program
 
             List<IShellyWindow> currentPackagesWindows = [];
             List<IShellyWindow> currentAurWindows = [];
+            IShellyWindow? currentRecommendWindow = null;
             IShellyWindow? currentFlatpakWindow = null;
             IShellyWindow? currentAppImageWindow = null;
             IShellyWindow? currentShellySearchWindow = null;
@@ -287,6 +291,13 @@ sealed class Program
                 nb.AppendPage(w3.CreateWindow(), Label.New("Manage"));
                 packagesPageBox.Append(nb);
                 currentPackagesWindows = [w1, w2, w3];
+            }
+
+            void LoadRecommendPage()
+            {
+                var w = serviceProvider.GetRequiredService<Recommend>();
+                recommendPageBox.Append(w.CreateWindow());
+                currentRecommendWindow = w;
             }
 
             void LoadAurPage()
@@ -371,6 +382,7 @@ sealed class Program
                 var expanded = sidebarToggle.Active;
                 sidebarToggle.IconName = expanded ? "go-previous-symbolic" : "go-next-symbolic";
                 sidebarBox.WidthRequest = expanded ? 180 : 48;
+                sidebarRecommendLabel.Visible = expanded;
                 sidebarPackagesLabel.Visible = expanded;
                 sidebarAurLabel.Visible = expanded;
                 sidebarFlatpakLabel.Visible = expanded;
@@ -380,6 +392,7 @@ sealed class Program
 
             var sidebarButtons = new (ToggleButton btn, string page)[]
             {
+                (sidebarRecommendBtn, "recommend_page"),
                 (sidebarPackagesBtn, "packages_page"),
                 (sidebarAurBtn, "aur_page"),
                 (sidebarFlatpakBtn, "flatpak_page"),
@@ -522,6 +535,14 @@ sealed class Program
                         UnloadPage(aurPageBox, currentAurWindows);
                         currentAurWindows = [];
                         break;
+                    case "recommend_page":
+                        if (currentRecommendWindow != null)
+                        {
+                            UnloadPage(recommendPageBox, [currentRecommendWindow]);
+                            currentRecommendWindow = null;
+                        }
+
+                        break;
                     case "flatpak_page":
                         if (currentFlatpakWindow != null)
                         {
@@ -550,6 +571,7 @@ sealed class Program
 
                 switch (currentPage)
                 {
+                    case "recommend_page": LoadRecommendPage(); break;
                     case "packages_page": LoadPackagesPage(); break;
                     case "aur_page": LoadAurPage(); break;
                     case "flatpak_page": LoadFlatpakPage(); break;
