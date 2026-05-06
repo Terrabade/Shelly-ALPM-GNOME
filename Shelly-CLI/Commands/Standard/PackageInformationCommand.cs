@@ -57,6 +57,7 @@ public class PackageInformationCommand : Command<PackageInformationSettings>
         WriteLeftAlignMarkup($"[blue]Conflicts With: {string.Join(',', package.Conflicts).EscapeMarkup()}[/]");
         WriteLeftAlignMarkup($"[blue]Replaces: {string.Join(',', package.Replaces).EscapeMarkup()}[/]");
         WriteLeftAlignMarkup($"[blue]Installed Size:{package.InstalledSize} bytes[/]");
+        WriteLeftAlignMarkup($"[blue]Build Date: {package.BuildDate.ToLongDateString().EscapeMarkup()}[/]");
         var installDate = package.InstallDate.HasValue
             ? package.InstallDate.Value.ToLongDateString()
             : "Not Installed";
