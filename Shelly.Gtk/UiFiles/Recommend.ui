@@ -20,15 +20,10 @@
                         <property name="hexpand">true</property>
                     </object>
                 </child>
-                <child>
-                    <object class="GtkButton">
-                        <property name="label">Install Package(s)</property>
-                    </object>
-                </child>
             </object>
         </child>
         <child>
-            <object class="GtkScrolledWindow">
+            <object class="GtkScrolledWindow" id="recommend_scrolled_window_widget">
                 <property name="overlay-scrolling">false</property>
                 <property name="vexpand">true</property>
                 <property name="hexpand">true</property>

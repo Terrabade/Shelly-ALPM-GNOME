@@ -19,5 +19,7 @@ public enum RecommendCategory
     Office,
     Other,
     Video,
-    Virtualization
+    Virtualization,
+    [Description("Shelly Team")]
+    ShellyTeam
 }
