@@ -34,12 +34,4 @@ public static class StringMatching
 
         return bestScore;
     }
-
-    public static int MatchObject(string query, string name, string description)
-    {
-        var nameScore = PartialRatio(query, name);
-        var descScore = PartialRatio(query, description);
-
-        return (int)(nameScore * 0.5 + descScore * 0.5);
-    }
 }

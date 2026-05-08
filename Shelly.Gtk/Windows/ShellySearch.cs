@@ -323,7 +323,7 @@ public sealed class ShellySearch(
             }
 
             models = models
-                .Select(y => new { Package = y, Score = StringMatching.MatchObject(query, y.Name, y.Description) })
+                .Select(y => new { Package = y, Score = MatchObject(query, y.Name, y.Description) })
                 .Where(x => x.Score >= MatchScore)
                 .OrderByDescending(x => x.Package.IsInstalled)
                 .ThenByDescending(x => x.Score)
@@ -429,7 +429,7 @@ public sealed class ShellySearch(
         var allApps = await unprivilegedOperationService.ListAppstreamFlatpak(ct);
         return allApps
             .Where(app => app.Type != "addon")
-            .Select(app => new { Package = app, Score = StringMatching.MatchObject(query, app.Name, app.Description) })
+            .Select(app => new { Package = app, Score = MatchObject(query, app.Name, app.Description) })
             .Where(x => x.Score >= MatchScore)
             .OrderByDescending(x => x.Score)
             .Select(x => x.Package)
@@ -449,6 +449,14 @@ public sealed class ShellySearch(
                 DateTimeOffset.MinValue.ToUnixTimeSeconds()
             ))
             .ToList();
+    }
+
+    private static int MatchObject(string query, string name, string description)
+    {
+        var nameScore = StringMatching.PartialRatio(query, name);
+        var descScore = StringMatching.PartialRatio(query, description);
+
+        return (int)(nameScore * 0.5 + descScore * 0.5);
     }
 
     private async Task InstallSelectedAsync()
