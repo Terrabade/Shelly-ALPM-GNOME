@@ -64,10 +64,18 @@ public class ShellySearch(
 
         _checkColumn = (ColumnViewColumn)builder.GetObject("check_column")!;
         _nameColumn = (ColumnViewColumn)builder.GetObject("name_column")!;
+        _nameColumn.SetSorter(CustomSorter.New<MetaPackageGObject>((a, b) =>
+            string.Compare(a.Package?.Name, b.Package?.Name, StringComparison.OrdinalIgnoreCase)));
         _repoColumn = (ColumnViewColumn)builder.GetObject("repo_column")!;
+        _repoColumn.SetSorter(CustomSorter.New<MetaPackageGObject>((a, b) =>
+            string.Compare(a.Package?.Repository, b.Package?.Repository, StringComparison.OrdinalIgnoreCase)));
         _versionColumn = (ColumnViewColumn)builder.GetObject("version_column")!;
+        _versionColumn.SetSorter(CustomSorter.New<MetaPackageGObject>((a, b) =>
+            string.Compare(a.Package?.Version, b.Package?.Version, StringComparison.OrdinalIgnoreCase)));
         _descriptionColumn = (ColumnViewColumn)builder.GetObject("description_column")!;
         _lastUpdatedColumn = (ColumnViewColumn)builder.GetObject("last_updated_column")!;
+        _lastUpdatedColumn.SetSorter(CustomSorter.New<MetaPackageGObject>((a, b) =>
+            a.Package == null || b.Package == null ? 0 : a.Package.LastUpdated.CompareTo(b.Package.LastUpdated)));
         _searchEntry = (SearchEntry)builder.GetObject("search_entry")!;
 
         if (!string.IsNullOrEmpty(_initialQuery))
@@ -80,7 +88,8 @@ public class ShellySearch(
         };
 
         _listStore = Gio.ListStore.New(MetaPackageGObject.GetGType());
-        _selectionModel = SingleSelection.New(_listStore);
+        _selectionModel = SingleSelection.New(
+            SortListModel.New(_listStore, _columnView.GetSorter()));
         _selectionModel.CanUnselect = true;
         _columnView.SetModel(_selectionModel);
 
@@ -298,9 +307,8 @@ public class ShellySearch(
         _lastUpdatedFactory.OnBind += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
-            if (listItem.GetItem() is MetaPackageGObject { Package: { LastUpdated: not null } pkg } &&
-                listItem.GetChild() is Label label)
-                label.SetText(DateTimeOffset.FromUnixTimeSeconds((long)pkg.LastUpdated).ToString("yyyy-MM-dd HH:mm"));
+            if (listItem.GetItem() is MetaPackageGObject { Package: { } pkg } && listItem.GetChild() is Label label)
+                label.SetText(DateTimeOffset.FromUnixTimeSeconds(pkg.LastUpdated).ToString("yyyy-MM-dd HH:mm"));
         };
         lastUpdatedColumn.SetFactory(_lastUpdatedFactory);
     }
@@ -328,13 +336,30 @@ public class ShellySearch(
             var standardTask = Task.Run(async () =>
             {
                 var standardInstalled = await privilegedOperationService.GetInstalledPackagesAsync().ContinueWith(x =>
-                    x.Result.Select(y => new MetaPackageModel(y.Name, y.Name, y.Version, y.Description,
-                        PackageType.Standard, y.Description, y.Repository, true)).ToList());
+                    x.Result.Select(y => new MetaPackageModel(
+                        y.Name,
+                        y.Name,
+                        y.Version,
+                        y.Description,
+                        PackageType.Standard,
+                        y.Description,
+                        y.Repository,
+                        true,
+                        new DateTimeOffset(y.BuildDate).ToUnixTimeSeconds()
+                    )).ToList());
                 var standardAvailable = await privilegedOperationService.SearchPackagesAsync(_initialQuery)
                     .ContinueWith(x =>
-                        x.Result.Select(y => new MetaPackageModel(y.Name, y.Name, y.Version, y.Description,
-                            PackageType.Standard, y.Description, y.Repository,
-                            standardInstalled.Any(z => z.Name == y.Name))).ToList());
+                        x.Result.Select(y => new MetaPackageModel(
+                            y.Name,
+                            y.Name,
+                            y.Version,
+                            y.Description,
+                            PackageType.Standard,
+                            y.Description,
+                            y.Repository,
+                            standardInstalled.Any(z => z.Name == y.Name),
+                            new DateTimeOffset(y.BuildDate).ToUnixTimeSeconds()
+                        )).ToList());
                 return standardAvailable;
             });
             groupList.Add(standardTask);
@@ -370,7 +395,7 @@ public class ShellySearch(
                             app.Summary,
                             app.Remotes.FirstOrDefault()?.Name ?? "Flatpak",
                             flatPakInstalled.Contains(app.Id),
-                            app.Releases.FirstOrDefault()?.Timestamp
+                            app.Releases.FirstOrDefault()?.Timestamp ?? DateTimeOffset.MinValue.ToUnixTimeSeconds()
                         )).ToList();
 
                     return filtered;
