@@ -91,7 +91,7 @@ public class PackageUpdate(
         _filterListModel = FilterListModel.New(_listStore, _filter);
         _selectionModel = SingleSelection.New(_filterListModel);
         _selectionModel.CanUnselect = true;
-        _selectionModel.Autoselect = true;
+        _selectionModel.Autoselect = false;
         _columnView.SetModel(_selectionModel);
 
         SetupColumns(_checkColumn, _nameColumn, _sizeDiffColumn, _oldColumn, _versionColumn);
@@ -643,6 +643,17 @@ public class PackageUpdate(
 
                 _noPackagesLabel.Visible = packages.Count == 0;
                 _updateButton.SetSensitive(AnySelected());
+
+                if (_listStore.GetNItems() > 0)
+                {
+                    _selectionModel.SetSelected(0);
+                    var firstItem = _selectionModel.GetSelectedItem();
+                    if (firstItem is AlpmUpdateGObject pkgObj)
+                    {
+                        ShowPackageDetails(pkgObj);
+                    }
+                }
+                
                 return false;
             });
         }

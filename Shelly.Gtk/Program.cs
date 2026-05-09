@@ -138,10 +138,10 @@ sealed class Program
         {
             ApplyKdeGtkTheme();
         }
+
         var preferDark = false;
         if (DesktopDetector.DetectDesktop() == "GNOME")
         {
-          
             Gio.Module.Initialize();
             var s = Gio.Settings.New("org.gnome.desktop.interface");
             var scheme = s.GetString("color-scheme");
@@ -157,8 +157,6 @@ sealed class Program
             var settings = GtkSettings.GetDefault();
             settings?.GtkApplicationPreferDarkTheme = true;
         }
-
-
 
 
         //GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
@@ -271,7 +269,7 @@ sealed class Program
             application.AddAction(cacheCleaner);
 
             var aboutAction = Gio.SimpleAction.New("about", null);
-            aboutAction.OnActivate += (_, _) => Console.WriteLine("About clicked");
+            aboutAction.OnActivate += (_, _) => { new ShellyAboutDialog(mainOverlay).OpenAboutDialog(); };
             application.AddAction(aboutAction);
 
             var configService = serviceProvider.GetRequiredService<IConfigService>();
