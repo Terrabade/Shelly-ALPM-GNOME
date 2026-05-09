@@ -8,7 +8,7 @@ public static class FingerprintFixDialog
     public static void Show(Window parent)
     {
         var dialog = Window.New();
-        dialog.SetTitle("Fingerprint workaround");
+        dialog.SetTitle("Fingerprint Disable Instructions");
         dialog.SetTransientFor(parent);
         dialog.SetModal(true);
         dialog.SetDefaultSize(720, 620);
@@ -19,23 +19,15 @@ public static class FingerprintFixDialog
         outer.SetMarginStart(16);
         outer.SetMarginEnd(16);
 
-        var heading = Label.New("Disable fingerprint authentication for sudo (workaround for issue #728)");
+        var heading = Label.New("Disable fingerprint authentication for sudo");
         heading.SetXalign(0);
         heading.AddCssClass("title-3");
         outer.Append(heading);
-
-        var warning = Label.New(
-            "PAM edits are security-sensitive. Keep a root shell open in another terminal as a safety net. " +
-            "Shelly will never modify these files for you.");
-        warning.SetWrap(true);
-        warning.SetXalign(0);
-        warning.AddCssClass("warning");
-        outer.Append(warning);
-
+        
         outer.Append(MakeSnippet("1. Inspect",
             "grep -n pam_fprintd /etc/pam.d/sudo /etc/pam.d/sudo-i 2>/dev/null"));
 
-        outer.Append(MakeSnippet("2. Disable for sudo (keep a root shell open in another terminal)",
+        outer.Append(MakeSnippet("2. Disable for sudo",
             "sudo cp /etc/pam.d/sudo /etc/pam.d/sudo.bak\n" +
             "sudo sed -i 's|^\\s*\\(auth.*pam_fprintd\\.so.*\\)$|# \\1|' /etc/pam.d/sudo\n" +
             "sudo -k\n" +

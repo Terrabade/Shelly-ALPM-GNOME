@@ -113,7 +113,7 @@ public class FingerprintAuthStateTests
         var config = new FakeConfigService(new ShellyConfig());
         var state = new FingerprintAuthState(detector, config);
 
-        Assert.That(state.GetHintMessage(), Does.Contain("#728"));
+        Assert.That(state.GetHintMessage(), Does.Contain("Tip:"));
     }
 
     private sealed class CountingDetector : IFingerprintAuthDetector
