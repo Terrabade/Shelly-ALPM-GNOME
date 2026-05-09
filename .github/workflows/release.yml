@@ -48,6 +48,19 @@ jobs:
         # Bundle Notifications into the UI directory
         cp publish/shelly-notifications/Shelly-Notifications publish/shelly-ui/
 
+    - name: Publish Shelly.Keys
+      run: |
+        dotnet publish Shelly.Keys/Shelly.Keys.csproj -c Release -o publish/shelly-keys -p:InstructionSet=x86-64
+        # Bundle Keys into the UI directory so it ends up in Shelly-ALPM-linux-x64.tar.gz
+        cp publish/shelly-keys/shelly-keys publish/shelly-ui/
+
+    - name: Package Shelly.Keys standalone
+      run: |
+        cd publish/shelly-keys
+        rm -f *.dbg *.pdb
+        tar -czf ../Shelly-Keys-linux-x64.tar.gz .
+        cd ../..
+
     - name: Bundle Shelly-ALPM
       run: |
         cp shelly.fish publish/shelly-ui/
@@ -67,7 +80,7 @@ jobs:
         curl -sL "https://github.com/ZoeyErinBauer/Shelly-ALPM/archive/${VERSION}.tar.gz" -o "source-${VERSION}.tar.gz"
         sha256sum "source-${VERSION}.tar.gz" | sed "s/source-${VERSION}.tar.gz/${VERSION}.tar.gz/" > SHA256SUMS.txt
         # Add binary tarballs and completions checksums
-        sha256sum Shelly-ALPM-linux-x64.tar.gz Shelly-CLI-linux-x64.tar.gz shelly.fish >> SHA256SUMS.txt
+        sha256sum Shelly-ALPM-linux-x64.tar.gz Shelly-CLI-linux-x64.tar.gz Shelly-Keys-linux-x64.tar.gz shelly.fish >> SHA256SUMS.txt
         rm "source-${VERSION}.tar.gz"
         cat SHA256SUMS.txt
         
@@ -77,6 +90,7 @@ jobs:
         files: |
           publish/Shelly-ALPM-linux-x64.tar.gz
           publish/Shelly-CLI-linux-x64.tar.gz
+          publish/Shelly-Keys-linux-x64.tar.gz
           publish/shelly.fish
           publish/SHA256SUMS.txt
         draft: false
