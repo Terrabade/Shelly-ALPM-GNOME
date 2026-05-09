@@ -34,7 +34,7 @@ makedepends=('dotnet-sdk-10.0' 'clang')
 # Source tarball from GitHub release
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/Seafoam-Labs/Shelly-ALPM/archive/v${pkgver}.tar.gz")
 
-sha256sums=('12c2cda0ee36ef92bdf8720895624de1747924432e9db187d9c7866bf7d68a15')
+sha256sums=('77b3ed8147475cea4b09953c86509c8b7176532ab27c8f2539c7505644bf23db')
 
 build() {
   cd "$srcdir/Shelly-ALPM-${pkgver}"
