@@ -97,7 +97,7 @@ public class PackageManagement(
         _filterListModel = FilterListModel.New(_listStore, _filter);
         _selectionModel = SingleSelection.New(_filterListModel);
         _selectionModel.CanUnselect = true;
-        _selectionModel.Autoselect = true;
+        _selectionModel.Autoselect = false;
         _columnView.SetModel(_selectionModel);
         _groupDropDown = (DropDown)builder.GetObject("grouping_selection")!;
         _detailRevealer = (Revealer)builder.GetObject("detail_revealer")!;
@@ -725,6 +725,16 @@ public class PackageManagement(
                     _packageData.Add(package);
                     _packageGObjectRefs.Add(pkgObj);
                     _listStore.Append(pkgObj);
+                }
+                
+                if (_listStore.GetNItems() > 0)
+                {
+                    _selectionModel.SetSelected(0);
+                    var firstItem = _selectionModel.GetSelectedItem();
+                    if (firstItem is AlpmPackageGObject pkgObj)
+                    {
+                        ShowPackageDetails(_packageGObjectRefs[pkgObj.Index]);
+                    }
                 }
 
                 packages.Clear();

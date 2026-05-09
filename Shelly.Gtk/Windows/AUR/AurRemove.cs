@@ -78,7 +78,7 @@ public class AurRemove(
         _filterListModel = FilterListModel.New(_listStore, _filter);
         _selectionModel = SingleSelection.New(_filterListModel);
         _selectionModel.CanUnselect = true;
-        _selectionModel.Autoselect = true;
+        _selectionModel.Autoselect = false;
         _columnView.SetModel(_selectionModel);
 
         SetupColumns(_checkColumn, _nameColumn, _versionColumn);
@@ -310,6 +310,17 @@ public class AurRemove(
                     _listStore.Append(pkgObj);
                     index++;
                 }
+                
+                if (_listStore.GetNItems() > 0)
+                {
+                    _selectionModel.SetSelected(0);
+                    var firstItem = _selectionModel.GetSelectedItem();
+                    if (firstItem is AurPackageGObject pkgObj)
+                    {
+                        ShowPackageDetails(_aurPackages[pkgObj.Index]);
+                    }
+                }
+
 
                 return false;
             });
