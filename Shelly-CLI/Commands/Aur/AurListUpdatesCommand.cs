@@ -1,8 +1,7 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using PackageManager.Aur;
+using PackageManager.Aur.Models;
 using PackageManager.Utilities;
-using Shelly_CLI.Utility;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -10,7 +9,7 @@ namespace Shelly_CLI.Commands.Aur;
 
 public class AurListUpdatesCommand : AsyncCommand<ListSettings>
 {
-    public override async Task<int> ExecuteAsync([NotNull] CommandContext context, [NotNull] ListSettings settings)
+    public override async Task<int> ExecuteAsync(CommandContext context, ListSettings settings)
     {
         if (Program.IsUiMode)
         {
@@ -23,14 +22,14 @@ public class AurListUpdatesCommand : AsyncCommand<ListSettings>
         try
         {
             manager = new AurPackageManager();
-            await manager.Initialize(showHiddenPackages: settings.ShowHidden, tempPath:dbPath, useTempPath:true);
+            await manager.Initialize(showHiddenPackages: settings.ShowHidden, tempPath: dbPath, useTempPath: true);
 
             var updates = await manager.GetPackagesNeedingUpdate();
 
             // Apply filter if specified
             if (!string.IsNullOrWhiteSpace(settings.Filter))
             {
-                updates = updates.Where(p => p.Name.Contains(settings.Filter, StringComparison.OrdinalIgnoreCase)).ToList();
+                updates = ApplyFilter(updates, settings.Filter);
             }
 
             // Apply sorting based on settings
@@ -52,8 +51,8 @@ public class AurListUpdatesCommand : AsyncCommand<ListSettings>
             {
                 var sortedList = sortedUpdates.ToList();
                 var json = JsonSerializer.Serialize(sortedList, ShellyCLIJsonContext.Default.ListAurUpdateDto);
-                await using var stdout = System.Console.OpenStandardOutput();
-                await using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
+                await using var stdout = Console.OpenStandardOutput();
+                await using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
                 await writer.WriteLineAsync(json);
                 await writer.FlushAsync();
                 return 0;
@@ -70,18 +69,18 @@ public class AurListUpdatesCommand : AsyncCommand<ListSettings>
             table.AddColumn("Installed");
             table.AddColumn("Available");
             table.AddColumn("Description");
-            
+
             var skip = (settings.Page - 1) * settings.Take;
             var displayPackages = sortedUpdates.Skip(skip).Take(settings.Take).ToList();
 
-            foreach (var pkg in 
+            foreach (var pkg in
                      displayPackages)
             {
                 table.AddRow(
                     pkg.Name.EscapeMarkup(),
                     pkg.Version.EscapeMarkup(),
                     pkg.NewVersion.EscapeMarkup(),
-                    (pkg.Description ?? "No Description Available").EscapeMarkup().Truncate(50)
+                    GetDefaultDescription(pkg.Description).EscapeMarkup().Truncate(50)
                 );
             }
 
@@ -109,14 +108,14 @@ public class AurListUpdatesCommand : AsyncCommand<ListSettings>
         try
         {
             manager = new AurPackageManager();
-            await manager.Initialize(showHiddenPackages: settings.ShowHidden, tempPath:dbPath, useTempPath:true);
+            await manager.Initialize(showHiddenPackages: settings.ShowHidden, tempPath: dbPath, useTempPath: true);
 
             var updates = await manager.GetPackagesNeedingUpdate();
 
             // Apply filter if specified
             if (!string.IsNullOrWhiteSpace(settings.Filter))
             {
-                updates = updates.Where(p => p.Name.Contains(settings.Filter, StringComparison.OrdinalIgnoreCase)).ToList();
+                updates = ApplyFilter(updates, settings.Filter);
             }
 
             // Apply sorting based on settings
@@ -138,7 +137,7 @@ public class AurListUpdatesCommand : AsyncCommand<ListSettings>
                 var sortedList = sortedUpdates.ToList();
                 var json = JsonSerializer.Serialize(sortedList, ShellyCLIJsonContext.Default.ListAurUpdateDto);
                 await using var stdout = Console.OpenStandardOutput();
-                await using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
+                await using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
                 await writer.WriteLineAsync(json);
                 await writer.FlushAsync();
                 return 0;
@@ -146,7 +145,7 @@ public class AurListUpdatesCommand : AsyncCommand<ListSettings>
 
             if (updates.Count == 0)
             {
-                Console.Error.WriteLine("All AUR packages are up to date.");
+                await Console.Error.WriteLineAsync("All AUR packages are up to date.");
                 return 0;
             }
 
@@ -155,21 +154,37 @@ public class AurListUpdatesCommand : AsyncCommand<ListSettings>
 
             foreach (var pkg in displayPackages)
             {
-                Console.WriteLine($"{pkg.Name} {pkg.Version} -> {pkg.NewVersion} - {pkg.Description ?? "No Description Available"}");
+                Console.WriteLine(
+                    $"{pkg.Name} {pkg.Version} -> {pkg.NewVersion} - {GetDefaultDescription(pkg.Description)}"
+                );
             }
 
-            Console.Error.WriteLine($"Total: {displayPackages.Count} packages need updates");
+            await Console.Error.WriteLineAsync($"Total: {displayPackages.Count} packages need updates");
 
             return 0;
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Failed to check updates: {ex.Message}");
+            await Console.Error.WriteLineAsync($"Failed to check updates: {ex.Message}");
             return 1;
         }
         finally
         {
             manager?.Dispose();
         }
+    }
+
+    private static string GetDefaultDescription(string description)
+    {
+        return string.IsNullOrWhiteSpace(description) ? "No Description Available" : description;
+    }
+
+    private static List<AurUpdateDto> ApplyFilter(List<AurUpdateDto> packages, string filter)
+    {
+        return packages
+            .Select(x => new { Package = x, Score = StringMatching.PartialRatio(filter, x.Name) })
+            .Where(x => x.Score >= 90)
+            .Select(x => x.Package)
+            .ToList();
     }
 }

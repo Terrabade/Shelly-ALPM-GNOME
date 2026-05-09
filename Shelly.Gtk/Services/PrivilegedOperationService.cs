@@ -58,7 +58,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
 
     public async Task<List<AlpmPackageDto>> SearchPackagesAsync(string query)
     {
-        var result = await ExecuteCommandAsync("list-available", $"--filter {query}",
+        var result = await ExecuteCommandAsync("list-available", $"--filter=\"{query}\"",
             "--no-confirm", "--json");
         if (!result.Success || string.IsNullOrWhiteSpace(result.Output))
         {
