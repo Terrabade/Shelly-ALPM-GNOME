@@ -64,6 +64,8 @@ public class ShellyConfig
     public string? TrayUpdatesIconPath { get; set; }
     
     public ShellyTabs DefaultPageDropDown { get; set; } = ShellyTabs.Packages;
+
+    public bool SuppressFingerprintWarning { get; set; } = false;
     
     // Existing CLI settings (included for unified config compatibility)
     public string FileSizeDisplay { get; set; } = "Bytes";

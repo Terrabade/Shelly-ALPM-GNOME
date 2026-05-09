@@ -65,6 +65,7 @@ public class ConfigService : IConfigService
         CallCliConfigSet(nameof(config.TrayIconPath), config.TrayIconPath ?? "");
         CallCliConfigSet(nameof(config.TrayUpdatesIconPath), config.TrayUpdatesIconPath ?? "");
         CallCliConfigSet(nameof(config.DefaultPageDropDown), config.DefaultPageDropDown.ToString());
+        CallCliConfigSet(nameof(config.SuppressFingerprintWarning), config.SuppressFingerprintWarning.ToString());
 
         ConfigSaved?.Invoke(this, config);
         _suppressInvalidate = true;

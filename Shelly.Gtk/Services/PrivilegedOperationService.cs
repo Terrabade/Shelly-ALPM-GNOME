@@ -18,11 +18,13 @@ public class PrivilegedOperationService : IPrivilegedOperationService
     private readonly ITrayDbus _trayDbus;
     private readonly IPackageUpdateNotifier _packageUpdateNotifier;
     private readonly IDirtyService _dirtyService;
+    private readonly IFingerprintAuthDetector _fingerprintAuthDetector;
     private bool _usedPassword = false;
 
     public PrivilegedOperationService(ICredentialManager credentialManager, IAlpmEventService alpmEventService,
         IConfigService configService, ILockoutService lockoutService, ITrayDbus trayDbus,
-        IPackageUpdateNotifier packageUpdateNotifier, IDirtyService dirtyService)
+        IPackageUpdateNotifier packageUpdateNotifier, IDirtyService dirtyService,
+        IFingerprintAuthDetector fingerprintAuthDetector)
     {
         _credentialManager = credentialManager;
         _alpmEventService = alpmEventService;
@@ -31,6 +33,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         _trayDbus = trayDbus;
         _packageUpdateNotifier = packageUpdateNotifier;
         _dirtyService = dirtyService;
+        _fingerprintAuthDetector = fingerprintAuthDetector;
         _cliPath = CliPathResolver.FindCliPath();
     }
 
@@ -230,9 +233,43 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         var packageArgs = string.Join(" ", packages);
         var result =
             await ExecutePrivilegedWithNoConfirmCheck("Get Package Builds", "aur", "get-package-build", packageArgs);
-        var trimmedLine = StripBom(result.Output);
-        return System.Text.Json.JsonSerializer.Deserialize(trimmedLine,
-            ShellyGtkJsonContext.Default.ListPackageBuild) ?? [];
+
+        if (!result.Success || string.IsNullOrWhiteSpace(result.Output))
+        {
+            return [];
+        }
+
+        foreach (var raw in result.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = StripBom(raw.Trim());
+            if (line.StartsWith('[') && line.EndsWith(']'))
+            {
+                try
+                {
+                    return System.Text.Json.JsonSerializer.Deserialize(line,
+                        ShellyGtkJsonContext.Default.ListPackageBuild) ?? [];
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                }
+            }
+        }
+
+        var hint = string.Empty;
+        try
+        {
+            if (_fingerprintAuthDetector.Detect().SudoUsesFingerprint)
+            {
+                hint = " Tip: a fingerprint prompt on sudo (pam_fprintd) may be interfering with privileged output. " +
+                       "See issue #728: https://github.com/Seafoam-Labs/Shelly-ALPM/issues/728";
+            }
+        }
+        catch
+        {
+        }
+
+        Console.WriteLine($"GetAurPackageBuild: no JSON line found in output:{Environment.NewLine}{result.Output}{hint}");
+        return [];
     }
 
     public async Task<List<AlpmPackageUpdateDto>> GetPackagesNeedingUpdateAsync()
