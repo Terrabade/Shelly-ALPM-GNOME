@@ -11,7 +11,7 @@ public static class FingerprintFixDialog
         dialog.SetTitle("Fingerprint workaround");
         dialog.SetTransientFor(parent);
         dialog.SetModal(true);
-        dialog.SetDefaultSize(720, 520);
+        dialog.SetDefaultSize(720, 620);
 
         var outer = Box.New(Orientation.Vertical, 12);
         outer.SetMarginTop(16);
@@ -46,22 +46,6 @@ public static class FingerprintFixDialog
 
         var buttonBox = Box.New(Orientation.Horizontal, 8);
         buttonBox.SetHalign(Align.End);
-
-        var openIssue = Button.NewWithLabel("Open issue #728");
-        openIssue.OnClicked += (_, _) =>
-        {
-            try
-            {
-                Process.Start(new ProcessStartInfo("xdg-open", "https://github.com/Seafoam-Labs/Shelly-ALPM/issues/728")
-                {
-                    UseShellExecute = false,
-                });
-            }
-            catch
-            {
-            }
-        };
-        buttonBox.Append(openIssue);
 
         var close = Button.NewWithLabel("Close");
         close.OnClicked += (_, _) => dialog.Close();
