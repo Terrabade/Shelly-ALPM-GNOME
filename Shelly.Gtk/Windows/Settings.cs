@@ -54,6 +54,7 @@ public class Settings(
         SetupSwitch("no_confirm_switch", _config.NoConfirm, (v) => _config.NoConfirm = v, builder);
         SetupSwitch("webview_switch", _config.WebViewEnabled, (v) => _config.WebViewEnabled = v, builder);
         SetupSwitch("shelly_icons_switch", _config.ShellyIconsEnabled, (v) => _config.ShellyIconsEnabled = v, builder);
+        SetupSwitch("recommended_switch", _config.RecommendedEnabled, (v) => _config.RecommendedEnabled = v, builder);
         SetupSwitch("appimage_switch", _config.AppImageEnabled, (v) => _config.AppImageEnabled = v, builder);
         SetupSwitch("symbolic_tray_switch", _config.UseSymbolicTray, (v) => _config.UseSymbolicTray = v, builder);
         SetupSwitch("shelly_search_switch", _config.ShellySearchEnabled, (v) => _config.ShellySearchEnabled = v,
@@ -212,6 +213,12 @@ public class Settings(
 
             pages.Add("Packages");
             _availablePages.Add(ShellyTabs.Packages);
+
+            if (_config.RecommendedEnabled)
+            {
+                pages.Add("Recommend");
+                _availablePages.Add(ShellyTabs.Recommend);
+            }
 
             if (_config.AurEnabled)
             {

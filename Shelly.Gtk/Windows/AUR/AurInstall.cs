@@ -141,7 +141,7 @@ public class AurInstall(
         ColumnViewHelper.AlignColumnHeader(_columnView, 2, Align.End);
         ColumnViewHelper.AlignColumnHeader(_columnView, 3, Align.End);
         ColumnViewHelper.AlignColumnHeader(_columnView, 4, Align.End);
-
+        
         _columnView.OnActivate += (_, _) =>
         {
             var item = _selectionModel.GetSelectedItem();
@@ -159,14 +159,20 @@ public class AurInstall(
         shortcutController.Scope = ShortcutScope.Global;
         shortcutController.PropagationPhase = PropagationPhase.Capture;
 
-        var triggers = new[] { "Return", "KP_Enter", "space" };
+        var triggers = new[] { "Return", "KP_Enter", "space", "<Control>f"};
         foreach (var triggerStr in triggers)
         {
             var action = CallbackAction.New((_, _) =>
             {
+                if (triggerStr == "<Control>f")
+                {
+                    _searchEntry.GrabFocus();
+                    return true;
+                }
+                
                 if (!_installButton.GetSensitive()) return false;
                 if (OverlayHelper.HasActiveOverlay(_box)) return false;
-
+                
                 Task.Run(async () => await InstallSelectedAsync());
                 return true;
             });
@@ -368,7 +374,17 @@ public class AurInstall(
                     _listStore.Append(pkgObj);
                     index++;
                 }
-
+                
+                if (_listStore.GetNItems() > 0)
+                {
+                    _selectionModel.SetSelected(0);
+                    var firstItem = _selectionModel.GetSelectedItem();
+                    if (firstItem is AurPackageGObject pkgObj)
+                    {
+                        ShowPackageDetails(_aurPackages[pkgObj.Index]);
+                    }
+                }
+                
                 return false;
             });
         }

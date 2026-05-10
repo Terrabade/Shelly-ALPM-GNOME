@@ -101,7 +101,7 @@ public class ArchNewsDialog(IArchNewsService archNewsService, Overlay overlay)
         try
         {
             var items = await archNewsService.FetchNewsAsync(CancellationToken.None);
-
+            items.Reverse();
             _archNewsItems = items.Take(10).ToList();
         }
         catch (Exception e)

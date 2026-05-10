@@ -22,6 +22,7 @@ depends=(
     'glibc'
     'libarchive'
     'dconf'
+    'gnupg'
 )
 optdepends=(
     'flatpak: For supporting flatpak implementation.'
@@ -40,6 +41,7 @@ build() {
   dotnet publish Shelly-CLI/Shelly-CLI.csproj -c Release -o out-cli --nologo -p:InstructionSet=${INSTRUCTIONS:=x86-64}
   dotnet publish Shelly.Gtk/Shelly.Gtk.csproj -c Release -r linux-x64 -o out --nologo -p:InstructionSet=${INSTRUCTIONS:=x86-64}
   dotnet publish Shelly-Notifications/Shelly-Notifications.csproj -c Release -r linux-x64 -o out-notify --nologo -p:InstructionSet=${INSTRUCTIONS:=x86-64}
+  dotnet publish Shelly.Keys/Shelly.Keys.csproj -c Release -r linux-x64 -o out-keys --nologo -p:InstructionSet=${INSTRUCTIONS:=x86-64}
 }
 
 package() {
@@ -53,6 +55,9 @@ package() {
 
   # Install Shelly-CLI binary
   install -Dm755 out-cli/shelly "$pkgdir/usr/bin/shelly"
+
+  # Install Shelly.Keys binary
+  install -Dm755 out-keys/shelly-keys "$pkgdir/usr/bin/shelly-keys"
 
   # Install desktop entry
   cat <<'EOF' | install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/com.shellyorg.shelly.desktop"

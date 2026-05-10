@@ -82,7 +82,7 @@ public class AurUpdate(
         _filterListModel = FilterListModel.New(_listStore, _filter);
         _selectionModel = SingleSelection.New(_filterListModel);
         _selectionModel.CanUnselect = true;
-        _selectionModel.Autoselect = true;
+        _selectionModel.Autoselect = false;
         _columnView.SetModel(_selectionModel);
 
         SetupColumns(_checkColumn, _nameColumn, _versionColumn);
@@ -117,7 +117,21 @@ public class AurUpdate(
             );
         };        
 
+        var shortcutController = ShortcutController.New();
+        shortcutController.Scope = ShortcutScope.Global;
+        shortcutController.PropagationPhase = PropagationPhase.Capture;
 
+        var searchTrigger = "<Control>f";
+
+        var action = CallbackAction.New((_, _) =>
+        {
+            searchEntry.GrabFocus();
+            return true;
+        });
+        
+        _box.AddController(shortcutController);
+        shortcutController.AddShortcut(Shortcut.New(ShortcutTrigger.ParseString(searchTrigger), action));
+        
         ColumnViewHelper.AlignColumnHeader(_columnView, 1, Align.Start);
         ColumnViewHelper.AlignColumnHeader(_columnView, 2, Align.End);
 
@@ -304,6 +318,16 @@ public class AurUpdate(
                 {
                     _packageGObjectRefs.Add(gobject);
                     _listStore.Append(gobject);
+                }
+                
+                if (_listStore.GetNItems() > 0)
+                {
+                    _selectionModel.SetSelected(0);
+                    var firstItem = _selectionModel.GetSelectedItem();
+                    if (firstItem is AurUpdateGObject pkgObj)
+                    {
+                        ShowPackageDetails(pkgObj);
+                    }
                 }
 
                 _noPackagesLabel.Visible = packages.Count == 0;

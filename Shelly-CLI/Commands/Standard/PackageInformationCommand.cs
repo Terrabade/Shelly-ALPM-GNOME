@@ -21,7 +21,7 @@ public class PackageInformationCommand : Command<PackageInformationSettings>
         }
 
         var manager = new AlpmManager();
-        AlpmPackageDto? package = null;
+        AlpmPackageDto? package;
         if (settings.SearchInstalled)
         {
             var installedPackages = manager.GetInstalledPackages();
@@ -45,7 +45,7 @@ public class PackageInformationCommand : Command<PackageInformationSettings>
         }
 
         WriteLeftAlignMarkup($"[green]Name: {package.Name.EscapeMarkup()}[/]");
-        WriteLeftAlignMarkup($"[blue]Version {package.Version.EscapeMarkup()}[/]");
+        WriteLeftAlignMarkup($"[blue]Version: {package.Version.EscapeMarkup()}[/]");
         WriteLeftAlignMarkup($"[blue]Description: {package.Description.EscapeMarkup()}[/]");
         WriteLeftAlignMarkup($"[blue]URL: {package.Url.EscapeMarkup()}[/]");
         WriteLeftAlignMarkup($"[blue]Licenses: {string.Join(',', package.Licenses).EscapeMarkup()}[/]");
@@ -56,7 +56,8 @@ public class PackageInformationCommand : Command<PackageInformationSettings>
         WriteLeftAlignMarkup($"[blue]Required By: {string.Join(',', package.RequiredBy).EscapeMarkup()}[/]");
         WriteLeftAlignMarkup($"[blue]Conflicts With: {string.Join(',', package.Conflicts).EscapeMarkup()}[/]");
         WriteLeftAlignMarkup($"[blue]Replaces: {string.Join(',', package.Replaces).EscapeMarkup()}[/]");
-        WriteLeftAlignMarkup($"[blue]Installed Size:{package.InstalledSize} bytes[/]");
+        WriteLeftAlignMarkup($"[blue]Installed Size: {package.InstalledSize} bytes[/]");
+        WriteLeftAlignMarkup($"[blue]Build Date: {package.BuildDate.ToLongDateString().EscapeMarkup()}[/]");
         var installDate = package.InstallDate.HasValue
             ? package.InstallDate.Value.ToLongDateString()
             : "Not Installed";

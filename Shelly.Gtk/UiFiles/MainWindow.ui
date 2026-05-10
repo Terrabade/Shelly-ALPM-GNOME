@@ -71,10 +71,10 @@
                 <attribute name="label">Settings</attribute>
                 <attribute name="action">app.preferences</attribute>
             </item>
-            <!--<item>
+            <item>
                 <attribute name="label">About</attribute>
                 <attribute name="action">app.about</attribute>
-            </item>-->
+            </item>
         </section>
     </menu>
     <object class="GtkApplicationWindow" id="MainWindow">
@@ -104,6 +104,32 @@
                                         <property name="margin-start">6</property>
                                         <property name="margin-end">6</property>
                                         <property name="tooltip-text">Toggle Sidebar</property>
+                                    </object>
+                                </child>
+                                <child>
+                                    <object class="GtkToggleButton" id="SidebarRecommendButton">
+                                        <property name="has-frame">false</property>
+                                        <property name="margin-top">3</property>
+                                        <property name="margin-bottom">3</property>
+                                        <property name="margin-start">6</property>
+                                        <property name="margin-end">6</property>
+                                        <child>
+                                            <object class="GtkBox">
+                                                <property name="orientation">horizontal</property>
+                                                <property name="spacing">8</property>
+                                                <child>
+                                                    <object class="GtkImage">
+                                                        <property name="icon-name">emblem-favorite-symbolic</property>
+                                                    </object>
+                                                </child>
+                                                <child>
+                                                    <object class="GtkLabel" id="SidebarRecommendLabel">
+                                                        <property name="label">Recommend</property>
+                                                        <property name="visible">false</property>
+                                                    </object>
+                                                </child>
+                                            </object>
+                                        </child>
                                     </object>
                                 </child>
                                 <child>
@@ -280,6 +306,19 @@
                                     <object class="GtkStack" id="settings_stack">
                                         <property name="hexpand">true</property>
                                         <property name="vexpand">true</property>
+                                        <child>
+                                            <object class="GtkStackPage">
+                                                <property name="name">recommend_page</property>
+                                                <property name="title">Recommend</property>
+                                                <property name="child">
+                                                    <object class="GtkBox" id="recommend_page_box">
+                                                        <property name="orientation">vertical</property>
+                                                        <property name="hexpand">true</property>
+                                                        <property name="vexpand">true</property>
+                                                    </object>
+                                                </property>
+                                            </object>
+                                        </child>
                                         <child>
                                             <object class="GtkStackPage">
                                                 <property name="name">packages_page</property>

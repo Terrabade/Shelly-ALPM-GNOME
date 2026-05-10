@@ -92,7 +92,6 @@ public class PackageInstall(
         _detailRevealer = (Revealer)_builder.GetObject("detail_revealer")!;
         _detailBox = (Box)_builder.GetObject("detail_box")!;
         _groupDropDown = (DropDown)_builder.GetObject("grouping_selection")!;
-        _groupDropDown.EnableSearch = false;
         _upgradeCheck = (CheckButton)_builder.GetObject("upgrade_check")!;
         _showHiddenCheck = (CheckButton)_builder.GetObject("show_hidden_check")!;
 
@@ -101,7 +100,7 @@ public class PackageInstall(
         _filterListModel = FilterListModel.New(_listStore, _filter);
         _selectionModel = SingleSelection.New(_filterListModel);
         _selectionModel.CanUnselect = true;
-        _selectionModel.Autoselect = true;
+        _selectionModel.Autoselect = false;
         _columnView.SetModel(_selectionModel);
 
         SetupColumns(_checkColumn, _nameColumn, _sizeColumn, _versionColumn, _repositoryColumn);
@@ -179,11 +178,17 @@ public class PackageInstall(
         shortcutController.Scope = ShortcutScope.Global;
         shortcutController.PropagationPhase = PropagationPhase.Capture;
 
-        var triggers = new[] { "Return", "KP_Enter", "space" };
+        var triggers = new[] { "Return", "KP_Enter", "space", "<Control>f"};
         foreach (var triggerStr in triggers)
         {
             var action = CallbackAction.New((_, _) =>
             {
+                if (triggerStr == "<Control>f")
+                {
+                    _searchEntry.GrabFocus();
+                    return true;
+                }
+                
                 if (!_installButton.GetSensitive()) return false;
                 if (OverlayHelper.HasActiveOverlay(_overlay)) return false;
 
@@ -682,6 +687,15 @@ public class PackageInstall(
                 _currentDetailPkg = null;
                 while (_detailBox.GetFirstChild() is { } child) _detailBox.Remove(child);
                 cleared.TrySetResult();
+                if (_listStore.GetNItems() > 0)
+                {
+                    _selectionModel.SetSelected(0);
+                    var firstItem = _selectionModel.GetSelectedItem();
+                    if (firstItem is AlpmPackageGObject pkgObj)
+                    {
+                        ShowPackageDetails(_packageGObjectRefs[pkgObj.Index]);
+                    }
+                }
                 return false;
             });
             await cleared.Task;
