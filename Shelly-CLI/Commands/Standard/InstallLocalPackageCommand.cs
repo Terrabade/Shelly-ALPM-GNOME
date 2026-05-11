@@ -62,6 +62,7 @@ public class InstallLocalPackageCommand : AsyncCommand<InstallLocalPackageSettin
                 AnsiConsole.MarkupLine("[red]Installation failed. See errors above.[/]");
                 return 1;
             }
+
             return 0;
         }
 
@@ -164,7 +165,8 @@ public class InstallLocalPackageCommand : AsyncCommand<InstallLocalPackageSettin
             {
                 if (foundIcons.Count > 0)
                 {
-                    AnsiConsole.MarkupLine($"[cyan]Found icon for {binaryName.EscapeMarkup()}: {foundIcons.FirstOrDefault().Key.EscapeMarkup()}[/]");
+                    AnsiConsole.MarkupLine(
+                        $"[cyan]Found icon for {binaryName.EscapeMarkup()}: {foundIcons.FirstOrDefault().Key.EscapeMarkup()}[/]");
                     var installedIconName = InstallIcon(foundIcons.FirstOrDefault().Value, binaryName);
                     if (installedIconName != null)
                     {
@@ -235,11 +237,13 @@ public class InstallLocalPackageCommand : AsyncCommand<InstallLocalPackageSettin
         manager.Initialize();
         var cfg = ConfigManager.ReadConfig();
         var useSinglePane = settings.SinglePane
-            || string.Equals(cfg.OutputMode, "singlepane", StringComparison.OrdinalIgnoreCase)
-            || Console.IsOutputRedirected;
+                            || string.Equals(cfg.OutputMode, "singlepane", StringComparison.OrdinalIgnoreCase)
+                            || Console.IsOutputRedirected;
         var result = useSinglePane
-            ? await StandardSinglePaneOutput.Output(manager, x => x.InstallLocalPackage(Path.GetFullPath(settings.PackageLocation!)), settings.NoConfirm)
-            : await SplitOutput.Output(manager, x => x.InstallLocalPackage(Path.GetFullPath(settings.PackageLocation!)), settings.NoConfirm);
+            ? await StandardSinglePaneOutput.Output(manager,
+                x => x.InstallLocalPackage(Path.GetFullPath(settings.PackageLocation!)), settings.NoConfirm)
+            : await SplitOutput.Output(manager, x => x.InstallLocalPackage(Path.GetFullPath(settings.PackageLocation!)),
+                settings.NoConfirm);
         manager.Dispose();
         return result;
     }
@@ -248,12 +252,12 @@ public class InstallLocalPackageCommand : AsyncCommand<InstallLocalPackageSettin
     {
         if (settings.PackageLocation == null)
         {
-            Console.Error.WriteLine("Error: No package specified");
+            await Console.Error.WriteLineAsync("Error: No package specified");
             return 1;
         }
 
         using var manager = new AlpmManager();
-        bool hadError = false;
+        var hadError = false;
 
         // Handle questions
         manager.Question += (_, args) => { QuestionHandler.HandleQuestion(args, true, settings.NoConfirm); };
@@ -267,21 +271,22 @@ public class InstallLocalPackageCommand : AsyncCommand<InstallLocalPackageSettin
             hadError = true;
         };
 
-        Console.Error.WriteLine("Initializing ALPM...");
+        await Console.Error.WriteLineAsync("Initializing ALPM...");
         manager.Initialize();
 
-        Console.Error.WriteLine($"Installing local package: {settings.PackageLocation}");
+        await Console.Error.WriteLineAsync($"Installing local package: {settings.PackageLocation}");
         var result = await manager.InstallLocalPackage(Path.GetFullPath(settings.PackageLocation));
         if (!result || hadError)
         {
-            Console.Error.WriteLine("Installation failed.");
+            await Console.Error.WriteLineAsync("Installation failed.");
             return 1;
         }
-        Console.Error.WriteLine("Installation complete.");
+
+        await Console.Error.WriteLineAsync("Installation complete.");
         return 0;
     }
 
-    internal async Task<bool> IsArchPackage(string filePath)
+    internal static async Task<bool> IsArchPackage(string filePath)
     {
         var isArch = false;
         var fileStream = File.OpenRead(filePath);

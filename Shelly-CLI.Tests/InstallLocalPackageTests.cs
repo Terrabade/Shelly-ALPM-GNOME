@@ -66,7 +66,7 @@ public class InstallLocalPackageTests
     public async Task IsArchPackage_GzWithPkginfo_ReturnsTrue()
     {
         var filePath = CreateTarGzWithEntries(_tempDir, "test.tar.gz", [".PKGINFO"]);
-        var result = await _command.IsArchPackage(filePath);
+        var result = await InstallLocalPackageCommand.IsArchPackage(filePath);
         Assert.That(result, Is.True);
     }
 
@@ -74,7 +74,7 @@ public class InstallLocalPackageTests
     public async Task IsArchPackage_GzWithoutPkginfo_ReturnsFalse()
     {
         var filePath = CreateTarGzWithEntries(_tempDir, "test.tar.gz", ["readme.txt"]);
-        var result = await _command.IsArchPackage(filePath);
+        var result = await InstallLocalPackageCommand.IsArchPackage(filePath);
         Assert.That(result, Is.False);
     }
 
@@ -82,8 +82,8 @@ public class InstallLocalPackageTests
     public async Task IsArchPackage_UnsupportedExtension_ReturnsFalse()
     {
         var filePath = Path.Combine(_tempDir, "test.tar.bz2");
-        File.WriteAllBytes(filePath, [0x00]);
-        var result = await _command.IsArchPackage(filePath);
+        await File.WriteAllBytesAsync(filePath, [0x00]);
+        var result = await InstallLocalPackageCommand.IsArchPackage(filePath);
         Assert.That(result, Is.False);
     }
 
