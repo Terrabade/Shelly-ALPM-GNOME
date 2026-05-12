@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using PackageManager.Flatpak;
+using PackageManager.Ostree;
 using Shelly_CLI.Utility;
 using Spectre.Console;
 using Spectre.Console.Cli;
