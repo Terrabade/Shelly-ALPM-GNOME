@@ -125,6 +125,30 @@ public static class LocalManager
         return 0;
     }
 
+    public static List<LocalPackageDto> GetInstalledBinaryPackages()
+    {
+        var dirs = ListDirectories(InstallDir);
+        return dirs
+            .Select(dir =>
+            {
+                var dirInfo = new DirectoryInfo(dir);
+                var size = dirInfo
+                    .EnumerateFiles("*", SearchOption.AllDirectories)
+                    .Sum(f => f.Length);
+
+                return new LocalPackageDto(dir, size);
+            })
+            .ToList();
+    }
+
+    private static List<string> ListDirectories(string path)
+    {
+        if (!Directory.Exists(path)) return [];
+        return Directory.GetDirectories(path)
+            .Select(Path.GetFullPath)
+            .ToList();
+    }
+
     public static async Task<bool> IsArchPackage(string filePath)
     {
         await using var fileStream = File.OpenRead(filePath);

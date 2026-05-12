@@ -1,5 +1,4 @@
 using System.Reflection;
-using System.Text.Json;
 using Shelly_CLI.Commands.AppImage;
 using Shelly_CLI.Commands.Aur;
 using Shelly_CLI.Commands.Config;
@@ -102,6 +101,14 @@ public class Program
                 .WithExample("list-installed", "--sort", "size")
                 .WithExample("list-installed", "--sort", "size", "--order", "desc")
                 .WithExample("list-installed", "--filter", "linux");
+
+            config.AddCommand<ListLocalInstalledCommand>("list-local-installed")
+                .WithDescription("List all locally installed packages (.xz, .gz, .zst)")
+                .WithExample("list-local-installed")
+                .WithExample("list-local-installed", "--sort", "name")
+                .WithExample("list-local-installed", "--sort", "size")
+                .WithExample("list-local-installed", "--sort", "size", "--order", "desc")
+                .WithExample("list-local-installed", "--filter", "firefox");
 
             config.AddCommand<ListAvailableCommand>("list-available")
                 .WithDescription("List all available packages")
@@ -442,8 +449,9 @@ public class Program
 
                 appImage.AddCommand<AppImageConfigUpdates>("configure-updates")
                     .WithDescription("Configure update settings for an AppImage")
-                    .WithExample("appimage", "configure-updates", "firefox", "--update-url", "https://github.com/mozilla/firefox-appimage", "--type", "GitHub");
-                
+                    .WithExample("appimage", "configure-updates", "firefox", "--update-url",
+                        "https://github.com/mozilla/firefox-appimage", "--type", "GitHub");
+
                 appImage.AddCommand<AppImageSyncMeta>("sync-meta")
                     .WithDescription("Syncs meta data for an AppImage")
                     .WithExample("appimage", "sync-meta", "firefox");
