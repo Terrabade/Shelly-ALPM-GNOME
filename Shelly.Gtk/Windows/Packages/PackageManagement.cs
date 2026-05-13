@@ -191,7 +191,8 @@ public sealed class PackageManagement(
     {
         using var removeLocalBox = (Box)removeLocal.CreateWindow();
         var width = (int)Math.Max(_box.GetWidth() * 0.5, 700);
-        removeLocalBox.SetSizeRequest(width, -1);
+        var height =  (int)Math.Min(_box.GetHeight() * 0.5, 400);
+        removeLocalBox.SetSizeRequest(width, height);
         var eventArgs = new GenericDialogEventArgs(removeLocalBox);
         genericQuestionService.RaiseDialog(eventArgs);
         await eventArgs.ResponseTask;
