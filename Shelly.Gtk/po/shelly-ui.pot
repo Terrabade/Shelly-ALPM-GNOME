@@ -215,3 +215,93 @@ msgstr ""
 
 msgid "Name"
 msgstr ""
+
+msgid "<span size='large'>Search for AUR packages</span>"
+msgstr ""
+
+msgid "<span size='large'>AUR packages are up to date</span>"
+msgstr ""
+
+msgid "No packages found."
+msgstr ""
+
+msgid "Displaying Package Build {0}"
+msgstr ""
+
+msgid "Export AUR install log"
+msgstr ""
+
+msgid "Exported AUR install log"
+msgstr ""
+
+msgid "Failed to export AUR install log"
+msgstr ""
+
+msgid "Package Build"
+msgstr ""
+
+msgid "Preview PKGBUILD"
+msgstr ""
+
+msgid "Displays Package Build"
+msgstr ""
+
+msgid "Votes"
+msgstr ""
+
+msgid "Popularity"
+msgstr ""
+
+msgid "Out of Date"
+msgstr ""
+
+msgid "Maintainer"
+msgstr ""
+
+msgid "Orphaned"
+msgstr ""
+
+msgid "Last Modified"
+msgstr ""
+
+msgid "First Submitted"
+msgstr ""
+
+msgid "AUR:"
+msgstr ""
+
+msgid "Make Depends"
+msgstr ""
+
+msgid "Check Depends"
+msgstr ""
+
+msgid "Keywords"
+msgstr ""
+
+msgid "Replaces"
+msgstr ""
+
+msgid "Use chroot"
+msgstr ""
+
+msgid "Build packages in a clean chroot environment"
+msgstr ""
+
+msgid "Run checks"
+msgstr ""
+
+msgid "Run the --check function during package build (installs checkdepends)"
+msgstr ""
+
+msgid "Install Aur Package(s)"
+msgstr ""
+
+msgid "Update Aur Package(s)"
+msgstr ""
+
+msgid "refresh"
+msgstr ""
+
+msgid "Remove Aur Package(s)"
+msgstr ""
