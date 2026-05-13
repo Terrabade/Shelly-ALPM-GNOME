@@ -11,10 +11,31 @@ public class FlatpakRepair : Command<FlatpakRepairSettings>
 {
     public override int Execute([NotNull] CommandContext context, [NotNull] FlatpakRepairSettings settings)
     {
-        var manager = new FlatpakManager();
+        var flatpakManager = new FlatpakManager();
+        var ostreeManager = new OstreeManager();
         var status = AnsiConsole.Status();
         
         // Step 1 - Scan all locally available refs, removing any that don't correspond to a deployed ref.
+
+        var repositories = flatpakManager.GetRepositoryPaths();
+        
+        // Testing mechanism to see if it works.
+        foreach (var repo in repositories)
+        {
+            var refs = ostreeManager.ListRefs(repo);
+
+            var tree = new Tree(
+                $"[yellow]{repo}[/]");
+
+            foreach (var reference in refs)
+            {
+                tree.AddNode(
+                    $"[green]{reference.Remote}[/]: {reference.Ref}");
+            }
+
+            AnsiConsole.Write(tree);
+            
+        }
 
         // Step 2 - Verify each commit they point to, removing any invalid objects and noting any missing objects.
 

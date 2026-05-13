@@ -2368,6 +2368,31 @@ public class FlatpakManager : IDisposable
             return null;
         }
     }
+    
+    public List<string> GetRepositoryPaths()
+    {
+        var paths = new List<string>();
+
+        var systemRepo = "/var/lib/flatpak/repo";
+
+        if (Directory.Exists(systemRepo))
+        {
+            paths.Add(systemRepo);
+        }
+
+        var userRepo = Path.Combine(
+            Environment.GetFolderPath(
+                Environment.SpecialFolder.UserProfile),
+            ".local/share/flatpak/repo");
+
+        if (Directory.Exists(userRepo))
+        {
+            paths.Add(userRepo);
+        }
+
+        return paths;
+    }
+
 
     public void Dispose()
     {

@@ -312,6 +312,10 @@ public class Program
                 flatpak.AddCommand<FlatpakRunningCommand>("running")
                     .WithDescription("List running flatpak apps")
                     .WithExample("flatpak", "running");
+                
+                flatpak.AddCommand<FlatpakRepair>("repair")
+                    .WithDescription("Repairs Flatpak Installation")
+                    .WithExample("flatpak", "repair");
 
                 flatpak.AddCommand<FlatpakRemoveCommand>("uninstall")
                     .WithDescription("Remove flatpak app")
