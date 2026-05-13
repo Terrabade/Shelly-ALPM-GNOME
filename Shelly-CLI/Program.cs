@@ -22,6 +22,8 @@ public class Program
 
     public static int Main(string[] args)
     {
+        Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
+        Console.SetError(new StreamWriter(Console.OpenStandardError())  { AutoFlush = true });
         // Ensure default configuration exists in ~/.config/shelly/config.json
         var configPath = XdgPaths.ShellyConfig("config.json");
 
