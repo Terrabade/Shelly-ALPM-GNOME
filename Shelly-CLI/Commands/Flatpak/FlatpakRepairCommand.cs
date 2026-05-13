@@ -37,6 +37,28 @@ public class FlatpakRepair : Command<FlatpakRepairSettings>
             
         }
 
+        var installed = flatpakManager.SearchInstalled();
+        var installedRefs =
+            installed
+                .Select(x => x.FullRef)
+                .ToHashSet();
+
+        foreach (var repo in repositories)
+        {
+            var refs =
+                ostreeManager.ListRefs(repo);
+
+            foreach (var reference in refs)
+            {
+                if (!installedRefs.Contains(
+                        reference.FullRef))
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[red]Orphan ref:[/] {reference.FullRef}");
+                }
+            }
+        }
+        
         // Step 2 - Verify each commit they point to, removing any invalid objects and noting any missing objects.
 
         // Step 3 - Remove any refs that had an invalid object, and any non-partial refs that had missing objects.

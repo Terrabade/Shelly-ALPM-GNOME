@@ -15,7 +15,6 @@ public class FlatpakPackageDto
     public int Kind { get; init; }
     public string? IconPath { get; set; }
     public string Description { get; set; } = string.Empty;
-    
     public List<AppstreamRelease> Releases { get; set; } = [];
     
     public List<string> Categories { get; set; } = [];
@@ -23,6 +22,20 @@ public class FlatpakPackageDto
     public string remote { get; set; } = string.Empty;
 
     public List<string> Permissions { get; set; } = [];
+    
+    public string Ref =>
+        $"{GetKindString()}/{Id}/{Arch}/{Branch}";
+
+    public string FullRef =>
+        $"{remote}:{Ref}";
+
+    private string GetKindString()
+    {
+        return Kind == 0
+            ? "app"
+            : "runtime";
+    }
+
 }
 
 [JsonSourceGenerationOptions(
