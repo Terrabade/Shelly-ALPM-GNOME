@@ -1,5 +1,6 @@
 using System.Text.Json;
 using PackageManager.Alpm;
+using PackageManager.Wire;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -54,12 +55,7 @@ public class ListInstalledCommand : Command<ListSettings>
         if (settings.JsonOutput)
         {
             var sortedList = sortedPackages.ToList();
-            var json = JsonSerializer.Serialize(sortedList, ShellyCLIJsonContext.Default.ListAlpmPackageDto);
-            // Write directly to stdout stream to bypass Spectre.Console redirection
-            using var stdout = Console.OpenStandardOutput();
-            using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
-            writer.WriteLine(json);
-            writer.Flush();
+            MemPackFrame.WriteToStdout(sortedList);
             return 0;
         }
 
@@ -131,11 +127,7 @@ public class ListInstalledCommand : Command<ListSettings>
         if (settings.JsonOutput)
         {
             var sortedList = sortedPackages.ToList();
-            var json = JsonSerializer.Serialize(sortedList, ShellyCLIJsonContext.Default.ListAlpmPackageDto);
-            using var stdout = Console.OpenStandardOutput();
-            using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
-            writer.WriteLine(json);
-            writer.Flush();
+            MemPackFrame.WriteToStdout(sortedList);
             return 0;
         }
 

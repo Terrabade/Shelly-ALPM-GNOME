@@ -3,6 +3,7 @@ using System.Linq;
 using System.Text.Json;
 using PackageManager.Alpm;
 using PackageManager.Utilities;
+using PackageManager.Wire;
 using Shelly_CLI.Configuration;
 using Shelly_CLI.Utility;
 using Spectre.Console;
@@ -43,12 +44,7 @@ public class ListUpdatesCommand : Command<ListSettings>
 
         if (settings.JsonOutput)
         {
-            var json = JsonSerializer.Serialize(updates, ShellyCLIJsonContext.Default.ListAlpmPackageUpdateDto);
-            // Write directly to stdout stream to bypass Spectre.Console redirection
-            using var stdout = Console.OpenStandardOutput();
-            using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
-            writer.WriteLine(json);
-            writer.Flush();
+            MemPackFrame.WriteToStdout(updates);
             return 0;
         }
 
@@ -106,11 +102,7 @@ public class ListUpdatesCommand : Command<ListSettings>
 
         if (settings.JsonOutput)
         {
-            var json = JsonSerializer.Serialize(updates, ShellyCLIJsonContext.Default.ListAlpmPackageUpdateDto);
-            using var stdout = Console.OpenStandardOutput();
-            using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
-            writer.WriteLine(json);
-            writer.Flush();
+            MemPackFrame.WriteToStdout(updates);
             return 0;
         }
 

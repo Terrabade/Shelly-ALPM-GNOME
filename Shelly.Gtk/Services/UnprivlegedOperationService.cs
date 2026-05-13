@@ -397,6 +397,11 @@ public class UnprivilegedOperationService(ITrayDbus trayDbus, IPackageUpdateNoti
 
         try
         {
+            if (Shelly.Gtk.Helpers.MemPackFrame.TryDecode<List<AlpmPackageUpdateDto>>(result.Output, out var framed) && framed is not null)
+            {
+                return framed;
+            }
+
             var lines = result.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
             foreach (var line in lines)
             {

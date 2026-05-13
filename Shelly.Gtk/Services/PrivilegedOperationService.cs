@@ -42,6 +42,11 @@ public class PrivilegedOperationService : IPrivilegedOperationService
     {
         if (string.IsNullOrWhiteSpace(output)) return [];
 
+        if (Shelly.Gtk.Helpers.MemPackFrame.TryDecode<List<T>>(output, out var framed) && framed is not null)
+        {
+            return framed;
+        }
+
         foreach (var raw in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             var line = StripBom(raw.Trim());
@@ -111,7 +116,11 @@ public class PrivilegedOperationService : IPrivilegedOperationService
 
         try
         {
-            // The output may contain multiple lines, find the JSON line
+            if (Shelly.Gtk.Helpers.MemPackFrame.TryDecode<List<AlpmPackageDto>>(result.Output, out var framed) && framed is not null)
+            {
+                return framed;
+            }
+
             var lines = result.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
             foreach (var line in lines)
             {
@@ -124,7 +133,6 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                 }
             }
 
-            // If no JSON array found, try parsing the whole output
             var allPackages = System.Text.Json.JsonSerializer.Deserialize(StripBom(result.Output.Trim()),
                 ShellyGtkJsonContext.Default.ListAlpmPackageDto);
             return allPackages ?? [];
@@ -309,7 +317,11 @@ public class PrivilegedOperationService : IPrivilegedOperationService
 
         try
         {
-            // The output may contain multiple lines, find the JSON line
+            if (Shelly.Gtk.Helpers.MemPackFrame.TryDecode<List<AlpmPackageDto>>(result.Output, out var framed) && framed is not null)
+            {
+                return framed;
+            }
+
             var lines = result.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
             foreach (var line in lines)
             {
@@ -322,7 +334,6 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                 }
             }
 
-            // If no JSON array found, try parsing the whole output
             var allPackages = System.Text.Json.JsonSerializer.Deserialize(StripBom(result.Output.Trim()),
                 ShellyGtkJsonContext.Default.ListAlpmPackageDto);
             return allPackages ?? [];
