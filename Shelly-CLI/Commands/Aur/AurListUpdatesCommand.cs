@@ -2,6 +2,7 @@ using System.Text.Json;
 using PackageManager.Aur;
 using PackageManager.Aur.Models;
 using PackageManager.Utilities;
+using PackageManager.Wire;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -135,11 +136,7 @@ public class AurListUpdatesCommand : AsyncCommand<ListSettings>
             if (settings.JsonOutput)
             {
                 var sortedList = sortedUpdates.ToList();
-                var json = JsonSerializer.Serialize(sortedList, ShellyCLIJsonContext.Default.ListAurUpdateDto);
-                await using var stdout = Console.OpenStandardOutput();
-                await using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
-                await writer.WriteLineAsync(json);
-                await writer.FlushAsync();
+                MemPackFrame.WriteToStdout(sortedList);
                 return 0;
             }
 

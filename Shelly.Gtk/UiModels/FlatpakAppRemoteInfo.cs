@@ -1,6 +1,9 @@
+using MemoryPack;
+
 namespace Shelly.Gtk.UiModels;
 
-public class FlatpakRemoteRefInfo
+[MemoryPackable]
+public partial class FlatpakRemoteRefInfo
 {
     public ulong DownloadSize { get; set; }
     public ulong InstalledSize { get; set; }

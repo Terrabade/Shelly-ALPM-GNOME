@@ -1,6 +1,9 @@
+using MemoryPack;
+
 namespace Shelly.Gtk.UiModels;
 
-public class FlatpakModel
+[MemoryPackable]
+public partial class FlatpakModel
 {
     public string Id { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;

@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using PackageManager.Flatpak;
+using PackageManager.Wire;
 using Shelly_CLI.Utility;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -10,26 +11,23 @@ namespace Shelly_CLI.Commands.Flatpak;
 
 public class FlatpakListCommand : Command<DefaultSettings>
 {
-    public override int Execute([NotNull] CommandContext context,[NotNull] DefaultSettings settings)
+    public override int Execute([NotNull] CommandContext context, [NotNull] DefaultSettings settings)
     {
         if (Program.IsUiMode)
         {
             return HandleUiModeList(settings);
         }
+
         var manager = new FlatpakManager();
 
         var packages = manager.SearchInstalled();
-        
+
         if (settings.JsonOutput)
         {
-            var json = JsonSerializer.Serialize(packages, FlatpakDtoJsonContext.Default.ListFlatpakPackageDto);
-            using var stdout = Console.OpenStandardOutput();
-            using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
-            writer.WriteLine(json);
-            writer.Flush();
+            MemPackFrame.WriteToStdout(packages);
             return 0;
         }
-        
+
         var table = new Table();
         table.AddColumn("Name");
         table.AddColumn("Id");
@@ -48,7 +46,7 @@ public class FlatpakListCommand : Command<DefaultSettings>
                 pkg.Arch,
                 pkg.Version,
                 pkg.Summary.EscapeMarkup().Truncate(50),
-                pkg.remote
+                pkg.Remote
             );
         }
 
@@ -62,14 +60,10 @@ public class FlatpakListCommand : Command<DefaultSettings>
         var manager = new FlatpakManager();
 
         var packages = manager.SearchInstalled();
-        
+
         if (settings.JsonOutput)
         {
-            var json = JsonSerializer.Serialize(packages, FlatpakDtoJsonContext.Default.ListFlatpakPackageDto);
-            using var stdout = Console.OpenStandardOutput();
-            using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
-            writer.WriteLine(json);
-            writer.Flush();
+            MemPackFrame.WriteToStdout(packages);
             return 0;
         }
 

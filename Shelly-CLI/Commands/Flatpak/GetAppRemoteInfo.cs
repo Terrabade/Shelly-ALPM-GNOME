@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using PackageManager.Flatpak;
+using PackageManager.Wire;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -15,11 +16,7 @@ public class GetAppRemoteInfo : Command<FlatpakInstallSize>
 
         if (settings.Json)
         {
-            var json = JsonSerializer.Serialize(result, AppstreamJsonContext.Default.FlatpakRemoteRefInfo);
-            using var stdout = Console.OpenStandardOutput();
-            using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
-            writer.WriteLine(json);
-            writer.Flush();
+            MemPackFrame.WriteToStdout(result);
         }
         else
             Console.Write("Download Size:" + FormatSize(result.DownloadSize) +

@@ -6,6 +6,7 @@ using PackageManager.Aur.Models;
 using PackageManager.Flatpak;
 using Shelly_CLI.Commands.Aur;
 using Shelly_CLI.Commands.Standard;
+using Shelly_CLI.Commands.Standard.Models;
 using Shelly_CLI.Configuration;
 
 namespace Shelly_CLI;
@@ -22,10 +23,8 @@ namespace Shelly_CLI;
 [JsonSerializable(typeof(SyncPackageModel))]
 [JsonSerializable(typeof(SyncAurModel))]
 [JsonSerializable(typeof(SyncFlatpakModel))]
-[JsonSerializable(typeof(AurSearchPackageBuild.PackageBuild))]
-[JsonSerializable(typeof(List<AurSearchPackageBuild.PackageBuild>))]
-[JsonSerializable(typeof(ArchNews.RssModel))]
-[JsonSerializable(typeof(List<ArchNews.RssModel>))]
+[JsonSerializable(typeof(RssModel))]
+[JsonSerializable(typeof(List<RssModel>))]
 [JsonSerializable(typeof(List<AppImageDto>))]
 [JsonSerializable(typeof(AppImageDto))]
 [JsonSerializable(typeof(List<AppImageUpdateDto>))]

@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using PackageManager.Flatpak;
+using PackageManager.Wire;
 using Shelly_CLI.Utility;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -9,7 +10,7 @@ namespace Shelly_CLI.Commands.Flatpak;
 
 public class FlatpakListUpdatesCommand : Command<DefaultSettings>
 {
-    public override int Execute([NotNull] CommandContext context,[NotNull] DefaultSettings settings)
+    public override int Execute([NotNull] CommandContext context, [NotNull] DefaultSettings settings)
     {
         if (Program.IsUiMode)
         {
@@ -22,14 +23,10 @@ public class FlatpakListUpdatesCommand : Command<DefaultSettings>
 
         if (settings.JsonOutput)
         {
-            var json = JsonSerializer.Serialize(packages, FlatpakDtoJsonContext.Default.ListFlatpakPackageDto);
-            using var stdout = Console.OpenStandardOutput();
-            using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
-            writer.WriteLine(json);
-            writer.Flush();
+            MemPackFrame.WriteToStdout(packages);
             return 0;
         }
-        
+
         var table = new Table();
         table.AddColumn("Name");
         table.AddColumn("Id");
@@ -38,10 +35,10 @@ public class FlatpakListUpdatesCommand : Command<DefaultSettings>
 
         foreach (var pkg in packages.OrderBy(p => p.Id))
         {
-            var permissions = pkg.Permissions.Count > 0 
-                ? string.Join("\n", pkg.Permissions) 
+            var permissions = pkg.Permissions.Count > 0
+                ? string.Join("\n", pkg.Permissions)
                 : "[grey]No changes[/]";
-                
+
             table.AddRow(
                 pkg.Name,
                 pkg.Id,

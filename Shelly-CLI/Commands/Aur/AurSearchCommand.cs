@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using PackageManager.Aur;
+using PackageManager.Wire;
 using Shelly_CLI.Utility;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -40,11 +41,7 @@ public class AurSearchCommand : AsyncCommand<AurSearchSettings>
 
             if (settings.JsonOutput)
             {
-                var json = JsonSerializer.Serialize(results, ShellyCLIJsonContext.Default.ListAurPackageDto);
-                await using var stdout = System.Console.OpenStandardOutput();
-                await using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
-                await writer.WriteLineAsync(json);
-                await writer.FlushAsync();
+                MemPackFrame.WriteToStdout(results);
                 return 0;
             }
 
@@ -103,11 +100,7 @@ public class AurSearchCommand : AsyncCommand<AurSearchSettings>
 
             if (settings.JsonOutput)
             {
-                var json = JsonSerializer.Serialize(results, ShellyCLIJsonContext.Default.ListAurPackageDto);
-                await using var stdout = Console.OpenStandardOutput();
-                await using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
-                await writer.WriteLineAsync(json);
-                await writer.FlushAsync();
+                MemPackFrame.WriteToStdout(results);
                 return 0;
             }
 
@@ -116,13 +109,13 @@ public class AurSearchCommand : AsyncCommand<AurSearchSettings>
                 Console.WriteLine($"{pkg.Name} {pkg.Version} - {pkg.Description ?? ""}");
             }
 
-            Console.Error.WriteLine($"Total results: {results.Count}");
+            await Console.Error.WriteLineAsync($"Total results: {results.Count}");
 
             return 0;
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Search failed: {ex.Message}");
+            await Console.Error.WriteLineAsync($"Search failed: {ex.Message}");
             return 1;
         }
         finally

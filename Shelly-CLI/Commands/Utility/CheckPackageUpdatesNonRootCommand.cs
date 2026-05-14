@@ -4,6 +4,7 @@ using PackageManager.Aur;
 using PackageManager.Utilities;
 using PackageManager.Aur.Models;
 using PackageManager.Flatpak;
+using PackageManager.Wire;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -102,13 +103,7 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
                 syncModel.Flatpaks = flatpakPackageModels;
             }
 
-
-            var json = JsonSerializer.Serialize(syncModel, ShellyCLIJsonContext.Default.SyncModel);
-            // Write directly to stdout stream to bypass Spectre.Console redirection
-            await using var stdout = Console.OpenStandardOutput();
-            await using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
-            await writer.WriteLineAsync(json);
-            await writer.FlushAsync();
+            MemPackFrame.WriteToStdout(syncModel);
             if (settings.Count)
             {
                 AnsiConsole.MarkupLine(
@@ -186,14 +181,13 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
     private static async Task<int> HandleUiModeCheckUpdates(CheckPackageUpdatesNonRootSettings settings)
     {
         var alpmManager = new AlpmManager();
-        List<AlpmPackageUpdateDto> alpmPackages = [];
+        List<AlpmPackageUpdateDto> alpmPackages;
         var aurManager = new AurPackageManager();
         List<AurUpdateDto> aurPackages = [];
         var flatPakManager = new FlatpakManager();
         List<FlatpakPackageDto> flatpakPackages = [];
         var dbPath = XdgPaths.ShellyCache("db");
         Directory.CreateDirectory(dbPath);
-        Console.Error.WriteLine(dbPath);
 
         if (settings.JsonOutput)
         {
@@ -212,7 +206,7 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
             syncModel.Packages = syncPackageModels;
             if (settings.CheckAur)
             {
-                aurManager.Initialize(false, true, false, tempPath: dbPath);
+                await aurManager.Initialize(false, true, false, tempPath: dbPath);
                 aurPackages = await aurManager.GetPackagesNeedingUpdate();
                 aurManager.Dispose();
                 List<SyncAurModel> aurPackageModels = [];
@@ -230,11 +224,7 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
                 syncModel.Flatpaks = flatpakPackageModels;
             }
 
-            var json = JsonSerializer.Serialize(syncModel, ShellyCLIJsonContext.Default.SyncModel);
-            await using var stdout = Console.OpenStandardOutput();
-            await using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
-            await writer.WriteLineAsync(json);
-            await writer.FlushAsync();
+            MemPackFrame.WriteToStdout(syncModel);
             return 0;
         }
 

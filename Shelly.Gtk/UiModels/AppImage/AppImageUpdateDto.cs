@@ -1,6 +1,9 @@
+using MemoryPack;
+
 namespace Shelly.Gtk.UiModels.AppImage;
 
-public record AppImageUpdateDto
+[MemoryPackable]
+public partial record AppImageUpdateDto
 {
     public string Name { get; set; } = string.Empty;
     public string Version { get; set; } = string.Empty;

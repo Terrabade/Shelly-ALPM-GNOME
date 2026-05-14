@@ -1,3 +1,6 @@
+using MemoryPack;
+
 namespace PackageManager.Alpm.Pacfile;
 
-public record PacfileRecord(string Name,string Text);
+[MemoryPackable]
+public partial record PacfileRecord(string Name,string Text);

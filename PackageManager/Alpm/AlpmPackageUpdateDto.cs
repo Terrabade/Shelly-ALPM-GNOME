@@ -1,8 +1,10 @@
 using System.Collections.Generic;
+using MemoryPack;
 
 namespace PackageManager.Alpm;
 
-public record AlpmPackageUpdateDto
+[MemoryPackable]
+public partial record AlpmPackageUpdateDto
 {
     public string Name { get; init; } = string.Empty;
     public string CurrentVersion { get; init; } = string.Empty;

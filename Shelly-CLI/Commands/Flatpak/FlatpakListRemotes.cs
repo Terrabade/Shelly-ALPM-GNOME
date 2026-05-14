@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using PackageManager.Flatpak;
+using PackageManager.Wire;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -13,14 +14,10 @@ public class FlatpakListRemotes : Command<DefaultSettings>
         var manager = new FlatpakManager();
 
         var remotes = manager.ListRemotesWithDetails();
-        
+
         if (settings.JsonOutput)
         {
-            var json = JsonSerializer.Serialize(remotes, ShellyCLIJsonContext.Default.ListFlatpakRemoteDto);
-            using var stdout = Console.OpenStandardOutput();
-            using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
-            writer.WriteLine(json);
-            writer.Flush();
+            MemPackFrame.WriteToStdout(remotes);
             return 0;
         }
 

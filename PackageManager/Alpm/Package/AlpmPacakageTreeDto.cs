@@ -1,8 +1,10 @@
 using System.Collections.Generic;
+using MemoryPack;
 
 namespace PackageManager.Alpm.Package;
 
-public record AlpmPackageTreeDto(string Name)
+[MemoryPackable]
+public partial record AlpmPackageTreeDto(string Name)
 {
     public List<AlpmPackageTreeDto> Files { get; } = [];
 }

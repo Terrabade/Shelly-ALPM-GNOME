@@ -1,6 +1,9 @@
+using MemoryPack;
+
 namespace PackageManager.Flatpak;
 
-public class FlatpakInstanceDto
+[MemoryPackable]
+public partial class FlatpakInstanceDto
 {
     public string Name { get; set; } = string.Empty;
     public string AppId { get; set; } = string.Empty;
