@@ -5,7 +5,7 @@ namespace Shelly.Gtk.Windows.Dialog;
 public static class CacheCleanDialog
 {
     private static readonly string[] PackageSuffixes =
-        [".pkg.tar.zst", ".pkg.tar.xz", ".pkg.tar.gz", ".pkg.tar.bz2", ".pkg.tar"];
+        [".pkg.tar.zst", ".pkg.tar.gz", ".pkg.tar.bz2", ".pkg.tar"];
 
     public static Box BuildContent(
         string cacheDir,

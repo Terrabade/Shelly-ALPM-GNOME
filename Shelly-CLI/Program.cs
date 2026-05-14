@@ -104,7 +104,7 @@ public class Program
                 .WithExample("list-installed", "--filter", "linux");
 
             config.AddCommand<ListLocalInstalledCommand>("list-local-installed")
-                .WithDescription("List all locally installed packages (.xz, .gz, .zst)")
+                .WithDescription("List all locally installed packages (.gz, .zst)")
                 .WithExample("list-local-installed")
                 .WithExample("list-local-installed", "--sort", "name")
                 .WithExample("list-local-installed", "--sort", "size")
@@ -149,17 +149,13 @@ public class Program
                 .WithExample("install", "firefox", "-d");
 
             config.AddCommand<InstallLocalPackageCommand>("install-local")
-                .WithDescription("Install a local package file (.xz, .gz, .zst)")
+                .WithDescription("Install a local package file (.gz, .zst)")
                 .WithExample("install-local", "--location", "/path/to/package.pkg.tar.zst")
                 .WithExample("install-local", "-l", "/path/to/package.pkg.tar.zst")
-                .WithExample("install-local", "--location", "/path/to/package.pkg.tar.xz")
-                .WithExample("install-local", "-l", "/path/to/package.pkg.tar.xz")
                 .WithExample("install-local", "--location", "/path/to/package.pkg.tar.gz")
                 .WithExample("install-local", "-l", "/path/to/package.pkg.tar.gz")
                 .WithExample("install-local", "--location", "/path/to/package.pkg.tar.zst", "--no-confirm")
                 .WithExample("install-local", "-l", "/path/to/package.pkg.tar.zst", "-n")
-                .WithExample("install-local", "--location", "/path/to/package.pkg.tar.xz", "--no-confirm")
-                .WithExample("install-local", "-l", "/path/to/package.pkg.tar.xz", "-n")
                 .WithExample("install-local", "--location", "/path/to/package.pkg.tar.gz", "--no-confirm")
                 .WithExample("install-local", "-l", "/path/to/package.pkg.tar.gz", "-n");
 

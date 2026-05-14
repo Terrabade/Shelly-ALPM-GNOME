@@ -3,7 +3,6 @@ using System.Formats.Tar;
 using System.IO.Compression;
 using System.Text;
 using System.Text.RegularExpressions;
-using SharpCompress.Compressors.Xz;
 using Shelly_CLI.Commands.Standard;
 using Spectre.Console;
 using ZstdSharp;
@@ -36,7 +35,6 @@ public static partial class LocalManager
         await using Stream decompressedStream = extension switch
         {
             ".gz" => new GZipStream(fileStream, CompressionMode.Decompress),
-            ".xz" => new XZStream(fileStream),
             ".zst" => new ZstdStream(fileStream, ZstdStreamMode.Decompress),
             _ => throw new NotSupportedException($"Unsupported compression: {extension}")
         };
@@ -173,20 +171,6 @@ public static partial class LocalManager
 
                 break;
             }
-            case ".xz":
-            {
-                await using var xzStream = new XZStream(fileStream);
-                await using var xzTarReader = new TarReader(xzStream);
-                while (await xzTarReader.GetNextEntryAsync() is { } entry)
-                {
-                    if (entry.Name.Contains("PKGINFO", StringComparison.InvariantCultureIgnoreCase))
-                    {
-                        return true;
-                    }
-                }
-
-                break;
-            }
             case ".gz":
             {
                 await using var gzStream = new GZipStream(fileStream, CompressionMode.Decompress);
@@ -212,7 +196,6 @@ public static partial class LocalManager
         await using Stream decompressedStream = Path.GetExtension(filePath) switch
         {
             ".gz" => new GZipStream(fileStream, CompressionMode.Decompress),
-            ".xz" => new XZStream(fileStream),
             ".zst" => new ZstdStream(fileStream, ZstdStreamMode.Decompress),
             _ => throw new NotSupportedException("Unsupported file extension")
         };

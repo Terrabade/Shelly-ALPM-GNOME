@@ -897,8 +897,7 @@ public sealed class PackageInstall(
             dialog.SetTitle("Install Local Package");
 
             var filter = FileFilter.New();
-            filter.SetName("Local package files (\"*.xz\", \"*.gz\", \"*.zst\")");
-            filter.AddPattern("*.xz");
+            filter.SetName("Local package files (\"*.gz\", \"*.zst\")");
             filter.AddPattern("*.gz");
             filter.AddPattern("*.zst");
 

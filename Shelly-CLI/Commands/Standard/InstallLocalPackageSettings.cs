@@ -6,7 +6,7 @@ namespace Shelly_CLI.Commands.Standard;
 public class InstallLocalPackageSettings : CommandSettings
 {
     [CommandOption("-l | --location")]
-    [Description("Location of the .pkg.tar.gz(xz) to be installed")]
+    [Description("Location of the .pkg.tar.gz(zst) to be installed")]
     public required string PackageLocation { get; init; }
 
     [CommandOption("-n|--no-confirm")]
