@@ -1009,6 +1009,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         List<(string, string)> repoPkgs = [];
         List<string> chosenPkgs = [];
 
+
         foreach (var name in packageNames)
         {
             if (name.Contains("/"))
@@ -1042,6 +1043,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                         break;
                     }
                 }
+
                 currentPtr = node.Next;
             }
 
@@ -1054,6 +1056,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
 
             pkgPtrs.Add(pkgPtr);
         }
+
         foreach (var packageName in chosenPkgs)
         {
             // Find the package in sync databases
@@ -1176,6 +1179,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             }
         }
 
+        List<string> optDepNames = [];
         if (optDependList.Count > 0)
         {
             var args = new AlpmQuestionEventArgs(AlpmQuestionType.SelectOptionalDeps,
@@ -1183,10 +1187,12 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                 optDependList);
             Question?.Invoke(this, args);
             args.WaitForResponse();
-            var selectedOptDeps = optDependList
+            optDepNames = optDependList
                 .Where((dep, index) => (args.Response & (1 << index)) != 0)
+                .Select(dep => dep.Split(':', 2)[0].Trim())
+                .Where(name => !string.IsNullOrEmpty(name))
                 .ToList();
-            var result = PackageListBuilder.Build(_handle, selectedOptDeps);
+            var result = PackageListBuilder.Build(_handle, optDepNames);
             pkgPtrs.AddRange(result);
         }
 
@@ -1245,6 +1251,21 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                 HandleErrorMessage(dataPtr, ErrorNumber(_handle));
                 return Task.FromResult(false);
             }
+
+            var localDb = AlpmReference.GetLocalDb(_handle);
+            foreach (var name in optDepNames)
+            {
+                Console.Error.WriteLine($"[DEBUG] Installing optional dependency: {name}");
+                var localPkg = AlpmReference.DbGetPkg(localDb, name);
+                if (localPkg == IntPtr.Zero) continue; // not actually installed (skipped / failed)
+                if (PkgSetReason(localPkg, AlpmPkgReason.Depend) != 0)
+                {
+                    var err = ErrorNumber(_handle);
+                    Console.Error.WriteLine(
+                        $"[ALPM_WARN] Failed to set reason for {name}: {GetErrorMessage(err)}");
+                    // don't abort — install already succeeded
+                }
+            }
         }
         finally
         {
@@ -1256,7 +1277,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
     }
 
     public Task<bool> RemovePackages(List<string> packageNames,
-        AlpmTransFlag flags = AlpmTransFlag.None)
+        AlpmTransFlag flags = AlpmTransFlag.None, bool removeOptionalDeps = false)
     {
         var heldPackagesBeingRemove = packageNames.Intersect(_config.HoldPkg).ToList();
         if (heldPackagesBeingRemove.Count > 0)
@@ -1355,6 +1376,35 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
 
         if (pkgPtrs.Count == 0) return Task.FromResult(true);
 
+        var optDepCandidates = new HashSet<string>();
+        var toAlsoRemove = new List<IntPtr>();
+        if (removeOptionalDeps)
+        {
+            foreach (var name in from pkgPtr in pkgPtrs
+                     select new AlpmPackage(pkgPtr)
+                     into pkg
+                     from raw in pkg.OptDepends
+                     select raw.Split(':', 2)[0].Trim()
+                     into name
+                     where !string.IsNullOrEmpty(name)
+                     select name)
+            {
+                optDepCandidates.Add(name);
+            }
+
+            var localDb = GetLocalDb(_handle);
+            var removedSet = new HashSet<string>(packageNames, StringComparer.Ordinal);
+
+            foreach (var name in optDepCandidates)
+            {
+                var lp = AlpmReference.DbGetPkg(localDb, name);
+                if (lp == IntPtr.Zero) continue; // not installed
+                if (GetPkgReason(lp) != AlpmPkgReason.Depend) continue; // user explicitly wanted it
+                if (PackageChecker.IsStillNeededByOther(lp, removedSet)) continue; // someone else still wants it
+                toAlsoRemove.Add(lp);
+            }
+        }
+
         // If we are doing a DbOnly install, we should also skip dependency checks, 
         // extraction, and signature/checksum validation to avoid requirement for the physical package file.
         if (flags.HasFlag(AlpmTransFlag.DbOnly))
@@ -1383,6 +1433,20 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                         new AlpmErrorEventArgs(
                             $"Failed to add package removal to transaction: {GetErrorMessage(err)}"));
                     return Task.FromResult(false); // or just return Task.CompletedTask if keeping Task
+                }
+            }
+
+            foreach (var pkgPtr in toAlsoRemove)
+            {
+                if (RemovePkg(_handle, pkgPtr) != 0)
+                {
+                    {
+                        var err = ErrorNumber(_handle);
+                        ErrorEvent?.Invoke(this,
+                            new AlpmErrorEventArgs(
+                                $"Failed to add package removal to transaction: {GetErrorMessage(err)}"));
+                        return Task.FromResult(false); // or just return Task.CompletedTask if keeping Task
+                    }
                 }
             }
 
@@ -2144,7 +2208,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                     var fileLocation = pacsaveEvent.File != IntPtr.Zero
                         ? Marshal.PtrToStringUTF8(pacsaveEvent.File)
                         : null;
-                    
+
                     string? pkgNameOld = null;
                     if (pacsaveEvent.OldPkg != IntPtr.Zero)
                     {
@@ -2333,6 +2397,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                 }
             }
         }
+
         return corruptedPackages;
     }
 

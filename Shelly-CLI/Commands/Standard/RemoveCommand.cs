@@ -60,8 +60,8 @@ public class RemoveCommand : AsyncCommand<RemovePackageSettings>
             || Console.IsOutputRedirected;
 
         var result = useSinglePane
-            ? await StandardSinglePaneOutput.Output(manager, x => x.RemovePackages(packageList, flags), settings.NoConfirm)
-            : await SplitOutput.Output(manager, x => x.RemovePackages(packageList, flags), settings.NoConfirm);
+            ? await StandardSinglePaneOutput.Output(manager, x => x.RemovePackages(packageList, flags,settings.OptDeps), settings.NoConfirm)
+            : await SplitOutput.Output(manager, x => x.RemovePackages(packageList, flags,settings.OptDeps), settings.NoConfirm);
 
         if (settings.RemoveConfig)
         {

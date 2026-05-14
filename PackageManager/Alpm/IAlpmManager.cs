@@ -34,7 +34,7 @@ public interface IAlpmManager
         AlpmTransFlag flags = AlpmTransFlag.None);
 
     Task<bool> RemovePackages(List<string> packageNames,
-        AlpmTransFlag flags = AlpmTransFlag.None);
+        AlpmTransFlag flags = AlpmTransFlag.None, bool removeOptionalDeps = false);
 
     Task<bool> UpdatePackages(List<string> packageNames,
         AlpmTransFlag flags = AlpmTransFlag.None);

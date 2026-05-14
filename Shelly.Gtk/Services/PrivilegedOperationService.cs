@@ -701,10 +701,10 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                                     if ((args.Response & (1 << i)) != 0)
                                         selected.Add(optDepsOptions[i]);
                                 }
-
-                                await SafeWriteAsync(string.Join(" ", selected));
+                                var response = string.Join(" ", selected);
+                               
                             }
-
+                            await SafeWriteAsync(args.Response.ToString());
                             awaitingOptDepsSelection = false;
                             optDepsQuestion = null;
                             optDepsOptions.Clear();
