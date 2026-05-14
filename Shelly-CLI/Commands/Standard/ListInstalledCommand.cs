@@ -55,7 +55,12 @@ public class ListInstalledCommand : Command<ListSettings>
         if (settings.JsonOutput)
         {
             var sortedList = sortedPackages.ToList();
-            MemPackFrame.WriteToStdout(sortedList);
+            var json = JsonSerializer.Serialize(sortedList, ShellyCLIJsonContext.Default.ListAlpmPackageDto);
+            // Write directly to stdout stream to bypass Spectre.Console redirection
+            using var stdout = Console.OpenStandardOutput();
+            using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
+            writer.WriteLine(json);
+            writer.Flush();
             return 0;
         }
 

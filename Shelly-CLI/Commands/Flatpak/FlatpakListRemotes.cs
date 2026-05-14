@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using PackageManager.Flatpak;
 using PackageManager.Wire;
@@ -9,7 +8,7 @@ namespace Shelly_CLI.Commands.Flatpak;
 
 public class FlatpakListRemotes : Command<DefaultSettings>
 {
-    public override int Execute([NotNull] CommandContext context, [NotNull] DefaultSettings settings)
+    public override int Execute(CommandContext context, DefaultSettings settings)
     {
         var manager = new FlatpakManager();
 
@@ -17,7 +16,19 @@ public class FlatpakListRemotes : Command<DefaultSettings>
 
         if (settings.JsonOutput)
         {
-            MemPackFrame.WriteToStdout(remotes);
+            if (Program.IsUiMode)
+            {
+                MemPackFrame.WriteToStdout(remotes);
+            }
+            else
+            {
+                var json = JsonSerializer.Serialize(remotes, ShellyCLIJsonContext.Default.ListFlatpakRemoteDto);
+                using var stdout = Console.OpenStandardOutput();
+                using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
+                writer.WriteLine(json);
+                writer.Flush();
+            }
+
             return 0;
         }
 
@@ -27,7 +38,6 @@ public class FlatpakListRemotes : Command<DefaultSettings>
             var scopeColor = remote.Scope == "system" ? "green" : "yellow";
             AnsiConsole.MarkupLine($"{remote.Name.EscapeMarkup()} [{scopeColor}]({remote.Scope})[/]");
         }
-
 
         return 0;
     }

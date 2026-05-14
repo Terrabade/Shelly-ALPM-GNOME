@@ -389,6 +389,7 @@ public class UnprivilegedOperationService(
         CancellationToken ct, params string[] args)
     {
         var arguments = string.Join(" ", args);
+        arguments += " --ui-mode";
         var fullCommand = $"{_cliPath} {arguments}";
 
         Console.WriteLine($"Executing unprivileged command: {fullCommand}");

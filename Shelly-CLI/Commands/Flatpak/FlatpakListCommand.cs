@@ -1,9 +1,6 @@
-using System;
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using PackageManager.Flatpak;
 using PackageManager.Wire;
-using Shelly_CLI.Utility;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -11,7 +8,7 @@ namespace Shelly_CLI.Commands.Flatpak;
 
 public class FlatpakListCommand : Command<DefaultSettings>
 {
-    public override int Execute([NotNull] CommandContext context, [NotNull] DefaultSettings settings)
+    public override int Execute(CommandContext context, DefaultSettings settings)
     {
         if (Program.IsUiMode)
         {
@@ -24,7 +21,11 @@ public class FlatpakListCommand : Command<DefaultSettings>
 
         if (settings.JsonOutput)
         {
-            MemPackFrame.WriteToStdout(packages);
+            var json = JsonSerializer.Serialize(packages, FlatpakDtoJsonContext.Default.ListFlatpakPackageDto);
+            using var stdout = Console.OpenStandardOutput();
+            using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
+            writer.WriteLine(json);
+            writer.Flush();
             return 0;
         }
 

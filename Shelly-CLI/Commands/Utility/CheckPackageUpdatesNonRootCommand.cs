@@ -23,14 +23,13 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
         List<AlpmPackageUpdateDto> alpmPackages = [];
         var aurManager = new AurPackageManager();
         List<AurUpdateDto> aurPackages = [];
-        var flatPakManager = new FlatpakManager();
         List<FlatpakPackageDto> flatpakPackages = [];
         var dbPath = XdgPaths.ShellyCache("db");
         Directory.CreateDirectory(dbPath);
         AnsiConsole.WriteLine(dbPath);
-        if (settings.Count && !settings.JsonOutput)
+        if (settings is { Count: true, JsonOutput: false })
         {
-            alpmManager.Initialize(false, useTempPath: true, tempPath: dbPath);
+            alpmManager.Initialize(useTempPath: true, tempPath: dbPath);
             alpmManager.Sync();
             alpmPackages = alpmManager.GetPackagesNeedingUpdate();
             alpmManager.Dispose();
@@ -45,7 +44,7 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
             syncModel.Packages = syncPackageModels;
             if (settings.CheckAur)
             {
-                await aurManager.Initialize(false, true, false, tempPath: dbPath);
+                await aurManager.Initialize(false, true, tempPath: dbPath);
                 aurPackages = await aurManager.GetPackagesNeedingUpdate();
                 aurManager.Dispose();
                 List<SyncAurModel> aurPackageModels = [];
@@ -70,7 +69,7 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
 
         if (settings.JsonOutput)
         {
-            alpmManager.Initialize(false, useTempPath: true, tempPath: dbPath);
+            alpmManager.Initialize(useTempPath: true, tempPath: dbPath);
             alpmManager.Sync();
             alpmPackages = alpmManager.GetPackagesNeedingUpdate();
             alpmManager.Dispose();
@@ -85,7 +84,7 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
             syncModel.Packages = syncPackageModels;
             if (settings.CheckAur)
             {
-                await aurManager.Initialize(false, true, false, tempPath: dbPath);
+                await aurManager.Initialize(false, true, tempPath: dbPath);
                 aurPackages = await aurManager.GetPackagesNeedingUpdate();
                 aurManager.Dispose();
                 List<SyncAurModel> aurPackageModels = [];
@@ -103,19 +102,25 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
                 syncModel.Flatpaks = flatpakPackageModels;
             }
 
-            MemPackFrame.WriteToStdout(syncModel);
+            var json = JsonSerializer.Serialize(syncModel, ShellyCLIJsonContext.Default.SyncModel);
+            // Write directly to stdout stream to bypass Spectre.Console redirection
+            await using var stdout = Console.OpenStandardOutput();
+            await using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
+            await writer.WriteLineAsync(json);
+            await writer.FlushAsync();
             if (settings.Count)
             {
                 AnsiConsole.MarkupLine(
                     $"[green]Updates available count {syncModel.Packages.Count + syncModel.Aur.Count + syncModel.Flatpaks.Count}[/]s");
             }
+
             return 0;
         }
 
         AnsiConsole.Status().Spinner(Spinner.Known.BouncingBall).Start("Initializing and syncing ALPM updates",
-            ctx =>
+            _ =>
             {
-                alpmManager.Initialize(false, useTempPath: true, tempPath: dbPath);
+                alpmManager.Initialize(useTempPath: true, tempPath: dbPath);
                 alpmManager.Sync();
                 alpmPackages = alpmManager.GetPackagesNeedingUpdate();
                 alpmManager.Dispose();
@@ -124,9 +129,9 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
         if (settings.CheckAur)
         {
             AnsiConsole.Status().Spinner(Spinner.Known.BouncingBall).Start("Initializing and syncing AUR packages",
-                async ctx =>
+                async _ =>
                 {
-                    aurManager.Initialize(false, true, false, tempPath: dbPath);
+                    await aurManager.Initialize(false, true, tempPath: dbPath);
                     aurPackages = await aurManager.GetPackagesNeedingUpdate();
                     aurManager.Dispose();
                 });
@@ -137,7 +142,7 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
         {
             AnsiConsole.Status().Spinner(Spinner.Known.BouncingBall).Start(
                 "Initializing and syncing Flatpak packages",
-                ctx => { flatpakPackages = FlatpakManager.GetPackagesWithUpdates(); });
+                _ => { flatpakPackages = FlatpakManager.GetPackagesWithUpdates(); });
             AnsiConsole.MarkupLine("[green]Finished checking Flatpak[/]");
         }
 
@@ -184,14 +189,13 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
         List<AlpmPackageUpdateDto> alpmPackages;
         var aurManager = new AurPackageManager();
         List<AurUpdateDto> aurPackages = [];
-        var flatPakManager = new FlatpakManager();
         List<FlatpakPackageDto> flatpakPackages = [];
         var dbPath = XdgPaths.ShellyCache("db");
         Directory.CreateDirectory(dbPath);
 
         if (settings.JsonOutput)
         {
-            alpmManager.Initialize(false, useTempPath: true, tempPath: dbPath);
+            alpmManager.Initialize(useTempPath: true, tempPath: dbPath);
             alpmManager.Sync();
             alpmPackages = alpmManager.GetPackagesNeedingUpdate();
             alpmManager.Dispose();
@@ -206,7 +210,7 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
             syncModel.Packages = syncPackageModels;
             if (settings.CheckAur)
             {
-                await aurManager.Initialize(false, true, false, tempPath: dbPath);
+                await aurManager.Initialize(false, true, tempPath: dbPath);
                 aurPackages = await aurManager.GetPackagesNeedingUpdate();
                 aurManager.Dispose();
                 List<SyncAurModel> aurPackageModels = [];
@@ -228,27 +232,27 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
             return 0;
         }
 
-        Console.Error.WriteLine("Initializing and syncing ALPM updates");
-        alpmManager.Initialize(false, useTempPath: true, tempPath: dbPath);
+        await Console.Error.WriteLineAsync("Initializing and syncing ALPM updates");
+        alpmManager.Initialize(useTempPath: true, tempPath: dbPath);
         alpmManager.Sync();
         alpmPackages = alpmManager.GetPackagesNeedingUpdate();
         alpmManager.Dispose();
-        Console.Error.WriteLine("Finished checking Standard");
+        await Console.Error.WriteLineAsync("Finished checking Standard");
 
         if (settings.CheckAur)
         {
-            Console.Error.WriteLine("Initializing AUR packages");
-            await aurManager.Initialize(false, true, false, tempPath: dbPath);
+            await Console.Error.WriteLineAsync("Initializing AUR packages");
+            await aurManager.Initialize(false, true, tempPath: dbPath);
             aurPackages = await aurManager.GetPackagesNeedingUpdate();
             aurManager.Dispose();
-            Console.Error.WriteLine("Finished checking AUR");
+            await Console.Error.WriteLineAsync("Finished checking AUR");
         }
 
         if (settings.CheckFlatpak)
         {
-            Console.Error.WriteLine("Initializing and syncing Flatpak packages");
+            await Console.Error.WriteLineAsync("Initializing and syncing Flatpak packages");
             flatpakPackages = FlatpakManager.GetPackagesWithUpdates();
-            Console.Error.WriteLine("Finished checking Flatpak");
+            await Console.Error.WriteLineAsync("Finished checking Flatpak");
         }
 
         foreach (var alpm in alpmPackages)

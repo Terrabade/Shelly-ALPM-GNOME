@@ -13,7 +13,7 @@ namespace Shelly_CLI.Commands.Standard;
 
 public class ListUpdatesCommand : Command<ListSettings>
 {
-    public override int Execute([NotNull] CommandContext context, [NotNull] ListSettings settings)
+    public override int Execute(CommandContext context, ListSettings settings)
     {
         if (Program.IsUiMode)
         {
@@ -36,7 +36,8 @@ public class ListUpdatesCommand : Command<ListSettings>
         }
         else
         {
-            manager.Initialize(false, int.Parse(ConfigManager.GetConfigValue("ParallelDownloadCount")!), true, dbPath, showHiddenPackages: settings.ShowHidden);
+            manager.Initialize(false, int.Parse(ConfigManager.GetConfigValue("ParallelDownloadCount")!), true, dbPath,
+                showHiddenPackages: settings.ShowHidden);
             manager.Sync();
         }
 
@@ -44,7 +45,12 @@ public class ListUpdatesCommand : Command<ListSettings>
 
         if (settings.JsonOutput)
         {
-            MemPackFrame.WriteToStdout(updates);
+            var json = JsonSerializer.Serialize(updates, ShellyCLIJsonContext.Default.ListAlpmPackageUpdateDto);
+            // Write directly to stdout stream to bypass Spectre.Console redirection
+            using var stdout = Console.OpenStandardOutput();
+            using var writer = new System.IO.StreamWriter(stdout, System.Text.Encoding.UTF8);
+            writer.WriteLine(json);
+            writer.Flush();
             return 0;
         }
 
@@ -96,7 +102,8 @@ public class ListUpdatesCommand : Command<ListSettings>
         using var manager = new AlpmManager();
         var dbPath = XdgPaths.ShellyCache("db");
         XdgPaths.EnsureDirectory(dbPath);
-        manager.Initialize(false, int.Parse(ConfigManager.GetConfigValue("ParallelDownloadCount")!),true, dbPath, showHiddenPackages: settings.ShowHidden);
+        manager.Initialize(false, int.Parse(ConfigManager.GetConfigValue("ParallelDownloadCount")!), true, dbPath,
+            showHiddenPackages: settings.ShowHidden);
         manager.Sync();
         var updates = manager.GetPackagesNeedingUpdate();
 
