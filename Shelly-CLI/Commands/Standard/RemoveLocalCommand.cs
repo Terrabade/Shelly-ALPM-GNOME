@@ -53,8 +53,6 @@ public class RemoveLocalCommand : AsyncCommand<PackageSettings>
             return 1;
         }
 
-        RootElevator.EnsureRootExectuion();
-
         await Console.Error.WriteLineAsync($"Removing packages: {string.Join(", ", packageList)}");
 
         var result = await LocalManager.RemoveBinaryPackages(packageList, uiMode: true);
