@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
-using MemoryPack;
 using PackageManager.Aur;
 using PackageManager.Wire;
 using Shelly_CLI.Commands.Aur.Models;
@@ -11,8 +10,7 @@ namespace Shelly_CLI.Commands.Aur;
 
 public class AurSearchPackageBuild : AsyncCommand<AurPackageSettings>
 {
-    public override async Task<int> ExecuteAsync([NotNull] CommandContext context,
-        [NotNull] AurPackageSettings settings)
+    public override async Task<int> ExecuteAsync(CommandContext context, AurPackageSettings settings)
     {
         if (Program.IsUiMode)
         {

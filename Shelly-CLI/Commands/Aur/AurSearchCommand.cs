@@ -2,7 +2,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using PackageManager.Aur;
 using PackageManager.Wire;
-using Shelly_CLI.Utility;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -10,7 +9,7 @@ namespace Shelly_CLI.Commands.Aur;
 
 public class AurSearchCommand : AsyncCommand<AurSearchSettings>
 {
-    public override async Task<int> ExecuteAsync([NotNull] CommandContext context, [NotNull] AurSearchSettings settings)
+    public override async Task<int> ExecuteAsync(CommandContext context, AurSearchSettings settings)
     {
         var query = string.Join(" ", settings.Query);
         if (Program.IsUiMode)
@@ -23,7 +22,7 @@ public class AurSearchCommand : AsyncCommand<AurSearchSettings>
             AnsiConsole.MarkupLine("[red]Query cannot be empty.[/]");
             return 1;
         }
-        
+
         if (query.Length < 2)
         {
             AnsiConsole.MarkupLine("[red]Error: Query must be at least 2 characters long[/]");
@@ -41,7 +40,11 @@ public class AurSearchCommand : AsyncCommand<AurSearchSettings>
 
             if (settings.JsonOutput)
             {
-                MemPackFrame.WriteToStdout(results);
+                var json = JsonSerializer.Serialize(results, ShellyCLIJsonContext.Default.ListAurPackageDto);
+                await using var stdout = Console.OpenStandardOutput();
+                await using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
+                await writer.WriteLineAsync(json);
+                await writer.FlushAsync();
                 return 0;
             }
 
@@ -80,13 +83,13 @@ public class AurSearchCommand : AsyncCommand<AurSearchSettings>
         var query = string.Join(" ", settings.Query);
         if (string.IsNullOrWhiteSpace(query))
         {
-            Console.Error.WriteLine("Error: Query cannot be empty.");
+            await Console.Error.WriteLineAsync("Error: Query cannot be empty.");
             return 1;
         }
 
         if (query.Length < 2)
         {
-            Console.Error.WriteLine("Error: Query must be at least 2 characters long");
+            await Console.Error.WriteLineAsync("Error: Query must be at least 2 characters long");
             return 1;
         }
 

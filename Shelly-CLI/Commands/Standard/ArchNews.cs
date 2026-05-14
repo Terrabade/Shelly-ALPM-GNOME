@@ -1,10 +1,7 @@
-using System.Collections.ObjectModel;
-using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using MemoryPack;
-using PackageManager.Alpm;
 using PackageManager.Utilities;
 using Shelly_CLI.Commands.Standard.Models;
 using Spectre.Console;
@@ -14,17 +11,18 @@ namespace Shelly_CLI.Commands.Standard;
 
 public class ArchNews : AsyncCommand<ArchNewsSettings>
 {
-    private static readonly string FeedFolder = XdgPaths.ShellyCache("archNewsFeed");
+    private const string ArchlinuxFeed = "https://archlinux.org/feeds/news/";
 
+    private static readonly string FeedFolder = XdgPaths.ShellyCache("archNewsFeed");
     private static readonly string FeedPath = Path.Combine(FeedFolder, "Feed.json");
 
-    public override async Task<int> ExecuteAsync([NotNull] CommandContext context, [NotNull] ArchNewsSettings settings)
+    public override async Task<int> ExecuteAsync(CommandContext context, ArchNewsSettings settings)
     {
         if (settings.All)
         {
             try
             {
-                var feed = await GetRssFeedAsync("https://archlinux.org/feeds/news/");
+                var feed = await GetRssFeedAsync(ArchlinuxFeed);
                 if (settings.Json)
                 {
                     Console.Error.WriteLine(feed.Count);
@@ -51,10 +49,9 @@ public class ArchNews : AsyncCommand<ArchNewsSettings>
         else
         {
             var cachedFeed = LoadCachedFeed();
-            var feed = await GetRssFeedAsync("https://archlinux.org/feeds/news/");
+            var feed = await GetRssFeedAsync(ArchlinuxFeed);
 
             var newFeed = feed.Except(cachedFeed).ToList();
-
 
             if (settings.Json)
             {
@@ -117,11 +114,21 @@ public class ArchNews : AsyncCommand<ArchNewsSettings>
         }).Reverse().ToList();
     }
 
-
     private static async Task OutputFeed(List<RssModel> feed)
     {
-        await using var stdout = Console.OpenStandardOutput();
-        await MemoryPackSerializer.SerializeAsync(stdout, feed);
-        await stdout.FlushAsync();
+        if (Program.IsUiMode)
+        {
+            await using var stdout = Console.OpenStandardOutput();
+            await MemoryPackSerializer.SerializeAsync(stdout, feed);
+            await stdout.FlushAsync();
+        }
+        else
+        {
+            var json = JsonSerializer.Serialize(feed, ShellyCLIJsonContext.Default.ListRssModel);
+            await using var stdout = Console.OpenStandardOutput();
+            await using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
+            await writer.WriteLineAsync(json);
+            await writer.FlushAsync();
+        }
     }
 }
