@@ -739,9 +739,25 @@ public sealed class AurPackageManager(string? configPath = null)
 
         return optDepends
             .Where((_, i) => (args.Response & (1L << i)) != 0)
-            .Select(d => d.Split(':', 2)[0].Trim())
+            .Select(StripDepDecorations)
             .Where(n => !string.IsNullOrEmpty(n))
             .ToList();
+    }
+
+    private static readonly char[] _depVersionOps = ['>', '<', '='];
+
+    /// <summary>
+    /// Strips a pacman-style optdepends token down to its bare package name. Accepts
+    /// inputs of the form <c>name[op version][: description]</c> where <c>op</c> is
+    /// one of <c>&gt;=</c>, <c>&lt;=</c>, <c>=</c>, <c>&gt;</c>, <c>&lt;</c>.
+    /// </summary>
+    private static string StripDepDecorations(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+        var name = raw.Split(':', 2)[0].Trim();
+        var cut = name.IndexOfAny(_depVersionOps);
+        if (cut >= 0) name = name[..cut];
+        return name.Trim();
     }
 
     /// <summary>
@@ -787,7 +803,11 @@ public sealed class AurPackageManager(string? configPath = null)
     /// </summary>
     private async Task InstallSelectedOptDeps(string parentPkg, List<string> selectedNames)
     {
-        var (repoMatches, aurFallbacks) = PartitionByRepoAvailability(selectedNames);
+        var cleaned = selectedNames
+            .Select(StripDepDecorations)
+            .Where(n => !string.IsNullOrEmpty(n))
+            .ToList();
+        var (repoMatches, aurFallbacks) = PartitionByRepoAvailability(cleaned);
 
         if (repoMatches.Count > 0)
         {
