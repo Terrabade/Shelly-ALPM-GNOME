@@ -42,6 +42,7 @@ public sealed class PackageManagement(
     private SearchEntry _searchEntry = null!;
     private CheckButton _cascadeDeleteCheck = null!;
     private CheckButton _removeConfigsCheck = null!;
+    private CheckButton _removeOptDepsCheck = null!;
     private CheckButton _showHiddenCheck = null!;
     private Button _removeButton = null!;
     private readonly List<AlpmPackageGObject> _packageGObjectRefs = [];
@@ -68,6 +69,7 @@ public sealed class PackageManagement(
         _searchEntry = (SearchEntry)builder.GetObject("search_entry")!;
         _cascadeDeleteCheck = (CheckButton)builder.GetObject("cascade_delete_check")!;
         _removeConfigsCheck = (CheckButton)builder.GetObject("remove_configs_check")!;
+        _removeOptDepsCheck = (CheckButton)builder.GetObject("remove_optdeps_check")!;
         _showHiddenCheck = (CheckButton)builder.GetObject("show_hidden_check")!;
 
         var checkColumn = (ColumnViewColumn)builder.GetObject("check_column")!;
@@ -777,8 +779,9 @@ public sealed class PackageManagement(
             {
                 lockoutService.Show(T("Removing..."));
                 var result = await privilegedOperationService.RemovePackagesAsync(selectedPackages,
-                    _cascadeDeleteCheck.Active,
-                    _removeConfigsCheck.Active);
+                    isCascade: _cascadeDeleteCheck.Active,
+                    isCleanup: _removeConfigsCheck.Active,
+                    removeOptionalDeps: _removeOptDepsCheck.Active);
                 if (result.Success)
                 {
                     var args = new ToastMessageEventArgs(

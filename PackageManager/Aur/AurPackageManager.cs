@@ -385,8 +385,18 @@ public sealed class AurPackageManager(string? configPath = null)
         });
     }
 
+    /// <summary>
+    /// When true, suppresses the optional-dependency selection prompt for the current
+    /// invocation. Used to prevent re-prompting during recursive AUR fallback installs
+    /// triggered by previously selected opt-deps.
+    /// </summary>
+    private bool _skipOptDepsPrompt;
+
     public async Task InstallPackages(List<string> packageNames)
     {
+        // Per-call map of selected optional dependencies (by top-level package).
+        var selectedOptDepsByPkg = new Dictionary<string, List<string>>();
+
         var totalCount = packageNames.Count;
         for (var i = 0; i < packageNames.Count; i++)
         {
@@ -400,13 +410,19 @@ public sealed class AurPackageManager(string? configPath = null)
                 Status = PackageProgressStatus.Downloading
             });
             var newPkgbuild = await FetchPkgbuildAsync(packageName);
-            PkgbuildDiffRequest?.Invoke(this,new PkgbuildDiffRequestEventArgs()
+            var args = new PkgbuildDiffRequestEventArgs
             {
                 PackageName = packageName,
                 OldPkgbuild = string.Empty,
                 NewPkgbuild = newPkgbuild ?? string.Empty,
                 ProceedWithUpdate = true
-            });
+            };
+            PkgbuildDiffRequest?.Invoke(this,args);
+
+            if (!args.ProceedWithUpdate)
+            {
+                continue;
+            }
 
             var success = await DownloadPackage(packageName);
 
@@ -436,6 +452,19 @@ public sealed class AurPackageManager(string? configPath = null)
                 Message = "Building package with makepkg"
             });
             var pkgbuildInfo = PkgbuildParser.Parse(Path.Combine(tempPath, "PKGBUILD"));
+
+            // Prompt the user for optional dependencies declared in the PKGBUILD. The selected
+            // names are installed after the main AUR package is committed (see post-install
+            // block). The prompt is suppressed when this call is itself a recursive AUR
+            // fallback install triggered by an earlier opt-deps selection.
+            if (!_skipOptDepsPrompt)
+            {
+                var selectedOptDeps = PromptAurOptionalDeps(packageName, pkgbuildInfo.OptDepends);
+                if (selectedOptDeps.Count > 0)
+                {
+                    selectedOptDepsByPkg[packageName] = selectedOptDeps;
+                }
+            }
 
             // Track makedepends (and checkdepends) that are not runtime deps and not yet installed
             var runtimeDepNames = pkgbuildInfo.ParsedDepends.Select(d => d.Name).ToHashSet();
@@ -626,6 +655,27 @@ public sealed class AurPackageManager(string? configPath = null)
                 continue;
             }
 
+            // Post-install: install any user-selected optional dependencies. Repo-resolvable
+            // names go through _alpm.InstallPackages; the rest are attempted as a recursive AUR
+            // install (with the prompt suppressed to avoid re-prompting). Truly missing names
+            // produce a warning and do NOT fail the main install.
+            if (selectedOptDepsByPkg.TryGetValue(packageName, out var optDeps) && optDeps.Count > 0)
+            {
+                try
+                {
+                    await InstallSelectedOptDeps(packageName, optDeps);
+                }
+                catch (Exception ex)
+                {
+                    BuildOutput?.Invoke(this, new BuildOutputEventArgs
+                    {
+                        PackageName = packageName,
+                        Line = $"[Shelly] Warning: failed to install some optional dependencies: {ex.Message}",
+                        IsError = true
+                    });
+                }
+            }
+
             // Remove build-only dependencies (makedepends/checkdepends) that were installed for this build
             if (buildOnlyDeps.Count > 0)
             {
@@ -666,6 +716,17 @@ public sealed class AurPackageManager(string? configPath = null)
                 }
             }
 
+            // Clean makepkg build artifacts (src/, pkg/) so a later fresh-clone recovery
+            // isn't blocked by root-owned fakeroot-staged trees inside the cache dir.
+            // Best-effort; failures are logged but never fail the install.
+            await CleanBuildArtifactsAsync(user, tempPath);
+            BuildOutput?.Invoke(this, new BuildOutputEventArgs
+            {
+                PackageName = packageName,
+                Line = "[Shelly] Cleaned build artifacts (src/, pkg/)",
+                IsError = false
+            });
+
             PackageProgress?.Invoke(this, new PackageProgressEventArgs
             {
                 PackageName = packageName,
@@ -676,9 +737,187 @@ public sealed class AurPackageManager(string? configPath = null)
         }
     }
 
-    public async Task RemovePackages(List<string> packageNames, AlpmTransFlag flags = AlpmTransFlag.None)
+    /// <summary>
+    /// Raises a SelectOptionalDeps question through _alpm so the existing CLI prompt and Gtk
+    /// dialog pipelines react identically to a sync-path prompt. Returns the bare optdep names
+    /// (the part before the first ':') that the user selected.
+    /// </summary>
+    private List<string> PromptAurOptionalDeps(string pkgName, List<string> optDepends)
     {
-        await _alpm.RemovePackages(packageNames, flags);
+        if (optDepends == null || optDepends.Count == 0)
+            return new List<string>();
+
+        var args = new AlpmQuestionEventArgs(
+            AlpmQuestionType.SelectOptionalDeps,
+            $"Select optional dependencies for {pkgName}",
+            optDepends);
+        _alpm.RaiseQuestion(args);
+        args.WaitForResponse();
+
+        return optDepends
+            .Where((_, i) => (args.Response & (1L << i)) != 0)
+            .Select(StripDepDecorations)
+            .Where(n => !string.IsNullOrEmpty(n))
+            .ToList();
+    }
+
+    private static readonly char[] _depVersionOps = ['>', '<', '='];
+
+    /// <summary>
+    /// Strips a pacman-style optdepends token down to its bare package name. Accepts
+    /// inputs of the form <c>name[op version][: description]</c> where <c>op</c> is
+    /// one of <c>&gt;=</c>, <c>&lt;=</c>, <c>=</c>, <c>&gt;</c>, <c>&lt;</c>.
+    /// </summary>
+    private static string StripDepDecorations(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+        var name = raw.Split(':', 2)[0].Trim();
+        var cut = name.IndexOfAny(_depVersionOps);
+        if (cut >= 0) name = name[..cut];
+        return name.Trim();
+    }
+
+    /// <summary>
+    /// Splits selected optional-dependency names into (repo-resolvable, AUR-fallback) buckets
+    /// using the existing sync-DB lookup. A name that is satisfied by any sync DB (directly or
+    /// via provides) is treated as repo; everything else is treated as AUR-fallback.
+    /// </summary>
+    private (List<string> repo, List<string> aur) PartitionByRepoAvailability(IEnumerable<string> names)
+    {
+        var repo = new List<string>();
+        var aur = new List<string>();
+        foreach (var name in names.Distinct())
+        {
+            if (_alpm.IsDepdencySatisfiedBySyncDbs(name))
+            {
+                repo.Add(_alpm.FindSatisfierInSyncDbs(name) ?? name);
+            }
+            else
+            {
+                aur.Add(name);
+            }
+        }
+        return (repo, aur);
+    }
+
+    /// <summary>
+    /// Marks the given packages with AlpmPkgReason.Depend in the local DB, mirroring the
+    /// post-commit reason loop on the sync install path. Failures are logged but never
+    /// propagated.
+    /// </summary>
+    private void MarkAsDepend(IEnumerable<string> names)
+    {
+        foreach (var name in names)
+        {
+            _alpm.MarkPackageAsDepend(name);
+        }
+    }
+
+    /// <summary>
+    /// Installs the user-selected optional dependencies for an AUR package. Repo names go
+    /// through the sync install path; AUR-only names are installed via a recursive AUR build
+    /// with the opt-deps prompt suppressed. Unresolvable names emit a warning and are skipped.
+    /// </summary>
+    private async Task InstallSelectedOptDeps(string parentPkg, List<string> selectedNames)
+    {
+        var cleaned = selectedNames
+            .Select(StripDepDecorations)
+            .Where(n => !string.IsNullOrEmpty(n))
+            .ToList();
+        var (repoMatches, aurFallbacks) = PartitionByRepoAvailability(cleaned);
+
+        if (repoMatches.Count > 0)
+        {
+            BuildOutput?.Invoke(this, new BuildOutputEventArgs
+            {
+                PackageName = parentPkg,
+                Line = $"[Shelly] Installing optional dependencies from repo: {string.Join(", ", repoMatches)}",
+                IsError = false
+            });
+            try
+            {
+                await _alpm.InstallPackages(repoMatches);
+                _alpm.Refresh();
+                MarkAsDepend(repoMatches);
+            }
+            catch (Exception ex)
+            {
+                BuildOutput?.Invoke(this, new BuildOutputEventArgs
+                {
+                    PackageName = parentPkg,
+                    Line = $"[Shelly] Warning: failed to install repo optional dependencies: {ex.Message}",
+                    IsError = true
+                });
+            }
+        }
+
+        if (aurFallbacks.Count > 0)
+        {
+            var previous = _skipOptDepsPrompt;
+            _skipOptDepsPrompt = true;
+            try
+            {
+                foreach (var name in aurFallbacks)
+                {
+                    // AUR opt-deps frequently refer to *provides* names (e.g.
+                    // 'mcpelauncher-msa-ui-qt' is provided by 'mcpelauncher-msa-ui-qt-git').
+                    // Resolve the name to one or more real AUR package names before clone.
+                    var providers = await _aurSearchManager.FindProvidersAsync(name);
+
+                    string? chosen;
+                    if (providers.Count == 0)
+                    {
+                        ErrorEvent?.Invoke(this, new AlpmErrorEventArgs(
+                            $"Optional dependency '{name}' not found in sync DBs or AUR (no provider)."));
+                        continue;
+                    }
+                    if (providers.Count == 1)
+                    {
+                        chosen = providers[0];
+                    }
+                    else
+                    {
+                        var qArgs = new AlpmQuestionEventArgs(
+                            AlpmQuestionType.SelectProvider,
+                            $"Multiple AUR providers for '{name}'",
+                            providers,
+                            name);
+                        _alpm.RaiseQuestion(qArgs);
+                        qArgs.WaitForResponse();
+                        var idx = qArgs.Response;
+                        chosen = idx >= 0 && idx < providers.Count ? providers[idx] : providers[0];
+                    }
+
+                    BuildOutput?.Invoke(this, new BuildOutputEventArgs
+                    {
+                        PackageName = parentPkg,
+                        Line = string.Equals(chosen, name, StringComparison.Ordinal)
+                            ? $"[Shelly] Attempting AUR install for optional dependency: {chosen}"
+                            : $"[Shelly] Resolved AUR optdep '{name}' → '{chosen}'; attempting install",
+                        IsError = false
+                    });
+                    try
+                    {
+                        await InstallPackages(new List<string> { chosen });
+                        MarkAsDepend(new[] { chosen });
+                    }
+                    catch (Exception ex)
+                    {
+                        ErrorEvent?.Invoke(this, new AlpmErrorEventArgs(
+                            $"Optional dependency '{name}' (provider '{chosen}') failed to install: {ex.Message}"));
+                    }
+                }
+            }
+            finally
+            {
+                _skipOptDepsPrompt = previous;
+            }
+        }
+    }
+
+    public async Task RemovePackages(List<string> packageNames, AlpmTransFlag flags = AlpmTransFlag.None, bool removeOptionalDeps = false)
+    {
+        await _alpm.RemovePackages(packageNames, flags, removeOptionalDeps);
         foreach (var packageName in packageNames)
         {
             _vcsInfoStore.RemovePackage(packageName);
@@ -961,6 +1200,34 @@ public sealed class AurPackageManager(string? configPath = null)
         return (process.ExitCode, await stdoutTask, await stderrTask);
     }
 
+    /// <summary>
+    /// Best-effort cleanup of makepkg build artifacts (<c>src/</c> and <c>pkg/</c>) inside
+    /// the per-package cache dir. Mirrors the sudo→root fallback strategy in
+    /// <see cref="RemoveCacheDirAsync"/> because <c>pkg/</c> commonly contains
+    /// fakeroot-staged root-owned files. Never throws; cleanup failure is logged only.
+    /// </summary>
+    private static async Task CleanBuildArtifactsAsync(string user, string tempPath)
+    {
+        if (!Directory.Exists(tempPath)) return;
+
+        foreach (var sub in new[] { "src", "pkg" })
+        {
+            var path = Path.Combine(tempPath, sub);
+            if (!Directory.Exists(path)) continue;
+
+            var (rc, _, rerr) = await RunProcessAsync(
+                "sudo", $"-u {user} rm -rf {path}");
+            if (rc == 0) continue;
+
+            var (rc2, _, rerr2) = await RunProcessAsync("rm", $"-rf {path}");
+            if (rc2 != 0)
+            {
+                await Console.Error.WriteLineAsync(
+                    $"[Shelly] could not clean {path}: {rerr2.Trim()} / {rerr.Trim()}");
+            }
+        }
+    }
+
     private static async Task<bool> RemoveCacheDirAsync(string user, string tempPath)
     {
         if (!Directory.Exists(tempPath))
@@ -1067,6 +1334,10 @@ public sealed class AurPackageManager(string? configPath = null)
 
             if (needsClone)
             {
+                // Strip root-owned src/ and pkg/ first so the subsequent user-level
+                // rm -rf on the cache dir isn't blocked by fakeroot-staged artifacts.
+                await CleanBuildArtifactsAsync(user, tempPath);
+
                 if (!await RemoveCacheDirAsync(user, tempPath))
                 {
                     return false;

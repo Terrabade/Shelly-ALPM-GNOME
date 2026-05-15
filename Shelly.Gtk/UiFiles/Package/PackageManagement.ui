@@ -73,6 +73,13 @@
                     </object>
                 </child>
                 <child>
+                    <object class="GtkCheckButton" id="remove_optdeps_check">
+                        <property name="label">Remove Optional Deps</property>
+                        <property name="tooltip-text">Also remove orphaned optional dependencies installed with these packages.</property>
+                        <property name="valign">center</property>
+                    </object>
+                </child>
+                <child>
                     <object class="GtkCheckButton" id="show_hidden_check">
                         <property name="halign">start</property>
                         <property name="label" translatable="yes">Show Hidden</property>

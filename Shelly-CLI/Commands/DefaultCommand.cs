@@ -14,6 +14,11 @@ using Spectre.Console.Cli;
 
 namespace Shelly_CLI.Commands;
 
+internal sealed record PackageChoice(string Name, string Version, string Repo, bool IsExit = false)
+{
+    public static PackageChoice Exit { get; } = new("", "", "", IsExit: true);
+}
+
 public class DefaultCommand : AsyncCommand<DefaultCommandSettings>
 {
     //No Confirm is not implemented for default command by design
@@ -40,40 +45,42 @@ public class DefaultCommand : AsyncCommand<DefaultCommandSettings>
             return 1;
         }
 
-        var exitOption = "Exit";
-        
         if (!string.IsNullOrEmpty(settings.SearchString))
         {
             RootElevator.EnsureRootExectuion();
             var standard = SearchStandard(settings.SearchString);
             var aur = await SearchAur(settings.SearchString);
+
+            var choices = new List<PackageChoice>();
+            choices.AddRange(standard.Select(x => new PackageChoice(x.Name, x.Version, "Standard")));
+            choices.AddRange(aur.Select(x => new PackageChoice(x.Name, x.Version, "AUR")));
+            choices.Add(PackageChoice.Exit);
+
             var selection = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
+                new SelectionPrompt<PackageChoice>()
                     .Title($"[yellow]Found {standard.Count + aur.Count} packages please select one to install[/]")
-                    .AddChoices(standard.Select(x => $"{x.Name} : {x.Version} : Standard"))
-                    .AddChoices(aur.Select(x => $"{x.Name} : {x.Version} : AUR"))
-                    .AddChoices(exitOption)
-                    .UseConverter(choice => choice == exitOption ? $"[yellow]{exitOption}[/]" : choice));
-            if (selection == exitOption)
+                    .AddChoices(choices)
+                    .UseConverter(choice => choice.IsExit
+                        ? "[yellow]Exit[/]"
+                        : $"{choice.Name} : {choice.Version} : {choice.Repo}"));
+
+            if (selection.IsExit)
             {
                 return 0;
             }
-            var selectionArray = selection.Split(":");
-            var name = selectionArray[0].Trim();
-            Console.WriteLine(name);
-            var repo = selectionArray[2].Trim();
-            if (repo == "AUR")
+
+            if (selection.Repo == "AUR")
             {
                 await new Aur.AurInstallCommand().ExecuteAsync(context, new AurInstallSettings()
                 {
-                    Packages = [name]
+                    Packages = [selection.Name]
                 });
             }
             else
             {
                 await new InstallCommand().ExecuteAsync(context, new InstallPackageSettings()
                 {
-                    Packages = [name]
+                    Packages = [selection.Name]
                 });
             }
             
