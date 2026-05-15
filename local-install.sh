@@ -72,8 +72,13 @@ cp -r "$SCRIPT_DIR/publish/Shelly.Gtk/"* "$INSTALL_DIR/"
 # Ensure translations are compiled
 echo "Compiling translations..."
 if command -v msgfmt &> /dev/null; then
-    mkdir -p "$SCRIPT_DIR/Shelly.Gtk/locale/de/LC_MESSAGES"
-    msgfmt "$SCRIPT_DIR/Shelly.Gtk/po/de.po" -o "$SCRIPT_DIR/Shelly.Gtk/locale/de/LC_MESSAGES/shelly-ui.mo"
+    for po_file in "$SCRIPT_DIR/Shelly.Gtk/po/"*.po; do
+        if [ -f "$po_file" ]; then
+            lang=$(basename "$po_file" .po)
+            mkdir -p "$SCRIPT_DIR/Shelly.Gtk/locale/$lang/LC_MESSAGES"
+            msgfmt "$po_file" -o "$SCRIPT_DIR/Shelly.Gtk/locale/$lang/LC_MESSAGES/shelly-ui.mo"
+        fi
+    done
 fi
 
 # Copy locale files
