@@ -81,414 +81,422 @@ msgid "Installed {0} Package(s)"
 msgstr "{0} Pacote(s) instalado(s)"
 
 msgid "Export AUR install log"
-msgstr ""
+msgstr "Exportar log de instalação AUR"
 
 msgid "Log Files (*.log)"
-msgstr ""
+msgstr "Arquivos de log (*.log)"
 
 msgid "Exported AUR install log"
-msgstr ""
+msgstr "Log de instalação AUR exportado com sucesso"
 
 msgid "Failed to export AUR install log"
-msgstr ""
+msgstr "Exportação de log de instalação AUR falhou"
 
 msgid "Package Build"
 msgstr ""
 
 msgid "Preview PKGBUILD"
-msgstr ""
+msgstr "Previsualizar PKGBUILD"
 
 msgid "Displays Package Build"
-msgstr ""
+msgstr "Mostrar Package Build"
 
 msgid "Close details"
-msgstr ""
+msgstr "Fechar detalhes"
 
 msgid "Version"
-msgstr ""
+msgstr "Versão"
 
 msgid "Votes"
-msgstr ""
+msgstr "Votos"
 
 msgid "Popularity"
-msgstr ""
+msgstr "Popularidade"
 
 msgid "Out of Date"
-msgstr ""
+msgstr "Desatualizado"
 
 msgid "Maintainer"
-msgstr ""
+msgstr "Mantenedor"
 
 msgid "Orphaned"
-msgstr ""
+msgstr "Órfão"
 
 msgid "Last Modified"
-msgstr ""
+msgstr "Última Modificação"
 
 msgid "First Submitted"
-msgstr ""
+msgstr "Primeiro Envio"
 
 msgid "URL:"
-msgstr ""
+msgstr "URL:"
 
 msgid "AUR:"
-msgstr ""
+msgstr "AUR:"
 
 msgid "Depends"
-msgstr ""
+msgstr "Dependências"
 
 msgid "Make Depends"
-msgstr ""
+msgstr "Dependências de Compilação"
 
 msgid "Check Depends"
-msgstr ""
+msgstr "Dependências de Teste"
 
 msgid "Optional Deps"
-msgstr ""
+msgstr "Dependências Opcionais"
 
 msgid "Licenses"
-msgstr ""
+msgstr "Licenças"
 
 msgid "Keywords"
-msgstr ""
+msgstr "Palavras-chave"
 
 msgid "Provides"
-msgstr ""
+msgstr "Provê"
 
 msgid "Conflicts"
-msgstr ""
+msgstr "Conflitos"
 
 msgid "Groups"
-msgstr ""
+msgstr "Grupos"
 
 msgid "Replaces"
-msgstr ""
+msgstr "Substitui"
 
 msgid "Remove Packages?"
-msgstr ""
+msgstr "Remover Pacotes?"
 
 msgid "Removing..."
-msgstr ""
+msgstr "Removendo..."
 
 msgid "Removed {0} Package(s)"
-msgstr ""
+msgstr "{0} Pacote(s) Removido(s)"
 
 msgid "<span size='large'>AUR packages are up to date</span>"
-msgstr ""
+msgstr "<span size='large'>Pacotes AUR estão atualizados</span>"
 
 msgid "Update Packages?"
-msgstr ""
+msgstr "Atualizar Pacotes?"
 
 msgid "Updated {0} Package(s)"
-msgstr ""
+msgstr "{0} Pacote(s) Atualizado(s)"
 
 msgid "Shelly is an Arch Linux package manager"
-msgstr ""
+msgstr "Shelly é um gerenciador de pacotes para Arch Linux"
 
 msgid "Seafoam Labs Website"
-msgstr ""
+msgstr "Website do time Seafom Labs"
 
 msgid "Project Leads"
-msgstr ""
+msgstr "Líderes do Projeto"
 
 msgid "Maintainers"
-msgstr ""
+msgstr "Mantenedores"
 
 msgid "Select"
-msgstr ""
+msgstr "Selecionar"
 
 msgid "Select All"
-msgstr ""
+msgstr "Selecionar Tudo"
 
 msgid "Confirm"
-msgstr ""
+msgstr "Confirmar"
 
 msgid "No"
-msgstr ""
+msgstr "Não"
 
 msgid "Yes"
-msgstr ""
+msgstr "Sim"
 
 msgid "Install Ignored Package?"
-msgstr ""
+msgstr "Instalar Pacotes Ignorados?"
 
 msgid "Replace Package?"
-msgstr ""
+msgstr "Substituir Pacote?"
 
 msgid "Package Conflict Detected"
-msgstr ""
+msgstr "Conflito de Pacotes Detectado"
 
 msgid "Corrupted Package Found"
-msgstr ""
+msgstr "Pacote Corrompido Encontrado"
 
 msgid "Import PGP Key?"
-msgstr ""
+msgstr "Importar Chave PGP?"
 
 msgid "Select Provider"
-msgstr ""
+msgstr "Selecionar Provedor"
 
 msgid "Select Optional Dependencies"
-msgstr ""
+msgstr "Selecionar Dependências Opcionais"
 
 msgid "System Question"
-msgstr ""
+msgstr "Pergunta do Sistema"
 
 msgid "Arch Linux News"
-msgstr ""
+msgstr "Notícias Arch Linux"
 
 msgid "No news available"
-msgstr ""
+msgstr "Sem notícias disponíveis"
 
 msgid "package"
-msgstr ""
+msgstr "pacote"
 
 msgid "packages"
-msgstr ""
+msgstr "pacotes"
 
 msgid "AUR installation failed"
-msgstr ""
+msgstr "Instalação AUR Falhou"
 
 msgid ""
 "Shelly couldn't finish building or installing the selected AUR {0}. Export "
 "the logs and attach them to your report so the team can check whether the "
 "issue came from the PKGBUILD or from Shelly."
 msgstr ""
+"O Shelly não conseguiu terminar de compilar ou instalar os pacotes AUR "
+"selecionados {0}. Exporte os logs e anexe-os ao seu relatório para que a "
+"equipe verifique se o problema veio do PKGBUILD ou do Shelly."
 
 msgid "Packages"
-msgstr ""
+msgstr "Pacotes"
 
 msgid "Recent output"
-msgstr ""
+msgstr "Saída recente"
 
 msgid "Close"
-msgstr ""
+msgstr "Fechar"
 
 msgid "Export Logs"
-msgstr ""
+msgstr "Exportar Logs"
 
 msgid "Cache directory does not exist"
-msgstr ""
+msgstr "Diretório de cache não existe"
 
 msgid "Cleaning package cache..."
-msgstr ""
+msgstr "Limpando cache de pacotes..."
 
 msgid "Package cache cleaned successfully"
-msgstr ""
+msgstr "Cache de pacotes limpo com sucesso"
 
 msgid "Cache clean failed: {0}"
-msgstr ""
+msgstr "Limpeza de cache falhou: {0}"
 
 msgid "Fingerprint Disable Instructions"
-msgstr ""
+msgstr "Instruções para Desativação de Impressão Digital"
 
 msgid "Disable fingerprint authentication for sudo"
-msgstr ""
+msgstr "Desativar autenticação por impressão digital para o sudo"
 
 msgid "1. Inspect"
-msgstr ""
+msgstr "1. Inspecionar"
 
 msgid "2. Disable for sudo"
-msgstr ""
+msgstr "2. Desativar para o sudo"
 
 msgid "3. Re-enable later"
-msgstr ""
+msgstr "3. Reativar mais tarde"
 
 msgid "Copy"
-msgstr ""
+msgstr "Copiar"
 
 msgid "Operation Complete"
-msgstr ""
+msgstr "Operação concluída"
 
 msgid "Cancel"
-msgstr ""
+msgstr "Cancelar"
 
 msgid "Authentication Required"
-msgstr ""
+msgstr "Autenticação Necessária"
 
 msgid "Password needed to execute: {0}."
-msgstr ""
+msgstr "Senha necessária para executar: {0}"
 
 msgid "Authenticate"
-msgstr ""
+msgstr "Autenticar"
 
 msgid "Incorrect password. Try again."
-msgstr ""
+msgstr "Senha incorreta, tente novamente."
 
 msgid "What's New"
-msgstr ""
+msgstr "Novidades"
 
 msgid "Version History"
-msgstr ""
+msgstr "Histórico de Versões"
 
 msgid "Version {0}"
-msgstr ""
+msgstr "Versão {0}"
 
 msgid "Package installation failed"
-msgstr ""
+msgstr "Instalação de pacote falhou"
 
 msgid ""
 "Shelly couldn't finish building or installing the selected {0}. Export the "
 "logs and attach them to your report so the team can check whether the issue "
 "came from the PKGBUILD or from Shelly."
 msgstr ""
+"O Shelly não conseguiu terminar de compilar ou instalar os {0} "
+"selecionados. Exporte os logs e anexe-os ao seu relatório para que a "
+"equipe verifique se o problema veio do PKGBUILD ou do Shelly."
 
 msgid "Cache Cleaner"
-msgstr ""
+msgstr "Limpeza de Cache"
 
 msgid ""
 "Cache directory: {0}\n"
 "Total cached files: {1} ({2})"
 msgstr ""
+"Diretório de cache: {0}\n"
+"Arquivos em cache: {1} ({2})"
 
 msgid "Keep versions:"
-msgstr ""
+msgstr "Manter versões:"
 
 msgid "Uninstalled only"
-msgstr ""
+msgstr "Apenas desinstalados"
 
 msgid "Clean"
-msgstr ""
+msgstr "Limpar"
 
 msgid "No candidates for removal."
-msgstr ""
+msgstr "Sem candidatos para remoção."
 
 msgid "{0} files, {1} would be freed"
-msgstr ""
+msgstr "{0} arquivos, {1} seriam liberados"
 
 msgid "Name and URL are required"
-msgstr ""
+msgstr "Nome e URL são necessários"
 
 msgid "URL must end with .flatpakrepo"
-msgstr ""
+msgstr "A URL precisa terminar com .flatpakrepo"
 
 msgid "Failed to add remote: {0}"
-msgstr ""
+msgstr "Não foi possível adicionar a remota {0}"
 
 msgid "Added Remote: {0}"
-msgstr ""
+msgstr "Remota Adicionada: {0}"
 
 msgid "Removed Remote"
-msgstr ""
+msgstr "Remota Removida"
 
 msgid "All Applications"
-msgstr ""
+msgstr "Todos os Aplicativos"
 
 msgid "Recommended"
-msgstr ""
+msgstr "Recomendado"
 
 msgid "Most Wanted"
-msgstr ""
+msgstr "Mais Procurados"
 
 msgid "Recently Added"
-msgstr ""
+msgstr "Recentemente Adicionado"
 
 msgid "Recently Updated"
-msgstr ""
+msgstr "Recentemente Atualizado"
 
 msgid "Audio & Video"
-msgstr ""
+msgstr "Áudio e Vídeo"
 
 msgid "Development"
-msgstr ""
+msgstr "Desenvolvimento"
 
 msgid "Education"
-msgstr ""
+msgstr "Educação"
 
 msgid "Game"
-msgstr ""
+msgstr "Jogos"
 
 msgid "Graphics"
-msgstr ""
+msgstr "Gráficos"
 
 msgid "Network"
-msgstr ""
+msgstr "Redes"
 
 msgid "Office"
-msgstr ""
+msgstr "Escritório"
 
 msgid "Science"
-msgstr ""
+msgstr "Ciências"
 
 msgid "System"
-msgstr ""
+msgstr "Sistema"
 
 msgid "Utility"
-msgstr ""
+msgstr "Utilidades"
 
 msgid "Version: {0}"
-msgstr ""
+msgstr "Versão: {0}"
 
 msgid "License: {0}"
-msgstr ""
+msgstr "Licença: {0}"
 
 msgid "Installed"
-msgstr ""
+msgstr "Instalado"
 
 msgid "Install"
-msgstr ""
+msgstr "Instalar"
 
 msgid "Size: {0}"
-msgstr ""
+msgstr "Tamanho: {0}"
 
 msgid "No links available"
-msgstr ""
+msgstr "Sem links disponíveis"
 
 msgid "Install Flatpak Ref"
-msgstr ""
+msgstr "Instalar Referência Flatpak"
 
 msgid "Local Flatpak files (\"*.FlatpakRef\", \"*.flatpak)\""
-msgstr ""
+msgstr "Arquivos Flatpak Locais (\"*.FlatpakRef\", \"*.flatpak)\""
 
 msgid "Installing selected local flatpak file..."
-msgstr ""
+msgstr "Instalando arquivo flatpak local selecionado..."
 
 msgid "Installing Flatpak failed"
-msgstr ""
+msgstr "Instalação de Flatpak falhou"
 
 msgid "Installed Flatpak"
-msgstr ""
+msgstr "Flatpak Instalado"
 
 msgid "Install Package?"
-msgstr ""
+msgstr "Instalar Pacote?"
 
 msgid "Installing {0}..."
-msgstr ""
+msgstr "Instalando {0}..."
 
 msgid "Installed Flatpak addon"
-msgstr ""
+msgstr "Addon de Flatpak instalado"
 
 msgid "Available Addons"
-msgstr ""
+msgstr "Addons disponíveis"
 
 msgid "No details available"
-msgstr ""
+msgstr "Sem detalhes disponíveis"
 
 msgid "Keep Config"
-msgstr ""
+msgstr "Manter configurações"
 
 msgid "Keep user data and configuration"
-msgstr ""
+msgstr "Manter dados de usuário e configurações"
 
 msgid "Delete Config"
-msgstr ""
+msgstr "Apagar configuração"
 
 msgid "Delete user data and configuration"
-msgstr ""
+msgstr "Apagar dados de usuário e configuração"
 
 msgid "Keep Config?"
-msgstr ""
+msgstr "Manter configuração?"
 
 msgid "Removing {0}..."
-msgstr ""
+msgstr "Removendo {0}..."
 
 msgid "Failed to remove package {0}: {1}"
-msgstr ""
+msgstr "Falha na remoção dos pacotes {0}: {1}"
 
 msgid "Removed Package(s)"
-msgstr ""
+msgstr "Pacote(s) Removido(s)"
 
 msgid "Permission Changes"
-msgstr ""
+msgstr "Mudanças de Permissão"
 
 msgid "Updating Flatpak packages..."
 msgstr ""
