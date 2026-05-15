@@ -104,6 +104,11 @@ EOF
   # Install fish shell completions
   install -Dm644 "$srcdir/shelly.fish" "$pkgdir/usr/share/fish/vendor_completions.d/shelly.fish"
 
+  # Install translations
+  if [ -d "$srcdir/locale" ]; then
+    cp -r "$srcdir/locale/"* "$pkgdir/usr/share/locale/"
+  fi
+
   # Install Flatpak integration script
   cat <<'SCRIPT' | install -Dm755 /dev/stdin "$pkgdir/usr/bin/shelly-flatpak-integrate"
 #!/bin/bash

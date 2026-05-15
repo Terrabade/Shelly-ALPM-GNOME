@@ -68,6 +68,8 @@
         <Content Include="Assets\svg\shelly-shell-symbolic.svg">
             <CopyToOutputDirectory>Always</CopyToOutputDirectory>
         </Content>
+        <Content Include="locale\**\*">
+            <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+        </Content>
     </ItemGroup>
-  
 </Project>

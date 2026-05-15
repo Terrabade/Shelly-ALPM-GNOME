@@ -4,6 +4,7 @@ using Shelly.Gtk.Helpers;
 using Shelly.Gtk.Services;
 using Shelly.Gtk.Services.Icons;
 using Shelly.Gtk.Enums;
+using static Shelly.GTK.Resources.Translations;
 using static Shelly.Gtk.Helpers.PackageColumnViewSorter;
 using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
@@ -48,7 +49,7 @@ public sealed class PackageManagement(
     private readonly List<AlpmPackageDto> _packageData = [];
     private List<string> _groups = [];
     private DropDown _groupDropDown = null!;
-    private string _selectedGroup = "Any";
+    private string _selectedGroup = T("Any");
 
     private ColumnViewColumn _nameColumn = null!;
     private ColumnViewColumn _versionColumn = null!;
@@ -62,6 +63,7 @@ public sealed class PackageManagement(
     public Widget CreateWindow()
     {
         var builder = Builder.NewFromString(ResourceHelper.LoadUiFile("UiFiles/Package/PackageManagement.ui"), -1);
+        builder.TranslationDomain = Domain;
         _box = (Box)builder.GetObject("PackageManagement")!;
         var columnView = (ColumnView)builder.GetObject("package_grid")!;
         _searchEntry = (SearchEntry)builder.GetObject("search_entry")!;
@@ -230,7 +232,7 @@ public sealed class PackageManagement(
         backButton.SetIconName("go-next-symbolic");
         backButton.Halign = Align.Start;
         backButton.AddCssClass("flat");
-        backButton.TooltipText = "Close details";
+        backButton.TooltipText = T("Close details");
         backButton.OnClicked += (_, _) =>
         {
             _selectionModel.UnselectItem(_selectionModel.GetSelected());
@@ -279,13 +281,13 @@ public sealed class PackageManagement(
         separator.MarginBottom = 16;
         _detailBox.Append(separator);
 
-        AddDetail("Version", pkg.Version);
-        AddDetail("Size", SizeHelpers.FormatSize(pkg.InstalledSize));
+        AddDetail(T("Version"), pkg.Version);
+        AddDetail(T("Size"), SizeHelpers.FormatSize(pkg.InstalledSize));
         if (!string.IsNullOrEmpty(pkg.Url))
         {
             var row = Box.New(Orientation.Horizontal, 12);
             row.MarginBottom = 4;
-            var labelWidget = Label.New("URL:");
+            var labelWidget = Label.New(T("URL:"));
             labelWidget.AddCssClass("dim-label");
             labelWidget.Halign = Align.Start;
             labelWidget.Valign = Align.Start;
@@ -308,26 +310,26 @@ public sealed class PackageManagement(
 
         if (pkg.Depends.Count > 0)
         {
-            AddChipList("Depends", pkg.Depends);
+            AddChipList(T("Depends"), pkg.Depends);
         }
 
         if (pkg.OptDepends.Count > 0)
         {
-            AddChipList("Optional Deps", pkg.OptDepends, true);
+            AddChipList(T("Optional Deps"), pkg.OptDepends, true);
         }
 
         if (pkg.Licenses.Count > 0)
-            AddDetail("Licenses", string.Join(", ", pkg.Licenses));
+            AddDetail(T("Licenses"), string.Join(", ", pkg.Licenses));
         if (pkg.Provides.Count > 0)
-            AddDetail("Provides", string.Join(", ", pkg.Provides));
+            AddDetail(T("Provides"), string.Join(", ", pkg.Provides));
         if (pkg.Conflicts.Count > 0)
-            AddDetail("Conflicts", string.Join(", ", pkg.Conflicts));
+            AddDetail(T("Conflicts"), string.Join(", ", pkg.Conflicts));
         if (pkg.Groups.Count > 0)
-            AddDetail("Groups", string.Join(", ", pkg.Groups));
+            AddDetail(T("Groups"), string.Join(", ", pkg.Groups));
 
         if (pkg.PackageFile is { Files.Count: > 0 })
         {
-            var fileExpander = Expander.New($"Package Files ({CountFiles(pkg.PackageFile)})");
+            var fileExpander = Expander.New(T("Package Files ({0})", CountFiles(pkg.PackageFile)));
             fileExpander.AddCssClass("package-detail-expander");
             fileExpander.Hexpand = false;
 
@@ -684,7 +686,7 @@ public sealed class PackageManagement(
         {
             var packages = await privilegedOperationService.GetInstalledPackagesAsync(_showHiddenCheck.Active);
             _groups = packages.SelectMany(x => x.Groups).Distinct().ToList();
-            _groups.Insert(0, "Any");
+            _groups.Insert(0, T("Any"));
             _installedPackageNames = new HashSet<string>(packages.Select(x => x.Name));
             ct.ThrowIfCancellationRequested();
             GLib.Functions.IdleAdd(0, () =>
@@ -763,7 +765,7 @@ public sealed class PackageManagement(
             if (!configService.LoadConfig().NoConfirm)
             {
                 var args = new GenericQuestionEventArgs(
-                    "Remove Packages?", string.Join("\n", selectedPackages)
+                    T("Remove Packages?"), string.Join("\n", selectedPackages)
                 );
 
                 genericQuestionService.RaiseQuestion(args);
@@ -775,7 +777,7 @@ public sealed class PackageManagement(
 
             try
             {
-                lockoutService.Show($"Removing...");
+                lockoutService.Show(T("Removing..."));
                 var result = await privilegedOperationService.RemovePackagesAsync(selectedPackages,
                     isCascade: _cascadeDeleteCheck.Active,
                     isCleanup: _removeConfigsCheck.Active,
@@ -783,7 +785,7 @@ public sealed class PackageManagement(
                 if (result.Success)
                 {
                     var args = new ToastMessageEventArgs(
-                        $"Removed {selectedPackages.Count} Package(s)"
+                        T("Removed {0} Package(s)", selectedPackages.Count)
                     );
                     genericQuestionService.RaiseToastMessage(args);
                 }
