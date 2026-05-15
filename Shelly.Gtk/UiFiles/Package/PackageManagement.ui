@@ -26,7 +26,32 @@
                 
                 <child>
                     <object class="GtkDropDown" id="grouping_selection">
-                        <property name="tooltip-text">Group Filter</property>
+                        <property name="tooltip-text">Package Group Filter</property>
+                        <property name="enable-search">true</property>
+                        <property name="search-match-mode">substring</property>
+                        <property name="expression">
+                            <lookup name='string' type="GtkStringObject"></lookup>
+                        </property>
+                    </object>
+                </child>
+                <child>
+                    <object class="GtkButton" id="remove_local_button">
+                        <property name="tooltip-text">Remove Local Packages</property>
+                        <child>
+                            <object class="GtkBox">
+                                <property name="spacing">5</property>
+                                <child>
+                                    <object class="GtkImage">
+                                        <property name="icon-name">user-trash-symbolic</property>
+                                    </object>
+                                </child>
+                                <child>
+                                    <object class="GtkLabel">
+                                        <property name="label">Remove Local</property>
+                                    </object>
+                                </child>
+                            </object>
+                        </child>
                     </object>
                 </child>
                 <child>
@@ -44,6 +69,13 @@
                 <child>
                     <object class="GtkCheckButton" id="remove_configs_check">
                         <property name="label">Remove Configs</property>
+                        <property name="valign">center</property>
+                    </object>
+                </child>
+                <child>
+                    <object class="GtkCheckButton" id="remove_optdeps_check">
+                        <property name="label">Remove Optional Deps</property>
+                        <property name="tooltip-text">Also remove orphaned optional dependencies installed with these packages.</property>
                         <property name="valign">center</property>
                     </object>
                 </child>

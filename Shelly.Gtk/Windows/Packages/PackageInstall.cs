@@ -10,14 +10,14 @@ using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
 using Shelly.Gtk.UiModels.PackageManagerObjects.GObjects;
 using Shelly.Gtk.Windows.Dialog;
+using ListStore = Gio.ListStore;
 
 // ReSharper disable NotAccessedField.Local
-
 // ReSharper disable CollectionNeverQueried.Local
 
 namespace Shelly.Gtk.Windows.Packages;
 
-public class PackageInstall(
+public sealed class PackageInstall(
     IPrivilegedOperationService privilegedOperationService,
     IUnprivilegedOperationService unprivilegedOperationService,
     ILockoutService lockoutService,
@@ -32,31 +32,20 @@ public class PackageInstall(
     private Overlay _overlay = null!;
     private CancellationTokenSource _cts = new();
     private int _loadGeneration;
-    private ColumnView _columnView = null!;
     private SingleSelection _selectionModel = null!;
-    private Gio.ListStore _listStore = null!;
+    private ListStore _listStore = null!;
     private FilterListModel _filterListModel = null!;
     private CustomFilter _filter = null!;
     private string _searchText = string.Empty;
     private List<string> _groups = [];
-    private StringList _groupsStringList = null!;
     private string _selectedGroup = "Any";
 
-    private SignalListItemFactory _checkFactory = null!;
-    private SignalListItemFactory _nameFactory = null!;
-    private SignalListItemFactory _sizeFactory = null!;
-    private SignalListItemFactory _versionFactory = null!;
-    private SignalListItemFactory _repositoryFactory = null!;
     private readonly List<AlpmPackageGObject> _packageGObjectRefs = [];
     private readonly List<AlpmPackageDto> _packageData = [];
 
     private Button _installButton = null!;
-    private Button _localInstallButton = null!;
     private SearchEntry _searchEntry = null!;
-    private Builder _builder = null!;
-    private ColumnViewColumn _checkColumn = null!;
     private ColumnViewColumn _nameColumn = null!;
-    private ColumnViewColumn _sizeColumn = null!;
     private ColumnViewColumn _versionColumn = null!;
     private ColumnViewColumn _repositoryColumn = null!;
     private ColumnViewSorter _columnViewSorter = null!;
@@ -66,51 +55,49 @@ public class PackageInstall(
 
     private Revealer _detailRevealer = null!;
     private Box _detailBox = null!;
-    private AlpmPackageGObject? _currentDetailPkg;
     private HashSet<string> _installedPackageNames = [];
-    private static readonly ConditionalWeakTable<CheckButton, BindState> _checkState = new();
+    private static readonly ConditionalWeakTable<CheckButton, BindState> CheckState = new();
 
     public Widget CreateWindow()
     {
-        _builder = Builder.NewFromString(ResourceHelper.LoadUiFile("UiFiles/Package/PackageWindow.ui"), -1);
-        _overlay = (Overlay)_builder.GetObject("PackageWindow")!;
-        _columnView = (ColumnView)_builder.GetObject("package_column_view")!;
-        _checkColumn = (ColumnViewColumn)_builder.GetObject("check_column")!;
-        _checkColumn.Resizable = true;
-        _nameColumn = (ColumnViewColumn)_builder.GetObject("name_column")!;
+        var builder = Builder.NewFromString(ResourceHelper.LoadUiFile("UiFiles/Package/PackageWindow.ui"), -1);
+        _overlay = (Overlay)builder.GetObject("PackageWindow")!;
+        var columnView = (ColumnView)builder.GetObject("package_column_view")!;
+        var checkColumn = (ColumnViewColumn)builder.GetObject("check_column")!;
+        checkColumn.Resizable = true;
+        _nameColumn = (ColumnViewColumn)builder.GetObject("name_column")!;
         _nameColumn.Resizable = true;
-        _sizeColumn = (ColumnViewColumn)_builder.GetObject("size_column")!;
-        _sizeColumn.Resizable = true;
-        _versionColumn = (ColumnViewColumn)_builder.GetObject("version_column")!;
+        var sizeColumn = (ColumnViewColumn)builder.GetObject("size_column")!;
+        sizeColumn.Resizable = true;
+        _versionColumn = (ColumnViewColumn)builder.GetObject("version_column")!;
         _versionColumn.Resizable = true;
-        _repositoryColumn = (ColumnViewColumn)_builder.GetObject("repository_column")!;
+        _repositoryColumn = (ColumnViewColumn)builder.GetObject("repository_column")!;
         _repositoryColumn.Resizable = true;
-        _installButton = (Button)_builder.GetObject("install_button")!;
+        _installButton = (Button)builder.GetObject("install_button")!;
         _installButton.SetSensitive(false);
-        _localInstallButton = (Button)_builder.GetObject("install_local_button")!;
-        _searchEntry = (SearchEntry)_builder.GetObject("search_entry")!;
-        _detailRevealer = (Revealer)_builder.GetObject("detail_revealer")!;
-        _detailBox = (Box)_builder.GetObject("detail_box")!;
-        _groupDropDown = (DropDown)_builder.GetObject("grouping_selection")!;
-        _upgradeCheck = (CheckButton)_builder.GetObject("upgrade_check")!;
-        _showHiddenCheck = (CheckButton)_builder.GetObject("show_hidden_check")!;
+        var localInstallButton = (Button)builder.GetObject("install_local_button")!;
+        _searchEntry = (SearchEntry)builder.GetObject("search_entry")!;
+        _detailRevealer = (Revealer)builder.GetObject("detail_revealer")!;
+        _detailBox = (Box)builder.GetObject("detail_box")!;
+        _groupDropDown = (DropDown)builder.GetObject("grouping_selection")!;
+        _upgradeCheck = (CheckButton)builder.GetObject("upgrade_check")!;
+        _showHiddenCheck = (CheckButton)builder.GetObject("show_hidden_check")!;
 
-        _listStore = Gio.ListStore.New(AlpmPackageGObject.GetGType());
+        _listStore = ListStore.New(AlpmPackageGObject.GetGType());
         _filter = PackageSearch.CreateSafeFilter(FilterPackage);
         _filterListModel = FilterListModel.New(_listStore, _filter);
         _selectionModel = SingleSelection.New(_filterListModel);
         _selectionModel.CanUnselect = true;
         _selectionModel.Autoselect = false;
-        _columnView.SetModel(_selectionModel);
+        columnView.SetModel(_selectionModel);
 
-        SetupColumns(_checkColumn, _nameColumn, _sizeColumn, _versionColumn, _repositoryColumn);
+        SetupColumns(checkColumn, _nameColumn, sizeColumn, _versionColumn, _repositoryColumn);
 
-        // Creating sorter
-        _nameColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((a, b) => 0);
-        _repositoryColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((a, b) => 0);
-        _versionColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((a, b) => 0);
+        _nameColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((_, _) => 0);
+        _repositoryColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((_, _) => 0);
+        _versionColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((_, _) => 0);
 
-        _columnViewSorter = (ColumnViewSorter)_columnView.GetSorter()!;
+        _columnViewSorter = (ColumnViewSorter)columnView.GetSorter()!;
 
         _columnViewSorter.OnChanged += (_, _) =>
         {
@@ -137,13 +124,13 @@ public class PackageInstall(
             );
         };
 
-        ColumnViewHelper.AlignColumnHeader(_columnView, 1, Align.Start);
-        ColumnViewHelper.AlignColumnHeader(_columnView, 2, Align.End);
-        ColumnViewHelper.AlignColumnHeader(_columnView, 3, Align.End);
-        ColumnViewHelper.AlignColumnHeader(_columnView, 4, Align.End);
+        ColumnViewHelper.AlignColumnHeader(columnView, 1, Align.Start);
+        ColumnViewHelper.AlignColumnHeader(columnView, 2, Align.End);
+        ColumnViewHelper.AlignColumnHeader(columnView, 3, Align.End);
+        ColumnViewHelper.AlignColumnHeader(columnView, 4, Align.End);
 
-        _columnView.OnRealize += (_, _) => { Reload(); };
-        _columnView.OnActivate += (_, _) =>
+        columnView.OnRealize += (_, _) => { Reload(); };
+        columnView.OnActivate += (_, _) =>
         {
             var item = _selectionModel.GetSelectedItem();
             if (item is AlpmPackageGObject pkgObj)
@@ -162,7 +149,6 @@ public class PackageInstall(
             else
             {
                 _detailRevealer.SetRevealChild(false);
-                _currentDetailPkg = null;
             }
         };
         _searchEntry.OnSearchChanged += (_, _) =>
@@ -178,7 +164,7 @@ public class PackageInstall(
         shortcutController.Scope = ShortcutScope.Global;
         shortcutController.PropagationPhase = PropagationPhase.Capture;
 
-        var triggers = new[] { "Return", "KP_Enter", "space", "<Control>f"};
+        var triggers = new[] { "Return", "KP_Enter", "space", "<Control>f" };
         foreach (var triggerStr in triggers)
         {
             var action = CallbackAction.New((_, _) =>
@@ -188,7 +174,7 @@ public class PackageInstall(
                     _searchEntry.GrabFocus();
                     return true;
                 }
-                
+
                 if (!_installButton.GetSensitive()) return false;
                 if (OverlayHelper.HasActiveOverlay(_overlay)) return false;
 
@@ -200,19 +186,17 @@ public class PackageInstall(
 
         _overlay.AddController(shortcutController);
 
-        _localInstallButton.OnClicked += (_, _) => { _ = InstallLocalPackage(); };
+        localInstallButton.OnClicked += (_, _) => { _ = InstallLocalPackage(); };
         _showHiddenCheck.OnToggled += (_, _) => { Reload(); };
 
         _groupDropDown.OnNotify += (_, args) =>
         {
-            if (args.Pspec.GetName() == "selected")
+            if (args.Pspec.GetName() != "selected") return;
+            var idx = _groupDropDown.GetSelected();
+            if (idx != uint.MaxValue && _groupDropDown.GetModel()?.GetObject(idx) is StringObject item)
             {
-                var idx = _groupDropDown.GetSelected();
-                if (idx != uint.MaxValue && _groupDropDown.GetModel()?.GetObject(idx) is StringObject item)
-                {
-                    _selectedGroup = item.GetString();
-                    ApplyFilter();
-                }
+                _selectedGroup = item.GetString();
+                ApplyFilter();
             }
         };
         _sub = DirtySubscription.Attach(dirtyService, this);
@@ -239,14 +223,13 @@ public class PackageInstall(
         old.Cancel();
         old.Dispose();
         Interlocked.Increment(ref _loadGeneration);
-        _ = LoadDataAsync(_cts.Token, _loadGeneration);
+        _ = LoadDataAsync(_loadGeneration, _cts.Token);
     }
 
     private void ShowPackageDetails(AlpmPackageGObject pkgObj)
     {
         if (pkgObj.Index < 0 || pkgObj.Index >= _packageData.Count) return;
 
-        _currentDetailPkg = pkgObj;
         var pkg = _packageData[pkgObj.Index];
 
         while (_detailBox.GetFirstChild() is { } child)
@@ -261,36 +244,11 @@ public class PackageInstall(
         backButton.TooltipText = "Close details";
         backButton.OnClicked += (_, _) =>
         {
-            _currentDetailPkg = null;
             _selectionModel.UnselectItem(_selectionModel.GetSelected());
             _detailRevealer.SetTransitionType(RevealerTransitionType.SlideLeft);
             _detailRevealer.SetRevealChild(false);
         };
         _detailBox.Append(backButton);
-
-        void AddDetail(string label, string value)
-        {
-            var row = Box.New(Orientation.Horizontal, 12);
-            row.MarginBottom = 4;
-            var labelWidget = Label.New(label + ":");
-            labelWidget.AddCssClass("dim-label");
-            labelWidget.Halign = Align.Start;
-            labelWidget.Valign = Align.Start;
-            labelWidget.WidthRequest = 80;
-            labelWidget.Xalign = 0;
-
-            var valueWidget = Label.New(value);
-            valueWidget.Halign = Align.Start;
-            valueWidget.Wrap = true;
-            valueWidget.WrapMode = Pango.WrapMode.WordChar;
-            valueWidget.MaxWidthChars = 30;
-            valueWidget.Xalign = 0;
-            valueWidget.Selectable = true;
-
-            row.Append(labelWidget);
-            row.Append(valueWidget);
-            _detailBox.Append(row);
-        }
 
         var headerBox = Box.New(Orientation.Vertical, 4);
         headerBox.MarginBottom = 16;
@@ -380,32 +338,53 @@ public class PackageInstall(
         if (pkg.Groups.Count > 0)
             AddDetail("Groups", string.Join(", ", pkg.Groups));
 
-        if (configService.LoadConfig().WebViewEnabled)
+        if (configService.LoadConfig().WebViewEnabled && pkg.Depends.Count > 0)
         {
-            if (pkg.Depends.Count > 0)
+            var dictionary = new Dictionary<string, List<string>> { { pkg.Name, pkg.Depends } };
+
+            foreach (var dep in pkg.Depends)
             {
-                var dictionary = new Dictionary<string, List<string>> { { pkg.Name, pkg.Depends } };
-
-                foreach (var dep in pkg.Depends)
+                for (uint i = 0; i < _listStore.GetNItems(); i++)
                 {
-                    for (uint i = 0; i < _listStore.GetNItems(); i++)
-                    {
-                        var obj = _listStore.GetObject(i);
-                        if (obj is not AlpmPackageGObject depObj) continue;
-                        if (depObj.Index < 0 || depObj.Index >= _packageData.Count) continue;
-                        var depPkg = _packageData[depObj.Index];
-                        if (depPkg.Name.Contains(dep))
-                            dictionary.TryAdd(depPkg.Name, depPkg.Depends);
-                    }
+                    var obj = _listStore.GetObject(i);
+                    if (obj is not AlpmPackageGObject depObj) continue;
+                    if (depObj.Index < 0 || depObj.Index >= _packageData.Count) continue;
+                    var depPkg = _packageData[depObj.Index];
+                    if (depPkg.Name.Contains(dep))
+                        dictionary.TryAdd(depPkg.Name, depPkg.Depends);
                 }
-
-                var window = new WebWindow(pkg.Name, dictionary);
-                _detailBox.Append(window.CreateWindow());
             }
+
+            var window = new WebWindow(pkg.Name, dictionary);
+            _detailBox.Append(window.CreateWindow());
         }
 
         _detailRevealer.SetRevealChild(true);
         return;
+
+        void AddDetail(string label, string value)
+        {
+            var row = Box.New(Orientation.Horizontal, 12);
+            row.MarginBottom = 4;
+            var labelWidget = Label.New(label + ":");
+            labelWidget.AddCssClass("dim-label");
+            labelWidget.Halign = Align.Start;
+            labelWidget.Valign = Align.Start;
+            labelWidget.WidthRequest = 80;
+            labelWidget.Xalign = 0;
+
+            var valueWidget = Label.New(value);
+            valueWidget.Halign = Align.Start;
+            valueWidget.Wrap = true;
+            valueWidget.WrapMode = Pango.WrapMode.WordChar;
+            valueWidget.MaxWidthChars = 30;
+            valueWidget.Xalign = 0;
+            valueWidget.Selectable = true;
+
+            row.Append(labelWidget);
+            row.Append(valueWidget);
+            _detailBox.Append(row);
+        }
 
         void AddChipList(string label, IReadOnlyList<string> items, bool isOptional = false)
         {
@@ -426,7 +405,7 @@ public class PackageInstall(
             {
                 if (isOptional)
                 {
-                    var optDepName = item.Split(':').First().Trim();
+                    var optDepName = item.Split(':')[0].Trim();
                     var isInstalled = _installedPackageNames.Contains(optDepName);
 
                     var escapedItem = GLib.Functions.MarkupEscapeText(item, -1);
@@ -471,8 +450,8 @@ public class PackageInstall(
     private void SetupColumns(ColumnViewColumn checkColumn, ColumnViewColumn nameColumn,
         ColumnViewColumn sizeColumn, ColumnViewColumn versionColumn, ColumnViewColumn repositoryColumn)
     {
-        _checkFactory = SignalListItemFactory.New();
-        _checkFactory.OnSetup += (_, args) =>
+        var checkFactory = SignalListItemFactory.New();
+        checkFactory.OnSetup += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             var check = CheckButton.New();
@@ -488,21 +467,18 @@ public class PackageInstall(
             };
         };
 
-        _checkFactory.OnBind += (_, args) =>
+        checkFactory.OnBind += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             if (listItem.GetItem() is not AlpmPackageGObject pkgObj ||
                 listItem.GetChild() is not CheckButton checkButton) return;
 
-            var syncing = false;
-
-            syncing = true;
             checkButton.SetActive(pkgObj.IsSelected);
-            syncing = false;
+            var syncing = false;
 
             checkButton.OnToggled += OnToggled;
             pkgObj.OnSelectionToggled += OnExternalToggle;
-            _checkState.Add(checkButton, new BindState()
+            CheckState.Add(checkButton, new BindState()
             {
                 Pkg = pkgObj,
                 Toggled = OnToggled,
@@ -520,7 +496,6 @@ public class PackageInstall(
                 }
             }
 
-
             void OnExternalToggle(object? s, EventArgs e)
             {
                 if (listItem.GetItem() != pkgObj) return;
@@ -530,21 +505,21 @@ public class PackageInstall(
             }
         };
 
-        _checkFactory.OnUnbind += (_, args) =>
+        checkFactory.OnUnbind += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             if (listItem.GetChild() is not CheckButton checkButton) return;
-            if (!_checkState.TryGetValue(checkButton, out var state)) return;
+            if (!CheckState.TryGetValue(checkButton, out var state)) return;
             if (state.Toggled is not null) checkButton.OnToggled -= state.Toggled;
             if (state.Pkg is not null && state.External is not null)
             {
                 state.Pkg.OnSelectionToggled -= state.External;
             }
 
-            _checkState.Remove(checkButton);
+            CheckState.Remove(checkButton);
         };
 
-        _checkFactory.OnTeardown += (_, args) =>
+        checkFactory.OnTeardown += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             if (listItem.GetItem() is not AlpmPackageGObject ||
@@ -552,10 +527,10 @@ public class PackageInstall(
             listItem.SetChild(null);
         };
 
-        checkColumn.SetFactory(_checkFactory);
+        checkColumn.SetFactory(checkFactory);
 
-        _nameFactory = SignalListItemFactory.New();
-        _nameFactory.OnSetup += (_, args) =>
+        var nameFactory = SignalListItemFactory.New();
+        nameFactory.OnSetup += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             var box = Box.New(Orientation.Horizontal, 6);
@@ -569,7 +544,7 @@ public class PackageInstall(
             box.Append(installedIcon);
             listItem.SetChild(box);
         };
-        _nameFactory.OnBind += (_, args) =>
+        nameFactory.OnBind += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             if (listItem.GetItem() is not AlpmPackageGObject pkgObj ||
@@ -598,16 +573,16 @@ public class PackageInstall(
             installedIcon.Visible = pkgObj.IsInstalled;
             installedIcon.TooltipText = "Installed";
         };
-        nameColumn.SetFactory(_nameFactory);
+        nameColumn.SetFactory(nameFactory);
 
-        _sizeFactory = SignalListItemFactory.New();
-        _sizeFactory.OnSetup += (_, args) =>
+        var sizeFactory = SignalListItemFactory.New();
+        sizeFactory.OnSetup += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             var label = Label.New(string.Empty);
             listItem.SetChild(label);
         };
-        _sizeFactory.OnBind += (_, args) =>
+        sizeFactory.OnBind += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             if (listItem.GetItem() is not AlpmPackageGObject pkgObj ||
@@ -616,16 +591,16 @@ public class PackageInstall(
             label.SetText(SizeHelpers.FormatSize(_packageData[pkgObj.Index].InstalledSize));
             label.Halign = Align.End;
         };
-        sizeColumn.SetFactory(_sizeFactory);
+        sizeColumn.SetFactory(sizeFactory);
 
-        _versionFactory = SignalListItemFactory.New();
-        _versionFactory.OnSetup += (_, args) =>
+        var versionFactory = SignalListItemFactory.New();
+        versionFactory.OnSetup += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             var label = Label.New(string.Empty);
             listItem.SetChild(label);
         };
-        _versionFactory.OnBind += (_, args) =>
+        versionFactory.OnBind += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             if (listItem.GetItem() is not AlpmPackageGObject pkgObj ||
@@ -634,17 +609,17 @@ public class PackageInstall(
             label.SetText(_packageData[pkgObj.Index].Version);
             label.Halign = Align.End;
         };
-        versionColumn.SetFactory(_versionFactory);
+        versionColumn.SetFactory(versionFactory);
 
-        _repositoryFactory = SignalListItemFactory.New();
-        _repositoryFactory.OnSetup += (_, args) =>
+        var repositoryFactory = SignalListItemFactory.New();
+        repositoryFactory.OnSetup += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             var label = Label.New(string.Empty);
             listItem.SetChild(label);
         };
 
-        _repositoryFactory.OnBind += (_, args) =>
+        repositoryFactory.OnBind += (_, args) =>
         {
             if (args.Object is not ColumnViewCell listItem) return;
             if (listItem.GetItem() is not AlpmPackageGObject pkgObj ||
@@ -655,10 +630,10 @@ public class PackageInstall(
             label.Halign = Align.End;
             label.SetMarginEnd(10);
         };
-        repositoryColumn.SetFactory(_repositoryFactory);
+        repositoryColumn.SetFactory(repositoryFactory);
     }
 
-    private async Task LoadDataAsync(CancellationToken ct = default, int generation = 0)
+    private async Task LoadDataAsync(int generation = 0, CancellationToken ct = default)
     {
         try
         {
@@ -684,7 +659,6 @@ public class PackageInstall(
                 _packageGObjectRefs.TrimExcess();
                 _packageData.Clear();
                 _packageData.TrimExcess();
-                _currentDetailPkg = null;
                 while (_detailBox.GetFirstChild() is { } child) _detailBox.Remove(child);
                 cleared.TrySetResult();
                 if (_listStore.GetNItems() > 0)
@@ -696,6 +670,7 @@ public class PackageInstall(
                         ShowPackageDetails(_packageGObjectRefs[pkgObj.Index]);
                     }
                 }
+
                 return false;
             });
             await cleared.Task;
@@ -727,8 +702,8 @@ public class PackageInstall(
 
                 if (index == 0)
                 {
-                    _groupsStringList = StringList.New(_groups.ToArray());
-                    _groupDropDown.SetModel(_groupsStringList);
+                    var groupsStringList = StringList.New(_groups.ToArray());
+                    _groupDropDown.SetModel(groupsStringList);
                 }
 
                 const int batchSize = 1000;
@@ -760,6 +735,7 @@ public class PackageInstall(
         }
         catch (OperationCanceledException)
         {
+            // nothing to do
         }
         catch (Exception e)
         {
@@ -789,8 +765,8 @@ public class PackageInstall(
         for (uint i = 0; i < _listStore.GetNItems(); i++)
         {
             var item = _listStore.GetObject(i);
-            if (item is AlpmPackageGObject { IsSelected: true } pkgObj &&
-                pkgObj.Index >= 0 && pkgObj.Index < _packageData.Count)
+            if (item is AlpmPackageGObject { IsSelected: true, Index: >= 0 } pkgObj &&
+                pkgObj.Index < _packageData.Count)
             {
                 selectedPackages.Add(_packageData[pkgObj.Index].Name);
             }
@@ -884,7 +860,7 @@ public class PackageInstall(
             filter.SetName("Log Files (*.log)");
             filter.AddPattern("*.log");
 
-            var filters = Gio.ListStore.New(FileFilter.GetGType());
+            var filters = ListStore.New(FileFilter.GetGType());
             filters.Append(filter);
             dialog.SetFilters(filters);
 
@@ -921,21 +897,20 @@ public class PackageInstall(
             dialog.SetTitle("Install Local Package");
 
             var filter = FileFilter.New();
-            filter.SetName("Local package files (\"*.xz\", \"*.gz\", \"*.zst\")");
-            filter.AddPattern("*.xz");
+            filter.SetName("Local package files (\"*.gz\", \"*.zst\")");
             filter.AddPattern("*.gz");
             filter.AddPattern("*.zst");
 
-            var filters = Gio.ListStore.New(FileFilter.GetGType());
+            var filters = ListStore.New(FileFilter.GetGType());
             filters.Append(filter);
             dialog.SetFilters(filters);
 
             var file = await dialog.OpenAsync((Window)_overlay.GetRoot()!);
 
-            if (file is not null)
+            if (file?.GetPath() is { } filePath)
             {
-                lockoutService.Show($"Installing local package...");
-                var result = await privilegedOperationService.InstallLocalPackageAsync(file.GetPath()!);
+                lockoutService.Show("Installing local package...");
+                var result = await privilegedOperationService.InstallLocalPackageAsync(filePath);
                 if (!result.Success)
                 {
                     Console.WriteLine($"Failed to install local package: {result.Error}");
@@ -950,9 +925,7 @@ public class PackageInstall(
         {
             lockoutService.Hide();
 
-            var args = new ToastMessageEventArgs(
-                $"Installed local package"
-            );
+            var args = new ToastMessageEventArgs("Installed local package");
             genericQuestionService.RaiseToastMessage(args);
         }
     }
@@ -985,6 +958,5 @@ public class PackageInstall(
         _packageData.Clear();
         _groups.Clear();
         _installedPackageNames.Clear();
-        _currentDetailPkg = null;
     }
 }

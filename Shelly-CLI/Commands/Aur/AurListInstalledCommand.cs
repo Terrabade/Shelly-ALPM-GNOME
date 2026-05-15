@@ -7,9 +7,9 @@ using Spectre.Console.Cli;
 
 namespace Shelly_CLI.Commands.Aur;
 
-public class AurListInstalledCommand : AsyncCommand<ListSettings>
+public class AurListInstalledCommand : AsyncCommand<AlpmListSettings>
 {
-    public override async Task<int> ExecuteAsync(CommandContext context, ListSettings settings)
+    public override async Task<int> ExecuteAsync(CommandContext context, AlpmListSettings settings)
     {
         if (Program.IsUiMode)
         {
@@ -89,7 +89,7 @@ public class AurListInstalledCommand : AsyncCommand<ListSettings>
         }
     }
 
-    private static async Task<int> HandleUiModeListInstalled(ListSettings settings)
+    private static async Task<int> HandleUiModeListInstalled(AlpmListSettings settings)
     {
         AurPackageManager? manager = null;
         try

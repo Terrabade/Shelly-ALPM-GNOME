@@ -8,9 +8,9 @@ using Spectre.Console.Cli;
 
 namespace Shelly_CLI.Commands.Aur;
 
-public class AurListUpdatesCommand : AsyncCommand<ListSettings>
+public class AurListUpdatesCommand : AsyncCommand<AlpmListSettings>
 {
-    public override async Task<int> ExecuteAsync(CommandContext context, ListSettings settings)
+    public override async Task<int> ExecuteAsync(CommandContext context, AlpmListSettings settings)
     {
         if (Program.IsUiMode)
         {
@@ -101,7 +101,7 @@ public class AurListUpdatesCommand : AsyncCommand<ListSettings>
         }
     }
 
-    private static async Task<int> HandleUiModeListUpdates(ListSettings settings)
+    private static async Task<int> HandleUiModeListUpdates(AlpmListSettings settings)
     {
         var dbPath = XdgPaths.ShellyCache("db");
         XdgPaths.EnsureDirectory(dbPath);

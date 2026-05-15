@@ -37,7 +37,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         _fingerprintAuthState = fingerprintAuthState;
         _cliPath = CliPathResolver.FindCliPath();
     }
-    
+
     private string[] AppendNoConfirmIfNeeded(params string[] args)
     {
         var config = _configService.LoadConfig();
@@ -97,7 +97,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
     public async Task<OperationResult> InstallLocalPackageAsync(string filePath)
     {
         var result = await ExecutePrivilegedWithNoConfirmCheck("Install local package", "install-local", "--location",
-            filePath);
+            $"\"{filePath}\"");
         if (result.Success) _dirtyService.MarkDirty(DirtyScopes.Native);
         return result;
     }
@@ -111,7 +111,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         return result;
     }
 
-    public async Task<OperationResult> RemovePackagesAsync(IEnumerable<string> packages, bool isCascade, bool isCleanup)
+    public async Task<OperationResult> RemovePackagesAsync(IEnumerable<string> packages, bool isCascade, bool isCleanup, bool removeOptionalDeps)
     {
         var packageArgs = string.Join(" ", packages);
         if (isCascade)
@@ -124,7 +124,20 @@ public class PrivilegedOperationService : IPrivilegedOperationService
             packageArgs += " -r";
         }
 
+        if (removeOptionalDeps)
+        {
+            packageArgs += " -o";
+        }
+
         var result = await ExecutePrivilegedWithNoConfirmCheck("Remove packages", "remove", packageArgs);
+        if (result.Success) _dirtyService.MarkDirty(DirtyScopes.Native);
+        return result;
+    }
+
+    public async Task<OperationResult> RemoveLocalPackagesAsync(IEnumerable<string> packages)
+    {
+        var packageArgs = string.Join(" ", packages.Select(p => $"\"{p}\""));
+        var result = await ExecutePrivilegedWithNoConfirmCheck("Remove local packages", "remove-local", packageArgs);
         if (result.Success) _dirtyService.MarkDirty(DirtyScopes.Native);
         return result;
     }
@@ -263,6 +276,27 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         catch (Exception ex)
         {
             Console.WriteLine($"Failed to parse installed packages JSON: {ex.Message}");
+            return [];
+        }
+    }
+
+    public async Task<List<LocalPackageDto>> GetLocalInstalledPackagesAsync()
+    {
+        var result = await ExecuteCommandAsync("list-local-installed", "--json");
+
+        if (!result.Success || string.IsNullOrWhiteSpace(result.Output))
+        {
+            return [];
+        }
+
+        try
+        {
+            MemPackFrame.TryDecode<List<LocalPackageDto>>(result.Output, out var framed);
+            return framed ?? throw new InvalidOperationException();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Failed to parse local installed packages JSON: {ex.Message}");
             return [];
         }
     }
@@ -701,10 +735,10 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                                     if ((args.Response & (1 << i)) != 0)
                                         selected.Add(optDepsOptions[i]);
                                 }
-
-                                await SafeWriteAsync(string.Join(" ", selected));
+                                var response = string.Join(" ", selected);
+                               
                             }
-
+                            await SafeWriteAsync(args.Response.ToString());
                             awaitingOptDepsSelection = false;
                             optDepsQuestion = null;
                             optDepsOptions.Clear();

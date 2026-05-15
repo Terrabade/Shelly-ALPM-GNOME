@@ -4,8 +4,7 @@ using PackageManager.Alpm;
 using PackageManager.Alpm.Pacfile;
 using PackageManager.Aur.Models;
 using PackageManager.Flatpak;
-using Shelly_CLI.Commands.Aur;
-using Shelly_CLI.Commands.Standard;
+using PackageManager.Local;
 using Shelly_CLI.Commands.Standard.Models;
 using Shelly_CLI.Configuration;
 
@@ -15,6 +14,8 @@ namespace Shelly_CLI;
 [JsonSerializable(typeof(AlpmPackageUpdateDto))]
 [JsonSerializable(typeof(List<AlpmPackageDto>))]
 [JsonSerializable(typeof(AlpmPackageDto))]
+[JsonSerializable(typeof(List<LocalPackageDto>))]
+[JsonSerializable(typeof(LocalPackageDto))]
 [JsonSerializable(typeof(List<AurPackageDto>))]
 [JsonSerializable(typeof(AurPackageDto))]
 [JsonSerializable(typeof(List<AurUpdateDto>))]
@@ -36,6 +37,4 @@ namespace Shelly_CLI;
 [JsonSerializable(typeof(FlatpakRemoteDto))]
 [JsonSerializable(typeof(List<PacfileRecord>))]
 [JsonSerializable(typeof(PacfileRecord))]
-internal partial class ShellyCLIJsonContext : JsonSerializerContext
-{
-}
+internal partial class ShellyCLIJsonContext : JsonSerializerContext;

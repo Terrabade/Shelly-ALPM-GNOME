@@ -255,7 +255,7 @@ public class UnprivilegedOperationService(
     public async Task<List<RssModel>> GetArchNewsAsync(bool all = false)
     {
         var args = all ? "news" + " --json" + " --all" : "news" + " --json";
-        var result = await ExecuteUnprivilegedCommandAsync("Fetch Arch News", args, "--ui-mode");
+        var result = await ExecuteUnprivilegedCommandAsync("Fetch Arch News", args);
         if (!result.Success || string.IsNullOrEmpty(result.Output))
         {
             return [];
@@ -389,6 +389,7 @@ public class UnprivilegedOperationService(
         CancellationToken ct, params string[] args)
     {
         var arguments = string.Join(" ", args);
+        arguments += " --ui-mode";
         var fullCommand = $"{_cliPath} {arguments}";
 
         Console.WriteLine($"Executing unprivileged command: {fullCommand}");

@@ -6,9 +6,9 @@ using Spectre.Console.Cli;
 
 namespace Shelly_CLI.Commands.Standard;
 
-public class ListAvailableCommand : Command<ListSettings>
+public class ListAvailableCommand : Command<AlpmListSettings>
 {
-    public override int Execute(CommandContext context, ListSettings settings)
+    public override int Execute(CommandContext context, AlpmListSettings settings)
     {
         if (Program.IsUiMode)
         {
@@ -71,7 +71,12 @@ public class ListAvailableCommand : Command<ListSettings>
             if (settings.JsonOutput)
             {
                 var sortedList = sortedPackages.ToList();
-                MemPackFrame.WriteToStdout(sortedList);
+                var json = JsonSerializer.Serialize(sortedList, ShellyCLIJsonContext.Default.ListAlpmPackageDto);
+                // Write directly to stdout stream to bypass Spectre.Console redirection
+                using var stdout = Console.OpenStandardOutput();
+                using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
+                writer.WriteLine(json);
+                writer.Flush();
                 return 0;
             }
 
@@ -106,7 +111,7 @@ public class ListAvailableCommand : Command<ListSettings>
         }
     }
 
-    private static int HandleUiModeListAvailable(ListSettings settings)
+    private static int HandleUiModeListAvailable(AlpmListSettings settings)
     {
         try
         {
