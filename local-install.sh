@@ -155,12 +155,15 @@ EOF
 echo "Creating notifications entry"
 cat <<EOF > /usr/share/applications/shelly-notifications.desktop
 [Desktop Entry]
-Name=Shelly-Notifications
+Name=Shelly Notifications
+Comment=Notification service for Shelly package manager
 Exec=/usr/bin/shelly-notifications
-Icon=shelly
+Icon=shelly-tray
 Type=Application
 Categories=System;Utility;
+Keywords=program;software;store;repository;package;add;install;uninstall;remove;update;apps;applications;flatpak;pacman;aur;appimage;
 Terminal=false
+NoDisplay=true
 EOF
 
 
