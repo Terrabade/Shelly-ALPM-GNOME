@@ -966,7 +966,7 @@ msgid "Install Local"
 msgstr "Lokale installieren"
 
 msgid "Perform Upgrade"
-msgstr "Perform Upgrade"
+msgstr "Upgrade durchführen"
 
 msgid "Perform a full system upgrade with install (-u)"
 msgstr "Vollständiges System-Upgrade mit der Option install (-u) durchführen"
