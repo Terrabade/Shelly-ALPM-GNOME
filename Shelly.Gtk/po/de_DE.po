@@ -147,7 +147,7 @@ msgid "Optional Deps"
 msgstr "Optionale Abhängigkeiten"
 
 msgid "Licenses"
-msgstr "Lizensen"
+msgstr "Lizenzen"
 
 msgid "Keywords"
 msgstr "Schlüsselwörter"
