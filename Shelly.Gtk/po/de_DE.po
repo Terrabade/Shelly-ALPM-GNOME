@@ -951,7 +951,7 @@ msgid "Scope"
 msgstr "Anwendungsbereich"
 
 msgid "Remove Selected"
-msgstr "Ausgewählte aufheben"
+msgstr "Ausgewählte entfernen"
 
 msgid "Update All"
 msgstr "Alle aktualisieren"
