@@ -3,6 +3,7 @@ using PackageManager.Alpm;
 using PackageManager.Utilities;
 using PackageManager.Wire;
 using Shelly_CLI.Configuration;
+using Shelly.Utilities;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -104,7 +105,7 @@ public class ListUpdatesCommand : Command<ListSettings>
 
         if (settings.JsonOutput)
         {
-            MemPackFrame.WriteToStdout(updates);
+            JsonPackFrame.WriteToStdout(updates);
             return 0;
         }
 
