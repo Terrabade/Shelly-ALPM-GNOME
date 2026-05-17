@@ -15,7 +15,7 @@ msgid "Any"
 msgstr "Alles"
 
 msgid "Loading..."
-msgstr "Laden …"
+msgstr "Laden..."
 
 msgid "Recent Operations"
 msgstr "Letzter Vorgang"
@@ -42,7 +42,7 @@ msgid "Available Updates ({0})"
 msgstr "Verfügbare Updates ({0})"
 
 msgid "Updates ({0})"
-msgstr "Updates"
+msgstr "Updates ({0})"
 
 msgid "All packages are up to date"
 msgstr "Alle Pakete auf dem neuesten Stand"
@@ -69,7 +69,7 @@ msgid "Install Packages?"
 msgstr "Pakete installieren"
 
 msgid "Installing..."
-msgstr "Installieren …"
+msgstr "Installieren..."
 
 msgid "No packages found."
 msgstr "Keine Pakete gefunden"
@@ -165,19 +165,19 @@ msgid "Replaces"
 msgstr "Ersetzten"
 
 msgid "Remove Packages?"
-msgstr "Paket(e) entfernen"
+msgstr "Paket(e) entfernen?"
 
 msgid "Removing..."
-msgstr "Entfernen …"
+msgstr "Entfernen..."
 
 msgid "Removed {0} Package(s)"
 msgstr "{0} Pakete(s) entfernen"
 
 msgid "<span size='large'>AUR packages are up to date</span>"
-msgstr "AUR-Pakete sind auf dem neuesten Stand"
+msgstr "<span size='large'>AUR-Pakete sind auf dem neuesten Stand</span>"
 
 msgid "Update Packages?"
-msgstr "Pakete aktualisieren"
+msgstr "Pakete aktualisieren?"
 
 msgid "Updated {0} Package(s)"
 msgstr "{0} Paket(e) aktualisiert"
@@ -222,7 +222,7 @@ msgid "Corrupted Package Found"
 msgstr "Beschädigtes Paket gefunden"
 
 msgid "Import PGP Key?"
-msgstr "PGP Schlüssel importieren"
+msgstr "PGP Schlüssel importieren?"
 
 msgid "Select Provider"
 msgstr "Anbieter auswählen"
@@ -272,13 +272,13 @@ msgid "Cache directory does not exist"
 msgstr "Cache-Verzeichnis existiert nicht"
 
 msgid "Cleaning package cache..."
-msgstr "Paket-Cache bereinigen …"
+msgstr "Paket-Cache bereinigen..."
 
 msgid "Package cache cleaned successfully"
 msgstr "Paket-Cache erfolgreich bereinigt"
 
 msgid "Cache clean failed: {0}"
-msgstr "Cache bereinigen fehlgeschlagen"
+msgstr "Cache bereinigen fehlgeschlagen: {0}"
 
 msgid "Fingerprint Disable Instructions"
 msgstr "Anleitung zum Deaktivieren der Fingerabdruckerkennung"
@@ -447,7 +447,7 @@ msgid "Local Flatpak files (\"*.FlatpakRef\", \"*.flatpak)\""
 msgstr "Lokale Flatpak-Dateien (\"*.FlatpakRef\", \"*.flatpak)\""
 
 msgid "Installing selected local flatpak file..."
-msgstr "Ausgewählte lokale Flatpak-Datei installieren …"
+msgstr "Ausgewählte lokale Flatpak-Datei installieren..."
 
 msgid "Installing Flatpak failed"
 msgstr "Flatpak-Installation fehlgeschlagen"
@@ -459,7 +459,7 @@ msgid "Install Package?"
 msgstr "Paket installieren?"
 
 msgid "Installing {0}..."
-msgstr "Installieren {0} …"
+msgstr "Installieren {0}..."
 
 msgid "Installed Flatpak addon"
 msgstr "Flatpak-Addon installiert"
@@ -486,7 +486,7 @@ msgid "Keep Config?"
 msgstr "Konfiguration beibehalten?"
 
 msgid "Removing {0}..."
-msgstr "{0} entfernen …"
+msgstr "{0} entfernen..."
 
 msgid "Failed to remove package {0}: {1}"
 msgstr "Paket {0} entfernen fehlgeschlagen: {1}"
@@ -498,7 +498,7 @@ msgid "Permission Changes"
 msgstr "Berechtigungsänderungen"
 
 msgid "Updating Flatpak packages..."
-msgstr "Flatpak-Pakete aktualisieren …"
+msgstr "Flatpak-Pakete aktualisieren..."
 
 msgid "Failed to update packages: {0}"
 msgstr "Flatpak-Pakete aktualisieren fehlgeschlagen: {0}"
@@ -507,7 +507,7 @@ msgid "Updated all Flatpak(s)"
 msgstr "Alle Flatpaks aktualisiert"
 
 msgid "<span size='large'>System packages are up to date</span>"
-msgstr "<span size='large'>Systempakete sind auf dem neuesten Stand"
+msgstr "<span size='large'>Systempakete sind auf dem neuesten Stand</span>"
 
 msgid "Current"
 msgstr "Aktuell"
@@ -545,7 +545,7 @@ msgstr ""
 "fortfahren möchtest? "
 
 msgid "Updating..."
-msgstr "Aktualisieren …"
+msgstr "Aktualisieren..."
 
 msgid "Reboot Required"
 msgstr "Neustart erforderlich"
@@ -588,7 +588,7 @@ msgid "Local package files (\"*.gz\", \"*.zst\")"
 msgstr "Lokales Paket installieren (\"*.gz\", \"*.zst\")"
 
 msgid "Installing local package..."
-msgstr "Lokales Paket installieren …"
+msgstr "Lokales Paket installieren..."
 
 msgid "Installed local package"
 msgstr "Lokales Paket installiert"
@@ -624,7 +624,7 @@ msgid "Image Files"
 msgstr "Imagedatei"
 
 msgid "Enable AUR?"
-msgstr "AUR aktivieren"
+msgstr "AUR aktivieren?"
 
 msgid ""
 "The Arch User Repository (AUR) is a community-driven repository. Packages "
@@ -640,13 +640,13 @@ msgid "Would you like to install this this now?"
 msgstr "Möchtest du dies jetzt installieren?"
 
 msgid "Installing flatpak..."
-msgstr "Flatpak installieren …"
+msgstr "Flatpak installieren..."
 
 msgid "Reboot required to complete installation."
 msgstr "Neustart ist erforderlich, um die Installation abzuschließen."
 
 msgid "Synchronizing databases..."
-msgstr "Datenbanken synchronisieren …"
+msgstr "Datenbanken synchronisieren..."
 
 msgid "Database lock removed"
 msgstr "Datenbank-Sperre entfernt"
@@ -721,7 +721,7 @@ msgid "AppImage Files"
 msgstr "AppImage-Datei"
 
 msgid "Installing AppImage..."
-msgstr "AppImage installieren …"
+msgstr "AppImage installieren..."
 
 msgid "{0} installed successfully!"
 msgstr "{0} erfolgreich installiert!"
@@ -733,10 +733,10 @@ msgid "No AppImages need to be upgraded"
 msgstr "Keine AppImages aktualisieren notwendig"
 
 msgid "Running updates..."
-msgstr "Updates ausführen …"
+msgstr "Updates ausführen..."
 
 msgid "Updating AppImages..."
-msgstr "AppImages aktuliesieren …"
+msgstr "AppImages aktuliesieren..."
 
 msgid "All AppImages updated successfully!"
 msgstr "Alle AppImages erfolgreich aktualisiert!"
@@ -751,7 +751,7 @@ msgid "Failed to save configuration: {0}"
 msgstr "Konfiguration speichern fehlgeschlagen: {0}"
 
 msgid "Syncing {0}..."
-msgstr "{0} synchronisieren …"
+msgstr "{0} synchronisieren..."
 
 msgid "Synced {0}"
 msgstr "{0} synchronisiert"
@@ -760,7 +760,7 @@ msgid "Failed to sync: {0}"
 msgstr "Synchronisieren fehlgeschlagen: {0}"
 
 msgid "Syncing all AppImages..."
-msgstr "Alle AppImages synchronisieren …"
+msgstr "Alle AppImages synchronisieren..."
 
 msgid "Synced"
 msgstr "Synchronisiert"
@@ -788,7 +788,7 @@ msgid "Package is already installed"
 msgstr "Paket bereits installiert"
 
 msgid "Installing package..."
-msgstr "Paket installieren …"
+msgstr "Paket installieren..."
 
 msgid "Package installed successfully"
 msgstr "Paket erfolgreich installiert"
@@ -800,7 +800,7 @@ msgid "Failed to install flatpak"
 msgstr "Flatpak installieren fehlgeschlagen"
 
 msgid "Searching..."
-msgstr "Suchen …"
+msgstr "Suchen..."
 
 msgid "Search error: {0}"
 msgstr "Suchfehler: {0}"
@@ -827,7 +827,7 @@ msgid "Remove"
 msgstr "Entfernen"
 
 msgid "Search packages..."
-msgstr "Pakete suchen …"
+msgstr "Pakete suchen..."
 
 msgid "Use chroot"
 msgstr "chroot verwenden"
@@ -891,7 +891,7 @@ msgid "user"
 msgstr "Nutzer"
 
 msgid "Loading Flatpak Data..."
-msgstr "Flatpak-Daten werden geladen …"
+msgstr "Flatpak-Daten werden geladen..."
 
 msgid "Back"
 msgstr "Zurück"
@@ -1130,7 +1130,7 @@ msgid "Sponsor"
 msgstr "Sponsor"
 
 msgid "Search..."
-msgstr "Suchen …"
+msgstr "Suchen..."
 
 msgid "Sync metadata for all AppImages. Useful if AppImage self updated."
 msgstr "Metadaten für alle AppImages synchronisieren. Nützlich, wenn sich das AppImage selbst aktualisiert hat."
@@ -1151,7 +1151,7 @@ msgid "Install AppImage"
 msgstr "AppImage installieren"
 
 msgid "Description goes here..."
-msgstr "Die Beschreibung steht hier …"
+msgstr "Die Beschreibung steht hier..."
 
 msgid "Size on Disk"
 msgstr "Größe auf Datenträger"
@@ -1163,7 +1163,7 @@ msgid "Update URL / Repository Info"
 msgstr "Update-URL / Repository-Info"
 
 msgid "e.g. repo or https://..."
-msgstr "e.g. repo or https://..."
+msgstr "z.B. repo oder https://..."
 
 msgid "Installation Path"
 msgstr "Installationspfad"
