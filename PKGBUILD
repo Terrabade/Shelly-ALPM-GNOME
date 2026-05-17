@@ -33,7 +33,7 @@ makedepends=('dotnet-sdk-10.0' 'clang' 'gettext')
 
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/Terrabade/Shelly-ALPM-GNOME/archive/v${pkgver}.tar.gz")
 
-sha256sums=('bf72df2cc5176ec1b4d1b491f2c49d31106629c3b381157ba527512e3926aa3b')
+sha256sums=('26850b7f31f653288506cbaa0a493b6b28f74fcd108b7d163987ba562b374330')
 
 build() {
   cd "$srcdir/Shelly-ALPM-GNOME-${pkgver}"
