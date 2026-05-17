@@ -11,11 +11,6 @@
         <child>
             <object class="GtkBox">
                 <child>
-                    <object class="GtkLabel">
-                        <property name="label">Recommended Packages</property>
-                    </object>
-                </child>
-                <child>
                     <object class="GtkBox">
                         <property name="hexpand">true</property>
                     </object>
