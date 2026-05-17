@@ -95,18 +95,21 @@ public class CacheClean : AsyncCommand<CacheCleanSettings>
                 AnsiConsole.MarkupLine(
                     $"  {Markup.Escape(entry.FullPath)} [dim]({CacheCleanHelper.FormatSize(entry.FileSize)})[/]");
             }
-
-            var confirmed = AnsiConsole.Confirm(
-                "[yellow]Do you want to continue?[/]");
-
-            if (!confirmed)
+            
+            if (!settings.NoConfirm)
             {
-                AnsiConsole.MarkupLine(
-                    "[grey]Operation cancelled.[/]");
+                var confirmed = AnsiConsole.Confirm(
+                    "[yellow]Do you want to continue?[/]");
 
-                return Task.FromResult(0);
+                if (!confirmed)
+                {
+                    AnsiConsole.MarkupLine(
+                        "[grey]Operation cancelled.[/]");
+
+                    return Task.FromResult(0);
+                }
             }
-
+            
             RootElevator.EnsureRootExectuion();
 
             foreach (var entry in matchedEntries)
@@ -135,7 +138,6 @@ public class CacheClean : AsyncCommand<CacheCleanSettings>
         {
             RootElevator.EnsureRootExectuion();
             
-            // Need to place logic here. It's supposed to 
             candidates.Where(x => settings.Packages.Contains(x.Name)).ToList().ForEach(candidate =>
             {
                 File.Delete(candidate.FullPath);
