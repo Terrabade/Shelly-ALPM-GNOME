@@ -64,7 +64,69 @@ public class CacheClean : AsyncCommand<CacheCleanSettings>
             AnsiConsole.MarkupLine($"\n[blue]Total: {candidates.Count} files, {CacheCleanHelper.FormatSize(totalSize)}[/]");
             return Task.FromResult(0);
         }
+        
+        if (settings.Packages.Length > 0)
+        {
+            var matchedEntries = entries
+                .Where(entry =>
+                    settings.Packages.Any(package =>
+                        entry.Name.StartsWith(
+                            package,
+                            StringComparison.Ordinal)))
+                .ToList();
 
+            if (matchedEntries.Count == 0)
+            {
+                AnsiConsole.MarkupLine(
+                    "[yellow]No matching cache entries found.[/]");
+
+                return Task.FromResult(0);
+            }
+
+            AnsiConsole.MarkupLine(
+                "[blue]The following cache entries will be removed:[/]");
+
+            foreach (var entry in matchedEntries)
+            {
+                AnsiConsole.MarkupLine(
+                    $"  {Markup.Escape(entry.FullPath)} [dim]({CacheCleanHelper.FormatSize(entry.FileSize)})[/]");
+            }
+
+            var confirmed = AnsiConsole.Confirm(
+                "[yellow]Do you want to continue?[/]");
+
+            if (!confirmed)
+            {
+                AnsiConsole.MarkupLine(
+                    "[grey]Operation cancelled.[/]");
+
+                return Task.FromResult(0);
+            }
+
+            RootElevator.EnsureRootExectuion();
+
+            foreach (var entry in matchedEntries)
+            {
+                try
+                {
+                    File.Delete(entry.FullPath);
+
+                    AnsiConsole.MarkupLine(
+                        $"[green]Removed:[/] {Markup.Escape(entry.FullPath)}");
+                }
+                catch (Exception ex)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[red]Failed:[/] {Markup.Escape(entry.FullPath)}");
+
+                    AnsiConsole.MarkupLine(
+                        $"[grey]{Markup.Escape(ex.Message)}[/]");
+                }
+            }
+
+            return Task.FromResult(0);
+        }
+        
         if (settings.Remove)
         {
             RootElevator.EnsureRootExectuion();
@@ -73,7 +135,6 @@ public class CacheClean : AsyncCommand<CacheCleanSettings>
             candidates.Where(x => settings.Packages.Contains(x.Name)).ToList().ForEach(candidate =>
             {
                 File.Delete(candidate.FullPath);
-                Console.WriteLine($"Finished: {candidate.FullPath}");
             });
             
             AnsiConsole.MarkupLine($"[green]Removed {candidates.Count} files, freed {CacheCleanHelper.FormatSize(totalSize)}[/]");

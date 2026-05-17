@@ -28,7 +28,6 @@ public class CacheCleanSettings : CommandSettings
     public string? CacheDir { get; set; } = "/var/cache/pacman/pkg";
 
     [CommandOption("-t | --target")]
-    [CommandArgument(0, "<package>")]
     [Description("Package name")]
     public string[] Packages { get; set; } = [];
 
