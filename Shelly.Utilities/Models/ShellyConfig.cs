@@ -1,6 +1,6 @@
-using Shelly_CLI.Enums;
+using Shelly.Utilities.Enums;
 
-namespace Shelly_CLI.Configuration;
+namespace Shelly.Utilities;
 
 public class ShellyConfig
 {
@@ -54,4 +54,6 @@ public class ShellyConfig
     public string OutputMode { get; set; } = "singlepane";
     
     public int SinglePaneMaxStickies { get; set; } = 6;
+    
+    public bool TrayAutoStart { get; set; } = false;
 }
