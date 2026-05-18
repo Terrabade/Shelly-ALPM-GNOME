@@ -38,7 +38,7 @@ public sealed class PackageManagement(
     private readonly Dictionary<ColumnViewCell, (SignalHandler<CheckButton> OnToggled, EventHandler OnExternalToggle)>
         _checkBinding = [];
 
-    private bool _deletePackageCache = configService.LoadConfig().RemoveCache;
+    private readonly bool _deletePackageCache = configService.LoadConfig().RemoveCache;
     private Box _box = null!;
     private SearchEntry _searchEntry = null!;
     private CheckButton _cascadeDeleteCheck = null!;
