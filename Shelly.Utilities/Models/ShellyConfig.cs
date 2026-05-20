@@ -1,6 +1,6 @@
-using Shelly_CLI.Enums;
+using Shelly.Utilities.Enums;
 
-namespace Shelly_CLI.Configuration;
+namespace Shelly.Utilities;
 
 public class ShellyConfig
 {
@@ -37,6 +37,7 @@ public class ShellyConfig
     public bool AppImageEnabled { get; set; } = false;
     public bool NewInstallInitSettings { get; set; } = false;
     public bool UseSymbolicTray { get; set; } = true;
+    public bool RemoveCache { get; set; } = false;
 
     public string? TrayIconPath { get; set; }
     public string? TrayUpdatesIconPath { get; set; }
@@ -54,4 +55,6 @@ public class ShellyConfig
     public string OutputMode { get; set; } = "singlepane";
     
     public int SinglePaneMaxStickies { get; set; } = 6;
+    
+    public bool TrayAutoStart { get; set; } = false;
 }
