@@ -123,6 +123,23 @@ public class FlatpakRepair : Command<FlatpakRepairSettings>
         
         // Step 3 - Remove any refs that had an invalid object, and any non-partial refs that had missing objects.
 
+        foreach (var reference in invalidRefs)
+        {
+            var removed = OstreeManager.DeleteRef(reference.RepoPath, reference.Remote, reference.Ref);
+            
+            if (removed)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[green]Removed:[/] {reference.FullRef}");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]Failed to remove:[/] {reference.FullRef}");
+            }
+            
+        }
+
         // Step 4 - Prune all objects not referenced by a ref, which gets rid of any possibly invalid non-scanned objects.
 
         // Step 5 - Enumerate all deployed refs and re-install any that are not in the repo (or are partial for a non-subdir deploy).

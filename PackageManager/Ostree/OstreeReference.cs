@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
-using PackageManager;
+
+namespace PackageManager.Ostree;
 
 internal static partial class OstreeReference
 {
@@ -90,4 +91,26 @@ internal static partial class OstreeReference
 
     [LibraryImport(GLibName, EntryPoint = "g_free")]
     public static partial void GFree(IntPtr ptr);
+    
+    [LibraryImport(LibName,
+        EntryPoint = "ostree_parse_refspec",
+        StringMarshalling = StringMarshalling.Utf8)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool OstreeParseRefspec(
+        string refspec,
+        out IntPtr outRemote,
+        out IntPtr outRef,
+        out IntPtr error);
+    
+    [LibraryImport(LibName,
+        EntryPoint = "ostree_repo_set_ref_immediate",
+        StringMarshalling = StringMarshalling.Utf8)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool RepoSetRefImmediate(
+        IntPtr repo,
+        string? remote,
+        string @ref,
+        string? checksum,
+        IntPtr cancellable,
+        out IntPtr error);
 }

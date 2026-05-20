@@ -71,7 +71,7 @@ public class OstreeManager()
                 }
 
                 refs.AddRange(
-                    ParseRefsTable(refsTable));
+                    ParseRefsTable(refsTable, repoPath));
             }
             finally
             {
@@ -87,7 +87,7 @@ public class OstreeManager()
     }
     
     private List<OstreeRef> ParseRefsTable(
-        IntPtr refsTable)
+        IntPtr refsTable, string repoPath)
     {
         var refs = new List<OstreeRef>();
 
@@ -127,7 +127,8 @@ public class OstreeManager()
             refs.Add(new OstreeRef
             {
                 Remote = split[0],
-                Ref = split[1]
+                Ref = split[1],
+                RepoPath = repoPath
             });
         }
 
@@ -293,7 +294,7 @@ public class OstreeManager()
         }
     }
     
-    private IntPtr? OpenRepo(string repoPath)
+    private static IntPtr? OpenRepo(string repoPath)
     {
         var file =
             OstreeReference.GFileNewForPath(repoPath);
@@ -332,9 +333,40 @@ public class OstreeManager()
     }
     
     
-    public bool DeleteRef(string repoPath, string remote, string reference)
+    public static bool DeleteRef(string repoPath, string remote, string reference)
     {
-        return false;
+        var repo = OpenRepo(repoPath);
+        
+        if (repo == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var success = OstreeReference.RepoSetRefImmediate(repo.Value, remote, reference, null, IntPtr.Zero, out var error);
+
+            if (success)
+            {
+                return true;
+            }
+
+            if (error != IntPtr.Zero)
+            {
+                var errorMessage = FlatpakReference.GetErrorMessage(error);
+                
+                Console.Error.WriteLine($"Failed to delete ref: {errorMessage}");
+                
+                OstreeReference.GErrorFree(error);
+            }
+
+            return false;
+        }
+        
+        finally
+        {
+            OstreeReference.GObjectUnref(repo.Value);
+        }
     }
 
     public bool Prune(string repoPath)
