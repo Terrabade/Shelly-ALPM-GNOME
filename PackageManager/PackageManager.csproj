@@ -10,8 +10,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-      <PackageReference Include="MemoryPack" Version="1.21.4" />
-      <PackageReference Include="MemoryPack.Streaming" Version="1.21.4" />
+        <ProjectReference Include="..\Shelly.Utilities\Shelly.Utilities.csproj" />
     </ItemGroup>
     
 </Project>

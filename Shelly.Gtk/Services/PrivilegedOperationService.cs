@@ -71,7 +71,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
 
         try
         {
-            MemPackFrame.TryDecode<List<AlpmPackageDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<AlpmPackageDto>>(result.Output, out var framed);
             return framed ?? throw new InvalidOperationException();
         }
         catch (Exception ex)
@@ -111,7 +111,27 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         return result;
     }
 
-    public async Task<OperationResult> RemovePackagesAsync(IEnumerable<string> packages, bool isCascade, bool isCleanup, bool removeOptionalDeps)
+    private async Task<OperationResult> RemovePackageCacheAsync(
+        IEnumerable<string> packages)
+    {
+        var targetArgs = packages
+            .SelectMany(x => new[] { "-t", x })
+            .ToArray();
+        
+        Console.Error.Write("Removing package cache...");
+        
+        return await ExecutePrivilegedCommandAsync(
+            "Removing package from cache",
+            [
+                "utility",
+                "cache-clean",
+                "--no-confirm",
+                ..targetArgs
+            ]);
+    }
+    
+    
+    public async Task<OperationResult> RemovePackagesAsync(IEnumerable<string> packages, bool isCascade, bool isCleanup, bool removeOptionalDeps, bool removePackageFromCache)
     {
         var packageArgs = string.Join(" ", packages);
         if (isCascade)
@@ -130,7 +150,12 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         }
 
         var result = await ExecutePrivilegedWithNoConfirmCheck("Remove packages", "remove", packageArgs);
+        if (result.Success && removePackageFromCache)
+        {
+            var cacheResult = await RemovePackageCacheAsync(packages);
+        } 
         if (result.Success) _dirtyService.MarkDirty(DirtyScopes.Native);
+        
         return result;
     }
 
@@ -234,7 +259,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
             await ExecutePrivilegedWithNoConfirmCheck("Get Package Builds", "aur", "get-package-build", packageArgs);
 
         if (!result.Success) return [];
-        MemPackFrame.TryDecode<List<PackageBuild>>(result.Output, out var framed);
+        JsonPackFrame.TryDecode<List<PackageBuild>>(result.Output, out var framed);
         return framed ?? [];
     }
 
@@ -242,7 +267,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
     {
         var result = await ExecutePrivilegedCommandAsync("Check for Updates", "list-updates", "--json");
         if (!result.Success) return [];
-        MemPackFrame.TryDecode<List<AlpmPackageUpdateDto>>(result.Output, out var framed);
+        JsonPackFrame.TryDecode<List<AlpmPackageUpdateDto>>(result.Output, out var framed);
         return framed ?? [];
     }
 
@@ -253,7 +278,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
             : await ExecuteCommandAsync("list-available", "--json");
 
         if (!result.Success) return [];
-        MemPackFrame.TryDecode<List<AlpmPackageDto>>(result.Output, out var framed);
+        JsonPackFrame.TryDecode<List<AlpmPackageDto>>(result.Output, out var framed);
         return framed ?? [];
     }
 
@@ -270,7 +295,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
 
         try
         {
-            MemPackFrame.TryDecode<List<AlpmPackageDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<AlpmPackageDto>>(result.Output, out var framed);
             return framed ?? throw new InvalidOperationException();
         }
         catch (Exception ex)
@@ -291,7 +316,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
 
         try
         {
-            MemPackFrame.TryDecode<List<LocalPackageDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<LocalPackageDto>>(result.Output, out var framed);
             return framed ?? throw new InvalidOperationException();
         }
         catch (Exception ex)
@@ -314,7 +339,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
 
         try
         {
-            MemPackFrame.TryDecode<List<AurPackageDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<AurPackageDto>>(result.Output, out var framed);
 
             return framed ?? throw new InvalidOperationException();
         }
@@ -338,7 +363,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
 
         try
         {
-            MemPackFrame.TryDecode<List<AurUpdateDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<AurUpdateDto>>(result.Output, out var framed);
             return framed ?? throw new InvalidOperationException();
         }
         catch (Exception ex)
@@ -359,7 +384,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
 
         try
         {
-            MemPackFrame.TryDecode<List<AurPackageDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<AurPackageDto>>(result.Output, out var framed);
             return framed ?? throw new InvalidOperationException();
         }
         catch (Exception ex)

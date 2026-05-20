@@ -7,6 +7,7 @@ using Shelly.Gtk.Services.TrayServices;
 using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.AppImage;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
+using Shelly.Utilities;
 
 // ReSharper disable UnusedParameter.Local
 // ReSharper disable AccessToModifiedClosure
@@ -32,7 +33,7 @@ public class UnprivilegedOperationService(
 
         try
         {
-            MemPackFrame.TryDecode<List<FlatpakPackageDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<FlatpakPackageDto>>(result.Output, out var framed);
             return framed ?? [];
         }
         catch (Exception ex)
@@ -53,7 +54,7 @@ public class UnprivilegedOperationService(
 
         try
         {
-            MemPackFrame.TryDecode<List<FlatpakPackageDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<FlatpakPackageDto>>(result.Output, out var framed);
             return framed ?? [];
         }
         catch (Exception ex)
@@ -85,7 +86,7 @@ public class UnprivilegedOperationService(
         {
             try
             {
-                MemPackFrame.TryDecode<List<AppstreamApp>>(result.Output, out var framed);
+                JsonPackFrame.TryDecode<List<AppstreamApp>>(result.Output, out var framed);
                 return framed ?? [];
             }
             catch (Exception ex)
@@ -152,7 +153,7 @@ public class UnprivilegedOperationService(
     {
         var result = await ExecuteUnprivilegedCommandAsync("flatpak list remotes", "flatpak list-remotes", "-j");
         if (!result.Success) return [];
-        MemPackFrame.TryDecode<List<FlatpakRemoteDto>>(result.Output, out var framed);
+        JsonPackFrame.TryDecode<List<FlatpakRemoteDto>>(result.Output, out var framed);
         return framed ?? [];
     }
 
@@ -225,7 +226,7 @@ public class UnprivilegedOperationService(
                 await ExecuteUnprivilegedCommandAsync("Sync remote", "flatpak app-remote-info", remote, app, arch,
                     "-j");
             if (!result.Success) return 0;
-            MemPackFrame.TryDecode<FlatpakRemoteRefInfo>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<FlatpakRemoteRefInfo>(result.Output, out var framed);
             return framed?.DownloadSize ?? 0;
         }
         catch (Exception ex)
@@ -242,7 +243,7 @@ public class UnprivilegedOperationService(
         try
         {
             if (!result.Success || string.IsNullOrEmpty(result.Output)) return [];
-            MemPackFrame.TryDecode<List<AppImageDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<AppImageDto>>(result.Output, out var framed);
             return framed ?? [];
         }
         catch (Exception ex)
@@ -263,7 +264,7 @@ public class UnprivilegedOperationService(
 
         try
         {
-            MemPackFrame.TryDecode<List<RssModel>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<RssModel>>(result.Output, out var framed);
             return framed ?? [];
         }
         catch (Exception ex)
@@ -284,7 +285,7 @@ public class UnprivilegedOperationService(
 
         try
         {
-            MemPackFrame.TryDecode<List<PacfileRecord>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<PacfileRecord>>(result.Output, out var framed);
             return framed ?? [];
         }
         catch (Exception ex)
@@ -295,13 +296,36 @@ public class UnprivilegedOperationService(
         return [];
     }
 
+    public Task<OperationResult> AddSystemdServiceTray(string serviceContent, string service)
+    {
+        var dir = XdgPaths.ConfigHome() + "/systemd/user";
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, $"{service}.service"), serviceContent);
+
+        _ = ExecuteUnprivilegedCommandAsync("Systemctl", "systemctl", "--user daemon-reload");
+        _ = ExecuteUnprivilegedCommandAsync("Systemctl", "systemctl", $"--user stop {service}");
+        
+        return Task.FromResult(new OperationResult());
+    }
+
+    public Task<OperationResult> RemoveSystemdServiceTray(string service)
+    {
+        var dir = XdgPaths.ConfigHome() + "/systemd/user";
+        File.Delete($"{dir}/{service}.service");
+        
+        _ = ExecuteUnprivilegedCommandAsync("Systemctl", "systemctl", "--user daemon-reload");
+        _ = ExecuteUnprivilegedCommandAsync("Systemctl", "systemctl", $"--user stop {service}");
+
+        return Task.FromResult(new OperationResult());
+    }
+
 
     public async Task<List<AppImageDto>> GetUpdatesAppImagesAsync()
     {
         var result = await ExecuteUnprivilegedCommandAsync("Get AppImage Updates", "appimage list-updates --json");
         try
         {
-            MemPackFrame.TryDecode<List<AppImageDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<AppImageDto>>(result.Output, out var framed);
             return framed ?? [];
         }
         catch (Exception ex)
@@ -318,7 +342,7 @@ public class UnprivilegedOperationService(
 
         try
         {
-            MemPackFrame.TryDecode<List<AlpmPackageUpdateDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<AlpmPackageUpdateDto>>(result.Output, out var framed);
             return framed ?? [];
         }
         catch (Exception ex)
@@ -346,7 +370,7 @@ public class UnprivilegedOperationService(
         try
         {
             if (!result.Success) return new SyncModel();
-            MemPackFrame.TryDecode<SyncModel>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<SyncModel>(result.Output, out var framed);
             return framed ?? new SyncModel();
         }
         catch (Exception ex)
@@ -369,7 +393,7 @@ public class UnprivilegedOperationService(
 
         try
         {
-            MemPackFrame.TryDecode<List<FlatpakPackageDto>>(result.Output, out var framed);
+            JsonPackFrame.TryDecode<List<FlatpakPackageDto>>(result.Output, out var framed);
             return framed ?? [];
         }
         catch (Exception ex)

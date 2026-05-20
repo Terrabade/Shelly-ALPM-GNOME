@@ -10,6 +10,7 @@ using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
 using Shelly.Gtk.UiModels.PackageManagerObjects.GObjects;
 using Shelly.Gtk.Windows.Dialog;
+using static Shelly.GTK.Resources.Translations;
 using ListStore = Gio.ListStore;
 
 // ReSharper disable NotAccessedField.Local
@@ -38,7 +39,7 @@ public sealed class PackageInstall(
     private CustomFilter _filter = null!;
     private string _searchText = string.Empty;
     private List<string> _groups = [];
-    private string _selectedGroup = "Any";
+    private string _selectedGroup = T("Any");
 
     private readonly List<AlpmPackageGObject> _packageGObjectRefs = [];
     private readonly List<AlpmPackageDto> _packageData = [];
@@ -61,6 +62,7 @@ public sealed class PackageInstall(
     public Widget CreateWindow()
     {
         var builder = Builder.NewFromString(ResourceHelper.LoadUiFile("UiFiles/Package/PackageWindow.ui"), -1);
+        builder.TranslationDomain = Domain;
         _overlay = (Overlay)builder.GetObject("PackageWindow")!;
         var columnView = (ColumnView)builder.GetObject("package_column_view")!;
         var checkColumn = (ColumnViewColumn)builder.GetObject("check_column")!;
@@ -241,7 +243,7 @@ public sealed class PackageInstall(
         backButton.SetIconName("go-next-symbolic");
         backButton.Halign = Align.Start;
         backButton.AddCssClass("flat");
-        backButton.TooltipText = "Close details";
+        backButton.TooltipText = T("Close details");
         backButton.OnClicked += (_, _) =>
         {
             _selectionModel.UnselectItem(_selectionModel.GetSelected());
@@ -291,14 +293,14 @@ public sealed class PackageInstall(
         separator.MarginBottom = 16;
         _detailBox.Append(separator);
 
-        AddDetail("Version", pkg.Version);
-        AddDetail("Repository", pkg.Repository);
-        AddDetail("Size", SizeHelpers.FormatSize(pkg.InstalledSize));
+        AddDetail(T("Version"), pkg.Version);
+        AddDetail(T("Repository"), pkg.Repository);
+        AddDetail(T("Size"), SizeHelpers.FormatSize(pkg.InstalledSize));
         if (!string.IsNullOrEmpty(pkg.Url))
         {
             var row = Box.New(Orientation.Horizontal, 12);
             row.MarginBottom = 4;
-            var labelWidget = Label.New("URL:");
+            var labelWidget = Label.New(T("URL:"));
             labelWidget.AddCssClass("dim-label");
             labelWidget.Halign = Align.Start;
             labelWidget.Valign = Align.Start;
@@ -321,22 +323,22 @@ public sealed class PackageInstall(
 
         if (pkg.Depends.Count > 0)
         {
-            AddChipList("Depends", pkg.Depends);
+            AddChipList(T("Depends"), pkg.Depends);
         }
 
         if (pkg.OptDepends.Count > 0)
         {
-            AddChipList("Optional Deps", pkg.OptDepends, true);
+            AddChipList(T("Optional Deps"), pkg.OptDepends, true);
         }
 
         if (pkg.Licenses.Count > 0)
-            AddDetail("Licenses", string.Join(", ", pkg.Licenses));
+            AddDetail(T("Licenses"), string.Join(", ", pkg.Licenses));
         if (pkg.Provides.Count > 0)
-            AddDetail("Provides", string.Join(", ", pkg.Provides));
+            AddDetail(T("Provides"), string.Join(", ", pkg.Provides));
         if (pkg.Conflicts.Count > 0)
-            AddDetail("Conflicts", string.Join(", ", pkg.Conflicts));
+            AddDetail(T("Conflicts"), string.Join(", ", pkg.Conflicts));
         if (pkg.Groups.Count > 0)
-            AddDetail("Groups", string.Join(", ", pkg.Groups));
+            AddDetail(T("Groups"), string.Join(", ", pkg.Groups));
 
         if (configService.LoadConfig().WebViewEnabled && pkg.Depends.Count > 0)
         {
@@ -682,7 +684,7 @@ public sealed class PackageInstall(
 
             var packages = await privilegedOperationService.GetAvailablePackagesAsync(_showHiddenCheck.Active);
             _groups = packages.SelectMany(x => x.Groups).Distinct().ToList();
-            _groups.Insert(0, "Any");
+            _groups.Insert(0, T("Any"));
 
             ct.ThrowIfCancellationRequested();
             var installedPackages = await privilegedOperationService.GetInstalledPackagesAsync();
@@ -788,14 +790,14 @@ public sealed class PackageInstall(
                         var updatesNeeded = await unprivilegedOperationService.CheckForStandardApplicationUpdates();
                         if (updatesNeeded.Count > 0)
                         {
-                            message += "\n\n--- Packages to Upgrade ---\n";
+                            message += "\n\n" + T("--- Packages to Upgrade ---") + "\n";
                             message += string.Join("\n",
                                 updatesNeeded.Select(u => $"{u.Name}: {u.CurrentVersion} -> {u.NewVersion}"));
                         }
                     }
 
                     var args = new GenericQuestionEventArgs(
-                        "Install Packages?", message
+                        T("Install Packages?"), message
                     );
 
                     genericQuestionService.RaiseQuestion(args);
@@ -805,7 +807,7 @@ public sealed class PackageInstall(
                     }
                 }
 
-                lockoutService.Show($"Installing...");
+                lockoutService.Show(T("Installing..."));
                 var performUpgrade = _upgradeCheck.GetActive();
                 result = await privilegedOperationService.InstallPackagesAsync(selectedPackages, performUpgrade);
                 Reload();
@@ -827,7 +829,7 @@ public sealed class PackageInstall(
             if (result.Success)
             {
                 var args = new ToastMessageEventArgs(
-                    $"Installed {selectedPackages.Count} Package(s)"
+                    T("Installed {0} Package(s)", selectedPackages.Count)
                 );
 
                 genericQuestionService.RaiseToastMessage(args);
@@ -853,11 +855,11 @@ public sealed class PackageInstall(
         try
         {
             var dialog = FileDialog.New();
-            dialog.SetTitle("Export Shelly install log");
+            dialog.SetTitle(T("Export Shelly install log"));
             dialog.SetInitialName(LogHelpers.CreateSuggestedLogFileName(selectedPackages, "shelly"));
 
             var filter = FileFilter.New();
-            filter.SetName("Log Files (*.log)");
+            filter.SetName(T("Log Files (*.log)"));
             filter.AddPattern("*.log");
 
             var filters = ListStore.New(FileFilter.GetGType());
@@ -878,13 +880,13 @@ public sealed class PackageInstall(
 
             await File.WriteAllTextAsync(path, LogHelpers.BuildInstallLog(selectedPackages, result, "aur"));
 
-            genericQuestionService.RaiseToastMessage(new ToastMessageEventArgs("Exported Shelly install log"));
+            genericQuestionService.RaiseToastMessage(new ToastMessageEventArgs(T("Exported Shelly install log")));
             return true;
         }
         catch (Exception e)
         {
             Console.WriteLine($"Failed to export Shelly install log: {e.Message}");
-            genericQuestionService.RaiseToastMessage(new ToastMessageEventArgs("Failed to export Shelly install log"));
+            genericQuestionService.RaiseToastMessage(new ToastMessageEventArgs(T("Failed to export Shelly install log")));
             return false;
         }
     }
@@ -894,10 +896,10 @@ public sealed class PackageInstall(
         try
         {
             var dialog = FileDialog.New();
-            dialog.SetTitle("Install Local Package");
+            dialog.SetTitle(T("Install Local Package"));
 
             var filter = FileFilter.New();
-            filter.SetName("Local package files (\"*.gz\", \"*.zst\")");
+            filter.SetName(T("Local package files (\"*.gz\", \"*.zst\")"));
             filter.AddPattern("*.gz");
             filter.AddPattern("*.zst");
 
@@ -909,7 +911,7 @@ public sealed class PackageInstall(
 
             if (file?.GetPath() is { } filePath)
             {
-                lockoutService.Show("Installing local package...");
+                lockoutService.Show(T("Installing local package..."));
                 var result = await privilegedOperationService.InstallLocalPackageAsync(filePath);
                 if (!result.Success)
                 {
@@ -925,7 +927,7 @@ public sealed class PackageInstall(
         {
             lockoutService.Hide();
 
-            var args = new ToastMessageEventArgs("Installed local package");
+            var args = new ToastMessageEventArgs(T("Installed local package"));
             genericQuestionService.RaiseToastMessage(args);
         }
     }

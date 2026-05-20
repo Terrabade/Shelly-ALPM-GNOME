@@ -3,6 +3,7 @@ using PackageManager.Aur;
 using PackageManager.Aur.Models;
 using PackageManager.Utilities;
 using PackageManager.Wire;
+using Shelly.Utilities;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -136,7 +137,7 @@ public class AurListUpdatesCommand : AsyncCommand<AlpmListSettings>
             if (settings.JsonOutput)
             {
                 var sortedList = sortedUpdates.ToList();
-                MemPackFrame.WriteToStdout(sortedList);
+                JsonPackFrame.WriteToStdout(sortedList);
                 return 0;
             }
 

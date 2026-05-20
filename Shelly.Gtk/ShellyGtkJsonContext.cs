@@ -2,9 +2,13 @@ using System.Text.Json.Serialization;
 using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.AppImage;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
+using Shelly.Utilities;
 
 namespace Shelly.Gtk;
 
+[JsonSourceGenerationOptions(
+    MaxDepth = 256,
+    GenerationMode = JsonSourceGenerationMode.Default)]
 [JsonSerializable(typeof(List<AppImageDto>))]
 [JsonSerializable(typeof(AppImageDto))]
 [JsonSerializable(typeof(List<AppImageUpdateDto>))]

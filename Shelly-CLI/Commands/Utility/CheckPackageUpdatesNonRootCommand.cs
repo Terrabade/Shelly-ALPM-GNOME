@@ -5,6 +5,7 @@ using PackageManager.Utilities;
 using PackageManager.Aur.Models;
 using PackageManager.Flatpak;
 using PackageManager.Wire;
+using Shelly.Utilities;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -228,7 +229,7 @@ public class CheckPackageUpdatesNonRootCommand : AsyncCommand<CheckPackageUpdate
                 syncModel.Flatpaks = flatpakPackageModels;
             }
 
-            MemPackFrame.WriteToStdout(syncModel);
+            JsonPackFrame.WriteToStdout(syncModel);
             return 0;
         }
 
