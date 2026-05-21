@@ -1281,3 +1281,18 @@ msgstr "Optionale Abhängigkeiten entfernen"
 
 msgid "Also remove orphaned optional dependencies installed with these packages."
 msgstr "Entferne außerdem verwaiste optionale Abhängigkeiten, die zusammen mit diesen Paketen installiert wurden."
+
+msgid "Add Tray To Auto Start"
+msgstr "Tray zum Autostart hinzufügen"
+
+msgid "Systemd startup service added."
+msgstr "Systemd-Startdienst hinzugefügt."
+
+msgid "Systemd startup service removed."
+msgstr "Systemd-Startdienst entfernt."
+
+msgid "Tray Icon Autostart"
+msgstr "Tray-Symbol Autostart"
+
+msgid "Allow the tray service to autostart."
+msgstr "Tray-Dienst den automatischen Start erlauben."
