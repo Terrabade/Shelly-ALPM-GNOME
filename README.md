@@ -1,6 +1,17 @@
 ![shelly_banner.png](shelly_banner.png)
 
-![Shelly Wiki](https://img.shields.io/badge/Shelly-Wiki-blue)
+### Powered by
+
+[![JetBrains logo.](https://resources.jetbrains.com/storage/products/company/brand/logos/jetbrains.svg)](https://jb.gg/OpenSource)
+
+## About
+
+Shelly is a modern reimagination of the Arch Linux package manager, designed to be a more intuitive and user-friendly
+alternative to `pacman` and `octopi`. Unlike other Arch package managers, Shelly offers a modern, visual interface with
+a focus on
+user experience and ease of use; It **IS NOT** built as a `pacman` wrapper or front-end. It is a complete reimagination
+of how a user
+interacts with their Arch Linux system, providing a more streamlined and intuitive experience.
 
 <details>
   <summary>Screenshots</summary>
@@ -12,16 +23,6 @@
   <img width="1768" height="1177" alt="image" src="https://github.com/user-attachments/assets/cc2a8d31-e5c9-42d4-ba87-db25e10a1110" />
   </p>
 </details>
-
-
-### About
-
-Shelly is a modern reimagination of the Arch Linux package manager, designed to be a more intuitive and user-friendly
-alternative to `pacman` and `octopi`. Unlike other Arch package managers, Shelly offers a modern, visual interface with
-a focus on
-user experience and ease of use; It **IS NOT** built as a `pacman` wrapper or front-end. It is a complete reimagination
-of how a user
-interacts with their Arch Linux system, providing a more streamlined and intuitive experience.
 
 ## Quick Install
 
@@ -160,7 +161,7 @@ CLI provides the same core functionality as the UI but in a scriptable, terminal
 
 ### CLI Commands
 
-Can be viewed in the [Shelly CLI Help](./wiki/cli_help.md) dedicated document.
+Full documentation can be viewed on the [Shelly CLI Reference](https://www.seafoam-labs.org/shelly-alpm/docs/cli-reference/) page.
 
 ### CLI Configuration
 
@@ -171,19 +172,7 @@ default configuration file at:
 
 #### Configuration Options
 
-| Option             | Description                                                                                                                                                                                                                                                    |
-|--------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `FileSizeDisplay`  | Controls how file sizes are displayed. <br> Possible values: "Bytes", "Megabytes", "Gigabytes". <br> Default: "Bytes"                                                                                                                                          |
-| `DefaultExecution` | Determines which command is executed when `shelly` is run without any arguments (the default command). <br> Possible values: "UpgradeStandard", "UpgradeFlatpak", "UpgradeAur", "UpgradeAll", "Sync", "SyncForce", "ListInstalled". <br> Default: "UpgradeAll" |
-
-#### Example `config.json`
-
-```json
-{
-  "FileSizeDisplay": "Bytes",
-  "DefaultExecution": "UpgradeAll"
-}
-```
+These are listed on the [Shelly Configuration](https://www.seafoam-labs.org/shelly-alpm/docs/config/) page.
 
 ## Development
 
