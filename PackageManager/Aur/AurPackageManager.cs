@@ -71,7 +71,7 @@ public sealed class AurPackageManager(string? configPath = null)
         {
             Timeout = TimeSpan.FromSeconds(20),
         };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Shelly/1.0 (+https://github.com/zoe-codez/Shelly-ALPM)");
+        client.DefaultRequestHeaders.UserAgent.Add(Http.UserAgent);
         return client;
     }
 
