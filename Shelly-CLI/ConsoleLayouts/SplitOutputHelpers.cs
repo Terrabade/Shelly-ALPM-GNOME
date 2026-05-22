@@ -1,4 +1,5 @@
 using PackageManager.Alpm;
+using PackageManager.Alpm.Questions;
 using Spectre.Console;
 
 namespace Shelly_CLI.ConsoleLayouts;
@@ -40,7 +41,7 @@ public static class SplitOutputHelpers
                     UpdatePanelUnlocked(layout, "Console", consoleLines, maxVisibleLines, ctx);
                 }
 
-                e.SetResponse(1);
+                e.SetResponse(new QuestionResponse(1,null));
                 break;
             }
 
@@ -52,7 +53,7 @@ public static class SplitOutputHelpers
                     UpdatePanelUnlocked(layout, "Console", consoleLines, maxVisibleLines, ctx);
                 }
 
-                e.SetResponse(0);
+                e.SetResponse(new QuestionResponse(0,null));
                 break;
             }
         }
@@ -65,7 +66,7 @@ public static class SplitOutputHelpers
         {
             return;
         }
-
+        
         var selectedIndex = 0;
         consoleLines.Add($"[yellow bold]{question.QuestionText.EscapeMarkup()}[/]");
         var optionStartIndex = consoleLines.Count;
@@ -88,8 +89,8 @@ public static class SplitOutputHelpers
                 case ConsoleKey.Enter:
                     consoleLines.RemoveRange(optionStartIndex, consoleLines.Count - optionStartIndex);
                     consoleLines.Add(
-                        $"[green]Selected: {question.ProviderOptions[selectedIndex].EscapeMarkup()}[/]");
-                    question.SetResponse(selectedIndex);
+                        $"[green]Selected: {question.ProviderOptions[selectedIndex].Name.EscapeMarkup()}[/]");
+                    question.SetResponse(new QuestionResponse(selectedIndex, question.ProviderOptions));
 
                     lock (renderLock)
                     {
@@ -111,7 +112,7 @@ public static class SplitOutputHelpers
             {
                 var prefix = i == selectedIndex ? "[green]> [/]" : "  ";
                 var style = i == selectedIndex ? "[bold green]" : "[dim]";
-                consoleLines.Add($"{prefix}{style}{question.ProviderOptions[i].EscapeMarkup()}[/]");
+                consoleLines.Add($"{prefix}{style}{question.ProviderOptions[i].Name.EscapeMarkup()}[/]");
             }
 
             lock (renderLock)
@@ -126,7 +127,7 @@ public static class SplitOutputHelpers
     {
         if (question.ProviderOptions is null || question.ProviderOptions.Count == 0)
         {
-            question.SetResponse(0);
+            question.SetResponse(new QuestionResponse(0, null));
             return;
         }
 
@@ -190,10 +191,13 @@ public static class SplitOutputHelpers
                             .Select(i => question.ProviderOptions[i])
                             .ToList();
                         consoleLines.Add(
-                            $"[green]Selected: {string.Join(", ", names.Select(n => n.EscapeMarkup()))}[/]");
+                            $"[green]Selected: {string.Join(", ", names.Select(n => n.Name.EscapeMarkup()))}[/]");
                     }
 
-                    question.SetResponse(bitmask);
+                    var selectedOptions = question.ProviderOptions
+                        .Select((o, i) => o with { IsSelected = selected.Contains(i) })
+                        .ToList();
+                    question.SetResponse(new QuestionResponse(bitmask, selectedOptions));
 
                     lock (renderLock)
                     {
@@ -215,7 +219,7 @@ public static class SplitOutputHelpers
                 var check = selected.Contains(i) ? "[green]✓[/]" : "[dim]○[/]";
                 var style = i == selectedIndex ? "[bold green]" : "[white]";
                 consoleLines.Add(
-                    $" {cursor} {check} {style}{question.ProviderOptions[i].EscapeMarkup()}[/]");
+                    $" {cursor} {check} {style}{question.ProviderOptions[i].Name.EscapeMarkup()}[/]");
             }
 
             lock (renderLock)
