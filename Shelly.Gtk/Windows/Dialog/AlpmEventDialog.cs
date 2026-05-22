@@ -75,12 +75,10 @@ public class AlpmEventDialog
         else if (e is { QuestionType: QuestionType.SelectOptionalDeps, ProviderOptions: not null })
         {
             var checkButtons = new List<CheckButton>();
+            var originalIndices = new List<int>();
 
-            // "Select All" toggle
             var selectAllCheck = CheckButton.NewWithLabel(T("Select All"));
-            box.Append(selectAllCheck);
 
-            // Scrollable container for many options
             var scrolled = ScrolledWindow.New();
             scrolled.SetMinContentHeight(150);
             scrolled.SetMaxContentHeight(300);
@@ -90,33 +88,33 @@ public class AlpmEventDialog
             for (var i = 0; i < e.ProviderOptions.Count; i++)
             {
                 var option = e.ProviderOptions[i];
-                var label  = option.IsInstalled
-                    ? $"{option.Name}  ({T("already installed")})"
-                    : option.Name;
+                if (option.IsInstalled) continue;
 
-                var check = CheckButton.NewWithLabel(label);
-                // Default: unchecked. Only honor an explicit IsSelected from the manager.
+                var check = CheckButton.NewWithLabel(option.Name);
                 check.SetActive(option.IsSelected);
                 if (!string.IsNullOrEmpty(option.Description))
                     check.SetTooltipText(option.Description);
 
                 checkButtons.Add(check);
+                originalIndices.Add(i);
                 optionsBox.Append(check);
             }
+
+            if (checkButtons.Count == 0)
+            {
+                e.SetResponse(Array.Empty<int>());
+                return;
+            }
+
+            box.Append(selectAllCheck);
             scrolled.SetChild(optionsBox);
             box.Append(scrolled);
 
-            // Wire up "Select All" toggle (skips already-installed entries). Start
-            // unchecked so it matches the per-option defaults.
             selectAllCheck.SetActive(false);
             selectAllCheck.OnToggled += (_,_) =>
             {
                 var active = selectAllCheck.GetActive();
-                for (var i = 0; i < checkButtons.Count; i++)
-                {
-                    if (e.ProviderOptions[i].IsInstalled) continue;
-                    checkButtons[i].SetActive(active);
-                }
+                foreach (var cb in checkButtons) cb.SetActive(active);
             };
 
             var confirmButton = Button.NewWithLabel(T("Confirm"));
@@ -124,11 +122,11 @@ public class AlpmEventDialog
             confirmButton.OnClicked += (_,_) =>
             {
                 var selectedIndices = new List<int>();
-                for (int i = 0; i < checkButtons.Count; i++)
+                for (int v = 0; v < checkButtons.Count; v++)
                 {
-                    if (checkButtons[i].GetActive())
+                    if (checkButtons[v].GetActive())
                     {
-                        selectedIndices.Add(i);
+                        selectedIndices.Add(originalIndices[v]);
                     }
                 }
                 e.SetResponse(selectedIndices.ToArray());

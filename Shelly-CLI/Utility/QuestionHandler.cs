@@ -37,11 +37,24 @@ public static class QuestionHandler
                 "Cannot have a selection while provider options is null!");
         }
 
+        var visible = question.ProviderOptions
+            .Select((o, i) => (Option: o, OriginalIndex: i))
+            .Where(t => !t.Option.IsInstalled)
+            .ToList();
+
+        if (visible.Count == 0)
+        {
+            var none = question.ProviderOptions
+                .Select(o => o with { IsSelected = false })
+                .ToList();
+            question.SetResponse(new QuestionResponse(0, none));
+            return;
+        }
+
         if (uiMode)
         {
             if (noConfirm)
             {
-                // Default: install no optional dependencies under --noconfirm (matches pacman).
                 var noneSelected = question.ProviderOptions
                     .Select(o => o with { IsSelected = false })
                     .ToList();
@@ -50,35 +63,39 @@ public static class QuestionHandler
             }
 
             Console.Error.WriteLine($"[ALPM_SELECT_OPTDEPS]{question.DependencyName}");
-            for (var i = 0; i < question.ProviderOptions.Count; i++)
+            foreach (var t in visible)
             {
-                Console.Error.WriteLine($"[ALPM_OPTDEPS_OPTION]{i}:{question.ProviderOptions[i].Name}");
+                Console.Error.WriteLine($"[ALPM_OPTDEPS_OPTION]{t.OriginalIndex}:{t.Option.Name}");
             }
 
             Console.Error.WriteLine("[ALPM_OPTDEPS_END]");
             Console.Error.Flush();
             var input = Console.ReadLine();
-            // Expect a JSON array of selected indices (e.g. "[0,2]"). Empty/invalid => none selected.
             var selectedIndices = ParseSelectedIndices(input);
             var uiSelected = question.ProviderOptions
-                .Select((o, i) => o with { IsSelected = selectedIndices.Contains(i) })
+                .Select((o, i) => o with { IsSelected = selectedIndices.Contains(i) && !o.IsInstalled })
                 .ToList();
             question.SetResponse(new QuestionResponse(0, uiSelected));
             return;
         }
 
-        var choices = question.ProviderOptions.Select(o => o.Name).ToList();
+        var choices = visible.Select(t => t.Option.Name).ToList();
         var selection = AnsiConsole.Prompt(
             new MultiSelectionPrompt<string>()
                 .Title($"[yellow]{question.QuestionText}[/]")
-                .NotRequired()                       // <-- allow zero selections
+                .NotRequired()
                 .InstructionsText(
                     "[grey](Press [blue]<space>[/] to toggle, " +
                     "[green]<enter>[/] to accept — leave empty to install none)[/]")
                 .AddChoices(choices));
 
+        var selectedNames = new HashSet<string>(selection);
+        var selectedOriginal = visible
+            .Where(t => selectedNames.Contains(t.Option.Name))
+            .Select(t => t.OriginalIndex)
+            .ToHashSet();
         var selectedOptions = question.ProviderOptions
-            .Select(o => o with { IsSelected = selection.Contains(o.Name) })
+            .Select((o, i) => o with { IsSelected = selectedOriginal.Contains(i) })
             .ToList();
 
         question.SetResponse(new QuestionResponse(0, selectedOptions));

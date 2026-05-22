@@ -131,6 +131,20 @@ public static class SplitOutputHelpers
             return;
         }
 
+        var visible = question.ProviderOptions
+            .Select((o, i) => (Option: o, OriginalIndex: i))
+            .Where(t => !t.Option.IsInstalled)
+            .ToList();
+
+        if (visible.Count == 0)
+        {
+            var none = question.ProviderOptions
+                .Select(o => o with { IsSelected = false })
+                .ToList();
+            question.SetResponse(new QuestionResponse(0, none));
+            return;
+        }
+
         var selectedIndex = 0;
         var selected = new HashSet<int>();
         consoleLines.Add($"[yellow bold]{question.QuestionText.EscapeMarkup()}[/]");
@@ -150,7 +164,7 @@ public static class SplitOutputHelpers
                     break;
 
                 case ConsoleKey.DownArrow:
-                    selectedIndex = Math.Min(question.ProviderOptions.Count - 1, selectedIndex + 1);
+                    selectedIndex = Math.Min(visible.Count - 1, selectedIndex + 1);
                     RenderSelection();
                     break;
 
@@ -163,7 +177,7 @@ public static class SplitOutputHelpers
                     RenderSelection();
                     break;
                 case ConsoleKey.A:
-                    for (var i = 0; i < question.ProviderOptions.Count; i++)
+                    for (var i = 0; i < visible.Count; i++)
                     {
                         selected.Add(i);
                     }
@@ -186,14 +200,15 @@ public static class SplitOutputHelpers
                     {
                         var names = selected
                             .OrderBy(i => i)
-                            .Select(i => question.ProviderOptions[i])
+                            .Select(i => visible[i].Option)
                             .ToList();
                         consoleLines.Add(
                             $"[green]Selected: {string.Join(", ", names.Select(n => n.Name.EscapeMarkup()))}[/]");
                     }
 
+                    var selectedOriginal = selected.Select(v => visible[v].OriginalIndex).ToHashSet();
                     var selectedOptions = question.ProviderOptions
-                        .Select((o, i) => o with { IsSelected = selected.Contains(i) })
+                        .Select((o, i) => o with { IsSelected = selectedOriginal.Contains(i) })
                         .ToList();
                     question.SetResponse(new QuestionResponse(0, selectedOptions));
 
@@ -211,13 +226,13 @@ public static class SplitOutputHelpers
             if (consoleLines.Count > optionStartIndex)
                 consoleLines.RemoveRange(optionStartIndex, consoleLines.Count - optionStartIndex);
 
-            for (int i = 0; i < question.ProviderOptions.Count; i++)
+            for (int i = 0; i < visible.Count; i++)
             {
                 var cursor = i == selectedIndex ? ">" : " ";
                 var check = selected.Contains(i) ? "[green]✓[/]" : "[dim]○[/]";
                 var style = i == selectedIndex ? "[bold green]" : "[white]";
                 consoleLines.Add(
-                    $" {cursor} {check} {style}{question.ProviderOptions[i].Name.EscapeMarkup()}[/]");
+                    $" {cursor} {check} {style}{visible[i].Option.Name.EscapeMarkup()}[/]");
             }
 
             lock (renderLock)
