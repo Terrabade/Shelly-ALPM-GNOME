@@ -765,8 +765,8 @@ msgstr "{0} synchronisiert"
 msgid "Failed to sync: {0}"
 msgstr "Synchronisieren fehlgeschlagen: {0}"
 
-msgid "Syncing all AppImages ..."
-msgstr "Alle AppImages synchronisieren ..."
+msgid "Syncing all AppImages..."
+msgstr "Alle AppImages synchronisieren..."
 
 msgid "Synced"
 msgstr "Synchronisiert"
