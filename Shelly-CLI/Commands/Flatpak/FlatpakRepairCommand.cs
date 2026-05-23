@@ -160,6 +160,38 @@ public class FlatpakRepair : Command<FlatpakRepairSettings>
         
         // Step 5 - Enumerate all deployed refs and re-install any that are not in the repo (or are partial for a non-subdir deploy).
         
+        var validRefSet =
+            validRefs
+                .Select(x => x.FullRef)
+                .ToHashSet();
+
+
+        foreach (var installedRef in installed)
+        {
+            
+            if (validRefSet.Contains(installedRef.FullRef))
+            {
+                continue;
+            }
+            
+            AnsiConsole.MarkupLine(
+                $"[yellow]Reinstall required:[/] {installedRef.FullRef}");
+
+            var success =
+                flatpakManager.FlatpakRepairReinstall(installedRef);
+
+            if (success)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[green]Reinstalled:[/] {installedRef.FullRef}");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]Failed reinstall:[/] {installedRef.FullRef}");
+            }
+        }
+        
         return 0;
     }
 }

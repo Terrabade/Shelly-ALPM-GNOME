@@ -2396,7 +2396,110 @@ public class FlatpakManager : IDisposable
         return paths;
     }
 
+    public bool FlatpakRepairReinstall(FlatpakPackageDto installedRef)
+    {
+        var installationPtr =
+            FlatpakReference.FlatpakInstallationNewSystem(
+                IntPtr.Zero,
+                out var error);
 
+        if (installationPtr == IntPtr.Zero)
+        {
+            installationPtr =
+                FlatpakReference.InstallationNewUser(
+                    IntPtr.Zero,
+                    out error);
+        }
+
+        if (installationPtr == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            var transactionPtr =
+                FlatpakReference.TransactionNewForInstallation(
+                    installationPtr,
+                    IntPtr.Zero,
+                    out var transError);
+
+            if (transactionPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            try
+            {
+                FlatpakReference.TransactionSetNoInteraction(
+                    transactionPtr,
+                    true);
+
+                var addSuccess =
+                    FlatpakReference.TransactionAddUpdate(
+                        transactionPtr,
+                        installedRef.Ref,
+                        IntPtr.Zero,
+                        null,
+                        out var addError);
+
+                if (!addSuccess)
+                {
+                    if (addError != IntPtr.Zero)
+                    {
+                        var msg =
+                            FlatpakReference.GetErrorMessage(
+                                addError);
+
+                        Console.Error.WriteLine(
+                            $"Failed to add reinstall transaction for {installedRef.Id}: {msg}");
+
+                        FlatpakReference.GErrorFree(
+                            addError);
+                    }
+
+                    return false;
+                }
+
+                var runSuccess =
+                    FlatpakReference.TransactionRun(
+                        transactionPtr,
+                        IntPtr.Zero,
+                        out var runError);
+
+                if (!runSuccess)
+                {
+                    if (runError != IntPtr.Zero)
+                    {
+                        var msg =
+                            FlatpakReference.GetErrorMessage(
+                                runError);
+
+                        Console.Error.WriteLine(
+                            $"Failed to reinstall {installedRef.Id}: {msg}");
+
+                        FlatpakReference.GErrorFree(
+                            runError);
+                    }
+
+                    return false;
+                }
+
+                return true;
+            }
+            finally
+            {
+                FlatpakReference.GObjectUnref(
+                    transactionPtr);
+            }
+        }
+        finally
+        {
+            FlatpakReference.GObjectUnref(
+                installationPtr);
+        }
+    }    
+    
     public void Dispose()
     {
         //Currently just here to have it when needed.
@@ -2408,4 +2511,5 @@ public class FlatpakManager : IDisposable
         public bool? GpgVerify { get; set; }
         public string? GpgKey { get; set; }
     }
+
 }
