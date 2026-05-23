@@ -191,15 +191,24 @@ public class Settings(
             if (_isPopulatingDropDown) return;
             if (_availablePages.Count == 0) return;
             var selectedIndex = defaultPageDropDown.Selected;
-            if (selectedIndex < _availablePages.Count)
-            {
-                var selectedPage = _availablePages[(int)selectedIndex];
-                _config.DefaultPageDropDown = selectedPage;
-                SaveConfig();
-            }
+            if (selectedIndex >= _availablePages.Count) return;
+            var selectedPage = _availablePages[(int)selectedIndex];
+            if (selectedPage == _config.DefaultPageDropDown) return;
+            _config.DefaultPageDropDown = selectedPage;
+            SaveConfig();
         };
 
-        ConfigChanged += _ => { PopulateDefaultPageDropDown(defaultPageDropDown); };
+        var aurSwitch = (Switch)builder.GetObject("aur_switch")!;
+        var flatpakSwitch = (Switch)builder.GetObject("flatpak_switch")!;
+        var appImageSwitch = (Switch)builder.GetObject("appimage_switch")!;
+        var shellySearchSwitch = (Switch)builder.GetObject("shelly_search_switch")!;
+        var recommendedSwitch = (Switch)builder.GetObject("recommended_switch")!;
+
+        aurSwitch.OnNotify += (_, a) => { if (a.Pspec.GetName() == "active") PopulateDefaultPageDropDown(defaultPageDropDown); };
+        flatpakSwitch.OnNotify += (_, a) => { if (a.Pspec.GetName() == "active") PopulateDefaultPageDropDown(defaultPageDropDown); };
+        appImageSwitch.OnNotify += (_, a) => { if (a.Pspec.GetName() == "active") PopulateDefaultPageDropDown(defaultPageDropDown); };
+        shellySearchSwitch.OnNotify += (_, a) => { if (a.Pspec.GetName() == "active") PopulateDefaultPageDropDown(defaultPageDropDown); };
+        recommendedSwitch.OnNotify += (_, a) => { if (a.Pspec.GetName() == "active") PopulateDefaultPageDropDown(defaultPageDropDown); };
 
         return _box;
     }
