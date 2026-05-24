@@ -1308,7 +1308,7 @@ msgstr ""
 "diesen Paketen installiert wurden."
 
 msgid "Add Tray To Auto Start"
-msgstr "Cache bei der Deinstallation entfernen"
+msgstr "Tray zum Autostart hinzufügen"
 
 msgid "Systemd startup service added."
 msgstr "Cache bei der Deinstallation entfernen."
