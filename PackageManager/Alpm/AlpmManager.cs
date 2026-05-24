@@ -1181,6 +1181,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                 var parts = raw.Split(':', 2);
                 var name = parts[0].Trim();
                 if (string.IsNullOrEmpty(name)) continue;
+                if (!PackageListBuilder.IsAvailableInSyncDbs(_handle, name)) continue;
                 var description = parts.Length > 1 ? parts[1].Trim() : "No description found";
                 if (string.IsNullOrEmpty(description)) description = "No description found";
                 var isInstalled = PackageUtilities.IsPackageInstalled(_handle, name);
