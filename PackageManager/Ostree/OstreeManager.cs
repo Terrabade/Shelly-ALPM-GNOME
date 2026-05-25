@@ -10,9 +10,9 @@ namespace PackageManager.Ostree;
 
 public class OstreeManager()
 {
-    public List<OstreeRef> ListRefs(string repoPath)
+    public List<OstreeRepositoryRef> ListRefs(string repoPath)
     {
-        var refs = new List<OstreeRef>();
+        var refs = new List<OstreeRepositoryRef>();
 
         if (string.IsNullOrWhiteSpace(repoPath))
         {
@@ -86,10 +86,10 @@ public class OstreeManager()
         return refs;
     }
     
-    private List<OstreeRef> ParseRefsTable(
+    private List<OstreeRepositoryRef> ParseRefsTable(
         IntPtr refsTable, string repoPath)
     {
-        var refs = new List<OstreeRef>();
+        var refs = new List<OstreeRepositoryRef>();
 
         OstreeReference.GHashTableIterInit(
             out var iter,
@@ -124,7 +124,7 @@ public class OstreeManager()
                 continue;
             }
 
-            refs.Add(new OstreeRef
+            refs.Add(new OstreeRepositoryRef
             {
                 Remote = split[0],
                 Ref = split[1],
@@ -332,43 +332,6 @@ public class OstreeManager()
         return repo;
     }
     
-    
-    public static bool DeleteRef(string repoPath, string remote, string reference)
-    {
-        var repo = OpenRepo(repoPath);
-        
-        if (repo == null)
-        {
-            return false;
-        }
-
-        try
-        {
-            var success = OstreeReference.RepoSetRefImmediate(repo.Value, remote, reference, null, IntPtr.Zero, out var error);
-
-            if (success)
-            {
-                return true;
-            }
-
-            if (error != IntPtr.Zero)
-            {
-                var errorMessage = FlatpakReference.GetErrorMessage(error);
-                
-                Console.Error.WriteLine($"Failed to delete ref: {errorMessage}");
-                
-                OstreeReference.GErrorFree(error);
-            }
-
-            return false;
-        }
-        
-        finally
-        {
-            OstreeReference.GObjectUnref(repo.Value);
-        }
-    }
-
     public OstreePruneResult Prune(string repoPath)
     {
         var result = new OstreePruneResult();
@@ -414,10 +377,5 @@ public class OstreeManager()
         {
             OstreeReference.GObjectUnref(repo.Value);
         }
-    }
-    
-    public FsckResult Result(string repoPath)
-    {
-        return new FsckResult();
     }
 }

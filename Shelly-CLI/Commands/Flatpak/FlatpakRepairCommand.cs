@@ -16,8 +16,8 @@ public class FlatpakRepair : Command<FlatpakRepairSettings>
         var ostreeManager = new OstreeManager();
         var status = AnsiConsole.Status();
 
-        List<OstreeRef> invalidRefs = [];
-        List<OstreeRef> validRefs = [];
+        List<OstreeRepositoryRef> invalidRefs = [];
+        List<OstreeRepositoryRef> validRefs = [];
         
         // Step 1 - Scan all locally available refs, removing any that don't correspond to a deployed ref.
 
@@ -125,70 +125,64 @@ public class FlatpakRepair : Command<FlatpakRepairSettings>
 
         foreach (var reference in invalidRefs)
         {
-            var removed = OstreeManager.DeleteRef(reference.RepoPath, reference.Remote, reference.Ref);
-            
-            if (removed)
-            {
-                AnsiConsole.MarkupLine(
-                    $"[green]Removed:[/] {reference.FullRef}");
-            }
-            else
-            {
-                AnsiConsole.MarkupLine(
-                    $"[red]Failed to remove:[/] {reference.FullRef}");
-            }
-            
-        }
+            var installedRef = installed.FirstOrDefault(
+                x => x.FullRef == reference.FullRef);
 
+            if (installedRef != null)
+            {
+                var uninstallResult =
+                    flatpakManager.UninstallAppFromRef(
+                        installedRef);
+
+                AnsiConsole.MarkupLine(
+                    uninstallResult
+                        ? $"[green]Uninstalled:[/] {Markup.Escape(reference.FullRef)}"
+                        : $"[red]Failed uninstall:[/] {Markup.Escape(reference.FullRef)}");
+            }
+        }
+        
         // Step 4 - Prune all objects not referenced by a ref, which gets rid of any possibly invalid non-scanned objects.
         foreach (var repo in repositories)
         {
             AnsiConsole.MarkupLine($"[yellow]Pruning repository:[/] {repo}");
             var result = ostreeManager.Prune(repo);
-            if (result.Success)
-            {
-                AnsiConsole.MarkupLine(
-                    $"[green]Pruned:[/] {result.ObjectsPruned}/{result.ObjectsTotal} objects ({result.PrunedBytes} bytes)");
-            }
-            else
-            {
-                AnsiConsole.MarkupLine(
-                    $"[red]Prune failed:[/] {result.ErrorMessage}");
-
-            }
+            AnsiConsole.MarkupLine(
+                result.Success
+                    ? $"[green]Pruned:[/] {result.ObjectsPruned}/{result.ObjectsTotal} objects ({result.PrunedBytes} bytes)"
+                    : $"[red]Prune failed:[/] {result.ErrorMessage}");
         }
         
         // Step 5 - Enumerate all deployed refs and re-install any that are not in the repo (or are partial for a non-subdir deploy).
         
-        var validRefSet =
-            validRefs
+        var currentRefs =
+            repositories
+                .SelectMany(repo => ostreeManager.ListRefs(repo))
                 .Select(x => x.FullRef)
                 .ToHashSet();
-
 
         foreach (var installedRef in installed)
         {
             
-            if (validRefSet.Contains(installedRef.FullRef))
+            if (currentRefs.Contains(installedRef.FullRef))
             {
                 continue;
             }
             
             AnsiConsole.MarkupLine(
-                $"[yellow]Reinstall required:[/] {installedRef.FullRef}");
+                $"[yellow]Install required:[/] {installedRef.FullRef}");
 
             var success =
-                flatpakManager.FlatpakRepairReinstall(installedRef);
+                flatpakManager.FlatpakRepairRestore(installedRef);
 
             if (success)
             {
                 AnsiConsole.MarkupLine(
-                    $"[green]Reinstalled:[/] {installedRef.FullRef}");
+                    $"[green]Installed:[/] {installedRef.FullRef}");
             }
             else
             {
                 AnsiConsole.MarkupLine(
-                    $"[red]Failed reinstall:[/] {installedRef.FullRef}");
+                    $"[red]Failed install:[/] {installedRef.FullRef}");
             }
         }
         

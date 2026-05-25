@@ -1,6 +1,6 @@
 namespace PackageManager.Ostree;
 
-public class OstreeRef
+public class OstreeRepositoryRef
 {
     public string RepoPath { get; set; } = "";
     
