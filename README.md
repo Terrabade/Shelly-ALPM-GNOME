@@ -5,7 +5,24 @@ Of course all credit and respect goes to [upstream](https://github.com/Seafoam-L
 
 ![shelly_banner.png](shelly_banner.png)
 
-![Shelly Wiki](https://img.shields.io/badge/Shelly-Wiki-blue)
+### Powered by
+
+<a href="https://jb.gg/OpenSource">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://www.jetbrains.com/company/brand/img/logo_jb_dos_3.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://resources.jetbrains.com/storage/products/company/brand/logos/jetbrains.svg">
+    <img alt="JetBrains logo." src="https://resources.jetbrains.com/storage/products/company/brand/logos/jetbrains.svg">
+  </picture>
+</a>
+
+## About
+
+Shelly is a modern reimagination of the Arch Linux package manager, designed to be a more intuitive and user-friendly
+alternative to `pacman` and `octopi`. Unlike other Arch package managers, Shelly offers a modern, visual interface with
+a focus on
+user experience and ease of use; It **IS NOT** built as a `pacman` wrapper or front-end. It is a complete reimagination
+of how a user
+interacts with their Arch Linux system, providing a more streamlined and intuitive experience.
 
 <details>
   <summary>Screenshots</summary>
@@ -17,16 +34,6 @@ Of course all credit and respect goes to [upstream](https://github.com/Seafoam-L
   <img width="1768" height="1177" alt="image" src="https://github.com/user-attachments/assets/cc2a8d31-e5c9-42d4-ba87-db25e10a1110" />
   </p>
 </details>
-
-
-### About
-
-Shelly is a modern reimagination of the Arch Linux package manager, designed to be a more intuitive and user-friendly
-alternative to `pacman` and `octopi`. Unlike other Arch package managers, Shelly offers a modern, visual interface with
-a focus on
-user experience and ease of use; It **IS NOT** built as a `pacman` wrapper or front-end. It is a complete reimagination
-of how a user
-interacts with their Arch Linux system, providing a more streamlined and intuitive experience.
 
 ## Quick Install
 
@@ -165,66 +172,7 @@ CLI provides the same core functionality as the UI but in a scriptable, terminal
 
 ### CLI Commands
 
-#### Package Management
-
-| Command              | Description                     |
-|----------------------|---------------------------------|
-| `sync`               | Synchronize package databases   |
-| `list-installed`     | List all installed packages     |
-| `list-available`     | List all available packages     |
-| `list-updates`       | List packages that need updates |
-| `install <packages>` | Install one or more packages    |
-| `install-local`      | Install a local package file    |
-| `remove <packages>`  | Remove one or more packages     |
-| `update <packages>`  | Update one or more packages     |
-| `upgrade`            | Perform a full system upgrade   |
-
-#### Keyring Management (`keyring`)
-
-| Command                      | Description                                             |
-|------------------------------|---------------------------------------------------------|
-| `keyring init`               | Initialize the pacman keyring                           |
-| `keyring populate [keyring]` | Reload keys from keyrings in /usr/share/pacman/keyrings |
-| `keyring recv <keys>`        | Receive keys from a keyserver                           |
-| `keyring lsign <keys>`       | Locally sign the specified key(s)                       |
-| `keyring list`               | List all keys in the keyring                            |
-| `keyring refresh`            | Refresh keys from the keyserver                         |
-
-#### AUR Management (`aur`)
-
-| Command                  | Description                         |
-|--------------------------|-------------------------------------|
-| `aur search <query>`     | Search for AUR packages             |
-| `aur list`               | List installed AUR packages         |
-| `aur list-updates`       | List AUR packages that need updates |
-| `aur install <packages>` | Install AUR packages                |
-| `aur update <packages>`  | Update specific AUR packages        |
-| `aur upgrade`            | Upgrade all AUR packages            |
-| `aur remove <packages>`  | Remove AUR packages                 |
-
-#### Flatpak Management (`flatpak`)
-
-| Command                         | Description                    |
-|---------------------------------|--------------------------------|
-| `flatpak search <query>`        | Search flatpak                 |
-| `flatpak list`                  | List installed flatpak apps    |
-| `flatpak list-updates`          | List flatpak apps with updates |
-| `flatpak install <apps>`        | Install flatpak app            |
-| `flatpak update <apps>`         | Update flatpak app             |
-| `flatpak uninstall <apps>`      | Remove flatpak app             |
-| `flatpak run <app>`             | Run flatpak app                |
-| `flatpak running`               | List running flatpak apps      |
-| `flatpak search <app>`          | search flathub                 |
-| `flatpak sync-remote-appstream` | Sync remote appstream          |
-| `flatpak get-remote-appstream`  | Returns remote appstream json  |
-| `flatpak upgrade`               | Upgrade all flatpak apps       |
-
-#### Shelly Utility (`utility`)
-
-| Command           | Description                   |
-|-------------------|-------------------------------|
-| `utility export`  | Export sync file              |
-| `utility updates` | check for updates as non-root |
+Full documentation can be viewed on the [Shelly CLI Reference](https://www.seafoam-labs.org/shelly-alpm/docs/cli-reference/) page.
 
 ### CLI Configuration
 
@@ -235,74 +183,7 @@ default configuration file at:
 
 #### Configuration Options
 
-| Option             | Description                                                                                                                                                                                                                                                    |
-|--------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `FileSizeDisplay`  | Controls how file sizes are displayed. <br> Possible values: "Bytes", "Megabytes", "Gigabytes". <br> Default: "Bytes"                                                                                                                                          |
-| `DefaultExecution` | Determines which command is executed when `shelly` is run without any arguments (the default command). <br> Possible values: "UpgradeStandard", "UpgradeFlatpak", "UpgradeAur", "UpgradeAll", "Sync", "SyncForce", "ListInstalled". <br> Default: "UpgradeAll" |
-
-#### Example `config.json`
-
-```json
-{
-  "FileSizeDisplay": "Bytes",
-  "DefaultExecution": "UpgradeAll"
-}
-```
-
-### CLI Options
-
-**Global options:**
-
-- `--help` - Display help information
-- `--version` - Display version information
-
-**sync command:**
-
-- `-f, --force` - Force synchronization even if databases are up to date
-
-**install, remove, update commands:**
-
-- `--no-confirm` - Skip confirmation prompt
-
-**upgrade command:**
-
-- `--no-confirm` - Skip confirmation prompt
-
-### CLI Examples
-
-```bash
-# Synchronize package databases
-shelly sync
-
-# Force sync even if up to date
-shelly sync --force
-
-# List all installed packages
-shelly list-installed
-
-# List packages needing updates
-shelly list-updates
-
-# Install packages
-shelly install firefox vim
-
-# Install without confirmation
-shelly install firefox --no-confirm
-
-# Remove packages
-shelly remove firefox
-
-# Update specific packages
-# This should not be done unless you know what you're doing
-shelly update firefox vim
-
-# Perform full system upgrade
-# Preferred way to update your system
-shelly upgrade
-
-# System upgrade without confirmation
-shelly upgrade --no-confirm
-```
+These are listed on the [Shelly Configuration](https://www.seafoam-labs.org/shelly-alpm/docs/config/) page.
 
 ## Development
 

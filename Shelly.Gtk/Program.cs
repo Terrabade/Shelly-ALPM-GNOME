@@ -1,5 +1,6 @@
 using Shelly.Gtk.Enums;
 using System.Reflection;
+using Gio;
 using Gtk;
 using Microsoft.Extensions.DependencyInjection;
 using Shelly.Gtk.Services;
@@ -13,10 +14,15 @@ using Shelly.GTK.Resources;
 using Shelly.Gtk.Services.Icons;
 using Shelly.Gtk.UiModels;
 using Shelly.Gtk.Windows.Packages;
+using Shelly.Utilities;
+using Shelly.Utilities.Enums;
 using Module = Gtk.Module;
 using Settings = Shelly.Gtk.Windows.Settings;
 using GtkSettings = Gtk.Settings;
 using static Shelly.GTK.Resources.Translations;
+using Application = Gtk.Application;
+using File = System.IO.File;
+using Task = System.Threading.Tasks.Task;
 
 namespace Shelly.Gtk;
 
@@ -185,6 +191,10 @@ sealed class Program
             return 0;
         };
 
+        var quitAction = SimpleAction.New("quit", null);
+        quitAction.OnActivate += (_, _) => application.Quit();
+        application.AddAction(quitAction);
+        application.SetAccelsForAction("app.quit", ["<Ctrl>Q"]);
 
         application.OnActivate += (sender, _) =>
         {

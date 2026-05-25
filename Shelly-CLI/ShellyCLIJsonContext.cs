@@ -2,12 +2,14 @@ using System.Text.Json.Serialization;
 using PackageManager.AppImage;
 using PackageManager.Alpm;
 using PackageManager.Alpm.Pacfile;
+using PackageManager.Alpm.Questions;
 using PackageManager.Aur.Models;
 using PackageManager.Flatpak;
 using PackageManager.Local;
 using Shelly_CLI.Commands.Aur.Models;
 using Shelly_CLI.Commands.Standard.Models;
 using Shelly_CLI.Configuration;
+using Shelly.Utilities;
 
 namespace Shelly_CLI;
 
@@ -55,4 +57,8 @@ namespace Shelly_CLI;
 [JsonSerializable(typeof(List<AppstreamRelease>))]
 [JsonSerializable(typeof(PackageBuild))]
 [JsonSerializable(typeof(List<PackageBuild>))]
+[JsonSerializable(typeof(ProviderOption))]
+[JsonSerializable(typeof(List<ProviderOption>))]
+[JsonSerializable(typeof(QuestionResponse))]
+[JsonSerializable(typeof(int[]))]
 internal partial class ShellyCLIJsonContext : JsonSerializerContext;

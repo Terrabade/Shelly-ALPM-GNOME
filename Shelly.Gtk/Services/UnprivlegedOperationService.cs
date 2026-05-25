@@ -7,6 +7,7 @@ using Shelly.Gtk.Services.TrayServices;
 using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.AppImage;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
+using Shelly.Utilities;
 
 // ReSharper disable UnusedParameter.Local
 // ReSharper disable AccessToModifiedClosure
@@ -295,6 +296,33 @@ public class UnprivilegedOperationService(
         return [];
     }
 
+    public Task<OperationResult> AddSystemdServiceTray(string serviceContent, string service)
+    {
+        var dir = XdgPaths.ConfigHome() + "/systemd/user";
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, $"{service}.service"), serviceContent);
+
+        _ = ExecuteNonShellyUnprivilegedCommandAsync("Systemctl", "systemctl", CancellationToken.None,
+            "--user daemon-reload");
+        _ = ExecuteNonShellyUnprivilegedCommandAsync("Systemctl", "systemctl", CancellationToken.None,
+            $"--user stop {service}");
+
+        return Task.FromResult(new OperationResult());
+    }
+
+    public Task<OperationResult> RemoveSystemdServiceTray(string service)
+    {
+        var dir = XdgPaths.ConfigHome() + "/systemd/user";
+        File.Delete($"{dir}/{service}.service");
+
+        _ = ExecuteNonShellyUnprivilegedCommandAsync("Systemctl", "systemctl", CancellationToken.None,
+            "--user daemon-reload");
+        _ = ExecuteNonShellyUnprivilegedCommandAsync("Systemctl", "systemctl", CancellationToken.None,
+            $"--user stop {service}");
+
+        return Task.FromResult(new OperationResult());
+    }
+
 
     public async Task<List<AppImageDto>> GetUpdatesAppImagesAsync()
     {
@@ -477,6 +505,64 @@ public class UnprivilegedOperationService(
                 Success = success,
                 Output = outputBuilder.ToString(),
                 Error = errorBuilder.ToString(),
+                ExitCode = process.ExitCode
+            };
+        }
+        catch (Exception ex)
+        {
+            return new UnprivilegedOperationResult
+            {
+                Success = false,
+                Output = string.Empty,
+                Error = ex.Message,
+                ExitCode = -1
+            };
+        }
+    }
+
+    private async Task<UnprivilegedOperationResult> ExecuteNonShellyUnprivilegedCommandAsync(
+        string operationDescription, string command,
+        CancellationToken ct, params string[] args)
+    {
+        var arguments = string.Join(" ", args);
+
+        Console.WriteLine($"Executing unprivileged command: {command}");
+
+        var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = command,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                RedirectStandardInput = true,
+                CreateNoWindow = true
+            }
+        };
+
+
+        try
+        {
+            process.Start();
+            try
+            {
+                await process.WaitForExitAsync(ct);
+            }
+            catch (OperationCanceledException)
+            {
+                if (!process.HasExited)
+                    process.Kill(true);
+                throw;
+            }
+            var success = process.ExitCode == 0;
+
+            return new UnprivilegedOperationResult
+            {
+                Success = success,
+                Output = "",
+                Error = "",
                 ExitCode = process.ExitCode
             };
         }

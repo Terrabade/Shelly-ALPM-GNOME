@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.AppImage;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
+using Shelly.Utilities;
 
 namespace Shelly.Gtk;
 
@@ -55,4 +56,5 @@ namespace Shelly.Gtk;
 [JsonSerializable(typeof(Dictionary<string, List<string>>))]
 [JsonSerializable(typeof(List<PacfileRecord>))]
 [JsonSerializable(typeof(PacfileRecord))]
+[JsonSerializable(typeof(int[]))]
 internal partial class ShellyGtkJsonContext : JsonSerializerContext;
