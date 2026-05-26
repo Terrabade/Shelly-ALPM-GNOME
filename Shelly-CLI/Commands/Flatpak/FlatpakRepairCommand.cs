@@ -29,7 +29,7 @@ public class FlatpakRepair : Command<FlatpakRepairSettings>
             var refs = ostreeManager.ListRefs(repo);
 
             var tree = new Tree(
-                $"[yellow]{repo}[/]");
+                $"[yellow]Packages in repo:{repo}[/]");
 
             foreach (var reference in refs)
             {
@@ -88,8 +88,6 @@ public class FlatpakRepair : Command<FlatpakRepairSettings>
 
                 if (fsck.Status == FsckStatus.Ok)
                 {
-                    AnsiConsole.MarkupLine(
-                        $"[green]OK:[/] {reference.FullRef} -> {commit}");
                     
                     validRefs.Add(reference);
                 }
