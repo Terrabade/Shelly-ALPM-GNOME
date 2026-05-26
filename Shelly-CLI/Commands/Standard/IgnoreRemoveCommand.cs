@@ -18,24 +18,37 @@ public class IgnoreRemoveCommand : Command<IgnoreRemoveSettings>
     {
         if (string.IsNullOrWhiteSpace(settings.PackageName))
         {
-            AnsiConsole.MarkupLine("[red]Error: No package specified[/]");
+            if (Program.IsUiMode)
+                Console.Error.WriteLine("Error: No package specified");
+            else
+                AnsiConsole.MarkupLine("[red]Error: No package specified[/]");
+
             return 1;
         }
 
-        RootElevator.EnsureRootExectuion();
+        if (!Program.IsUiMode)
+            RootElevator.EnsureRootExectuion();
 
         try
         {
             using var manager = new AlpmManager();
             manager.UnignorePackage(settings.PackageName);
 
-            AnsiConsole.MarkupLine(
-                $"[green]{settings.PackageName.EscapeMarkup()}[/] removed from IgnorePkg list.");
+            if (Program.IsUiMode)
+                Console.Error.WriteLine($"{settings.PackageName} removed from IgnorePkg list.");
+            else
+                AnsiConsole.MarkupLine(
+                    $"[green]{settings.PackageName.EscapeMarkup()}[/] removed from IgnorePkg list.");
+
             return 0;
         }
         catch (Exception e)
         {
-            AnsiConsole.MarkupLine($"[red]Error: {e.Message.EscapeMarkup()}[/]");
+            if (Program.IsUiMode)
+                Console.Error.WriteLine($"Error: {e.Message}");
+            else
+                AnsiConsole.MarkupLine($"[red]Error: {e.Message.EscapeMarkup()}[/]");
+
             return 1;
         }
     }
