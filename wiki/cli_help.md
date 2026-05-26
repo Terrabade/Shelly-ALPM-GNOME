@@ -28,6 +28,14 @@
 | `fix-permissions`         | Restore user ownership of Shelly XDG directories (config/cache/data) |
 | `pacfile [pacfiles]`      | Manage stored pacfiles                                               |
 
+### Manage IgnorePkg entries in pacman.conf (`ignore`)
+
+| Command                   | Description                     |
+|---------------------------|---------------------------------|
+| `ignore list`             | List packages in IgnorePkg      |
+| `ignore add <package>`    | Add a package to IgnorePkg      |
+| `ignore remove <package>` | Remove a package from IgnorePkg |
+
 ### Manage pacman keyring (`keyring`)
 
 | Command                   | Description                                             |
@@ -450,6 +458,7 @@ Downgrade a package
 
 **Options:**
 
+- `-i, --ignore` — Add to IgnorePkg list
 - `-j, --json` — Output results in JSON format for UI integration and scripting
 - `-l, --latest` — Installs the newest matched version
 - `-n, --no-confirm` — Proceed without asking for user confirmation
@@ -463,6 +472,62 @@ Downgrade a package
 shelly downgrade firefox
 shelly downgrade firefox --oldest
 shelly downgrade firefox --latest
+shelly downgrade firefox --ignore
+```
+
+### `shelly ignore`
+
+Manage IgnorePkg entries in pacman.conf
+
+*Branch command — use one of the subcommands below.*
+
+**Subcommands:**
+
+- `shelly ignore list` — List packages in IgnorePkg
+- `shelly ignore add` — Add a package to IgnorePkg
+- `shelly ignore remove` — Remove a package from IgnorePkg
+
+
+### `shelly ignore list`
+
+List packages in IgnorePkg
+
+**Options:**
+
+- `-j, --json` — Output results in JSON format for UI integration and scripting
+
+**Examples:**
+
+```sh
+shelly ignore list
+```
+
+### `shelly ignore add`
+
+Add a package to IgnorePkg
+
+**Arguments:**
+
+- `<package>` *(required)* — Package name to add to IgnorePkg
+
+**Examples:**
+
+```sh
+shelly ignore add firefox
+```
+
+### `shelly ignore remove`
+
+Remove a package from IgnorePkg
+
+**Arguments:**
+
+- `<package>` *(required)* — Package name to remove from IgnorePkg
+
+**Examples:**
+
+```sh
+shelly ignore remove firefox
 ```
 
 ### `shelly news`
@@ -1294,7 +1359,9 @@ Cleans the cache of all downloaded packages
 - `-c, --cache-dir` — Path to the cache directory
 - `-d, --dry-run` — Show what would be removed
 - `-k, --keep` — Number of versions to keep
+- `--no-confirm` — Skips confirmation checks if true
 - `-r, --remove` — Removes all candidate entries
+- `-t, --target` — Removes all cached entries related to the selected package
 - `-u, --uninstalled` — target uninstalled packages
 
 **Examples:**
@@ -1306,6 +1373,7 @@ shelly utility cache-clean -r
 shelly utility cache-clean -r -k 2
 shelly utility cache-clean -r --uninstalled
 shelly utility cache-clean -r -c /var/cache/pacman/pkg
+shelly utility cache-clean -t vivaldi
 ```
 
 ### `shelly config`
