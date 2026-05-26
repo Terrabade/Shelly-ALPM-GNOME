@@ -23,7 +23,7 @@ public class Program
     public static int Main(string[] args)
     {
         Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
-        Console.SetError(new StreamWriter(Console.OpenStandardError())  { AutoFlush = true });
+        Console.SetError(new StreamWriter(Console.OpenStandardError()) { AutoFlush = true });
         // Ensure default configuration exists in ~/.config/shelly/config.json
         var configPath = XdgPaths.ShellyConfig("config.json");
 
@@ -187,6 +187,23 @@ public class Program
                 .WithExample("downgrade", "firefox", "--oldest")
                 .WithExample("downgrade", "firefox", "--latest")
                 .WithExample("downgrade", "firefox", "--ignore");
+
+            config.AddBranch("ignore", ignore =>
+            {
+                ignore.SetDescription("Manage IgnorePkg entries in pacman.conf");
+
+                ignore.AddCommand<IgnoreListCommand>("list")
+                    .WithDescription("List packages in IgnorePkg")
+                    .WithExample("ignore", "list");
+
+                ignore.AddCommand<IgnoreAddCommand>("add")
+                    .WithDescription("Add a package to IgnorePkg")
+                    .WithExample("ignore", "add", "firefox");
+
+                ignore.AddCommand<IgnoreRemoveCommand>("remove")
+                    .WithDescription("Remove a package from IgnorePkg")
+                    .WithExample("ignore", "remove", "firefox");
+            });
 
             config.AddCommand<ArchNews>("news")
                 .WithDescription("Shows Arch news you haven't seen before")
