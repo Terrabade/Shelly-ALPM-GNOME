@@ -8,7 +8,6 @@ using PackageManager.Flatpak;
 using PackageManager.Local;
 using Shelly_CLI.Commands.Aur.Models;
 using Shelly_CLI.Commands.Standard.Models;
-using Shelly_CLI.Configuration;
 using Shelly.Utilities;
 
 namespace Shelly_CLI;
@@ -60,5 +59,6 @@ namespace Shelly_CLI;
 [JsonSerializable(typeof(ProviderOption))]
 [JsonSerializable(typeof(List<ProviderOption>))]
 [JsonSerializable(typeof(QuestionResponse))]
+[JsonSerializable(typeof(List<string>))]
 [JsonSerializable(typeof(int[]))]
 internal partial class ShellyCLIJsonContext : JsonSerializerContext;

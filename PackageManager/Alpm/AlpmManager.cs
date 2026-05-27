@@ -29,7 +29,7 @@ namespace PackageManager.Alpm;
     "CS8618:Non-nullable field must contain a non-null value when exiting constructor. Consider adding the \'required\' modifier or declaring as nullable.")]
 public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, IAlpmManager
 {
-    private PacmanConf _config;
+    private readonly PacmanConf _config = PacmanConfParser.Parse(configPath) ;
     private IntPtr _handle = IntPtr.Zero;
 
     private static readonly SocketsHttpHandler AlpmSocketsHttpHandler = new()
@@ -51,14 +51,13 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         DefaultRequestHeaders = { UserAgent = { Http.UserAgent } }
     };
 
-    private HashSet<string> _preDownloadedFiles = new();
+    private HashSet<string> _preDownloadedFiles = [];
 
     private AlpmFetchCallback _fetchCallback;
     private AlpmEventCallback _eventCallback;
     private AlpmQuestionCallback _questionCallback;
     private AlpmProgressCallback? _progressCallback;
-    private int _parallelDownloads = 10;
-    private bool _showHiddenPackages = false;
+    private bool _showHiddenPackages;
     private bool _isPackageDownload;
 
     public event EventHandler<AlpmProgressEventArgs>? Progress;
@@ -83,7 +82,6 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
     public void Initialize(bool root = false, int parallelDownloads = 10, bool useTempPath = false,
         string tempPath = "", bool showHiddenPackages = false)
     {
-        _parallelDownloads = parallelDownloads;
         _showHiddenPackages = showHiddenPackages;
         if (_handle != IntPtr.Zero)
         {
@@ -91,7 +89,6 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             _handle = IntPtr.Zero;
         }
 
-        _config = PacmanConfParser.Parse(configPath);
         //Checks to see if the temp path is being used to run in
         //non-root mode for update checking.
         if (useTempPath)
@@ -1002,13 +999,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                 }
 
                 var dbPkgCachePtr = DbGetPkgCache(node.Data);
-                foreach (var pkg in AlpmPackage.FromList(dbPkgCachePtr).Select(p => p.ToDto()))
-                {
-                    if (seen.Add(pkg.Name))
-                    {
-                        packages.Add(pkg);
-                    }
-                }
+                packages.AddRange(AlpmPackage.FromList(dbPkgCachePtr).Select(p => p.ToDto()).Where(pkg => seen.Add(pkg.Name)));
             }
 
             currentPtr = node.Next;
@@ -1258,7 +1249,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         Console.Error.WriteLine($"[DEBUG] TransInit: handle={_handle}, dbPath={_config.DbPath}");
         Console.Error.WriteLine($"[DEBUG] db.lck exists: {File.Exists(Path.Combine(_config.DbPath, "db.lck"))}");
 
-        var lockfilePath = AlpmReference.GetLockFile(_handle); // Need to bind alpm_option_get_lockfile
+        var lockfilePath = GetLockFile(_handle); // Need to bind alpm_option_get_lockfile
         Console.Error.WriteLine($"[DEBUG] libalpm lockfile: {Marshal.PtrToStringAnsi(lockfilePath)}");
         Console.Error.WriteLine($"[DEBUG] C# check path: {Path.Combine(_config.DbPath, "db.lck")}");
         Console.Error.WriteLine($"[DEBUG] dbpath dir exists: {Directory.Exists(_config.DbPath)}");
@@ -1311,11 +1302,11 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                 return Task.FromResult(false);
             }
 
-            var localDb = AlpmReference.GetLocalDb(_handle);
+            var localDb = GetLocalDb(_handle);
             foreach (var name in optDepNames)
             {
                 Console.Error.WriteLine($"[DEBUG] Installing optional dependency: {name}");
-                var localPkg = AlpmReference.DbGetPkg(localDb, name);
+                var localPkg = DbGetPkg(localDb, name);
                 if (localPkg == IntPtr.Zero) continue; // not actually installed (skipped / failed)
                 if (PkgSetReason(localPkg, AlpmPkgReason.Depend) != 0)
                 {
@@ -1655,9 +1646,9 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
     public bool MarkPackageAsDepend(string packageName)
     {
         if (_handle == IntPtr.Zero) Initialize();
-        var localDb = AlpmReference.GetLocalDb(_handle);
+        var localDb = GetLocalDb(_handle);
         if (localDb == IntPtr.Zero) return false;
-        var localPkg = AlpmReference.DbGetPkg(localDb, packageName);
+        var localPkg = DbGetPkg(localDb, packageName);
         if (localPkg == IntPtr.Zero) return false;
         if (PkgSetReason(localPkg, AlpmPkgReason.Depend) != 0)
         {
@@ -1811,7 +1802,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             var node = Marshal.PtrToStructure<AlpmList>(currentPtr);
             if (node.Data != IntPtr.Zero)
             {
-                pkgPtr = AlpmReference.DbGetPkg(node.Data, packageName);
+                pkgPtr = DbGetPkg(node.Data, packageName);
                 if (pkgPtr != IntPtr.Zero) break;
             }
 
@@ -2075,7 +2066,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         }
     }
 
-    private void PercentLoggerHandler(string type, string pkgName, int percent, long bytes = 0, long totalBytes = 0)
+    private static void PercentLoggerHandler(string type, string pkgName, int percent, long bytes = 0, long totalBytes = 0)
     {
         if (bytes > 0 && totalBytes > 0)
         {
@@ -2291,14 +2282,14 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                     string? oldPkgName = null;
                     if (pacnewEvent.OldPkg != IntPtr.Zero)
                     {
-                        IntPtr namePtr = AlpmReference.GetPkgName(pacnewEvent.OldPkg);
+                        IntPtr namePtr = GetPkgName(pacnewEvent.OldPkg);
                         oldPkgName = namePtr != IntPtr.Zero ? Marshal.PtrToStringUTF8(namePtr) : null;
                     }
 
                     string? newPkgName = null;
                     if (pacnewEvent.NewPkg != IntPtr.Zero)
                     {
-                        IntPtr namePtr = AlpmReference.GetPkgName(pacnewEvent.NewPkg);
+                        IntPtr namePtr = GetPkgName(pacnewEvent.NewPkg);
                         newPkgName = namePtr != IntPtr.Zero ? Marshal.PtrToStringUTF8(namePtr) : null;
                     }
 
@@ -2318,7 +2309,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                     string? pkgNameOld = null;
                     if (pacsaveEvent.OldPkg != IntPtr.Zero)
                     {
-                        IntPtr namePtr = AlpmReference.GetPkgName(pacsaveEvent.OldPkg);
+                        IntPtr namePtr = GetPkgName(pacsaveEvent.OldPkg);
                         pkgNameOld = namePtr != IntPtr.Zero ? Marshal.PtrToStringUTF8(namePtr) : null;
                     }
 
@@ -2394,14 +2385,14 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             var node = Marshal.PtrToStructure<AlpmList>(currentPtr);
             if (node.Data != IntPtr.Zero)
             {
-                var depString = AlpmReference.DepComputeString(node.Data);
+                var depString = DepComputeString(node.Data);
                 if (depString != IntPtr.Zero)
                 {
                     var str = Marshal.PtrToStringUTF8(depString);
                     if (!string.IsNullOrEmpty(str))
                     {
                         // Strip version constraints (e.g., "gcc>=10" -> "gcc")
-                        var pkgName = str.Split(new[] { '>', '<', '=' })[0];
+                        var pkgName = str.Split('>', '<', '=')[0];
                         dependencies.Add(pkgName);
                     }
                 }
@@ -2434,12 +2425,12 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                 if (pkgPtr != IntPtr.Zero)
                 {
                     // Get the filename from the package
-                    var fileNamePtr = AlpmReference.GetPkgFileName(pkgPtr);
+                    var fileNamePtr = GetPkgFileName(pkgPtr);
                     var fileName = Marshal.PtrToStringUTF8(fileNamePtr)
                                    ?? throw new Exception($"Could not get filename for package {pkg.Name}");
 
                     // Get the first server URL from this database
-                    var serversPtr = AlpmReference.DbGetServers(node.Data);
+                    var serversPtr = DbGetServers(node.Data);
                     if (serversPtr != IntPtr.Zero)
                     {
                         var serverNode = Marshal.PtrToStructure<AlpmList>(serversPtr);
@@ -2461,7 +2452,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
 
     public static int VersionCompare(string a, string b)
     {
-        return AlpmReference.PkgVerCmp(a, b);
+        return PkgVerCmp(a, b);
     }
 
     public List<string> RemoveCorruptedPackages(bool dryRun = false)
@@ -2515,6 +2506,26 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
     public void IgnorePackage(string packageName)
     {
         PacmanConfWriter.AddIgnorePkg(_config, packageName, configPath);
+    }
+
+    public void IgnorePackages(IEnumerable<string> packageNames)
+    {
+        PacmanConfWriter.AddIgnorePkg(_config, packageNames, configPath);
+    }
+
+    public void UnignorePackage(string packageName)
+    {
+        PacmanConfWriter.RemoveIgnorePkg(_config, packageName, configPath);
+    }
+
+    public void UnignorePackages(IEnumerable<string> packageNames)
+    {
+        PacmanConfWriter.RemoveIgnorePkg(_config, packageNames, configPath);
+    }
+
+    public List<string> GetIgnoredPackages()
+    {
+        return PacmanConfWriter.NormalizePackageNames(_config.IgnorePkg);
     }
 
     private void HandleErrorMessage(IntPtr dataPtr, AlpmErrno error)
