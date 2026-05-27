@@ -734,12 +734,16 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                 return process.ExitCode == 0 ? 0 : -1;
             }
 
-            Console.Error.WriteLine($"[DEBUG_LOG] Failed to download {fullUrl}: curl not available");
+            InformationalEvent?.Invoke(this,
+                new InformationalEventArgs(AlpmEventType.TraceOutput,
+                    $"Failed to download {fullUrl}: curl not available"));
             return -1;
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[DEBUG_LOG] Failed to execute custom transfer command: {ex.Message}");
+            ErrorEvent?.Invoke(this,
+                new AlpmErrorEventArgs($"Failed to execute custom transfer command: {ex.Message}"));
+            ErrorEvent?.Invoke(this, new AlpmErrorEventArgs(ex.StackTrace ?? "No stack trace available"));
             return -1;
         }
     }
@@ -755,7 +759,10 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         string tempPath = sigLocalPath + ".part";
         try
         {
-            Console.Error.WriteLine($"[Shelly][DEBUG_LOG] Downloading signature {sigUrl}");
+            InformationalEvent?.Invoke(this,
+                new InformationalEventArgs(AlpmEventType.DebugOutput,
+                    $"Downloading signature {sigUrl} to {sigLocalPath}"));
+
 
             using var response = DownloadClient.GetAsync(sigUrl, HttpCompletionOption.ResponseContentRead)
                 .GetAwaiter()
@@ -764,15 +771,20 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             if (!response.IsSuccessStatusCode)
             {
                 // Signature file may not exist on the server (optional), just log and continue
-                Console.Error.WriteLine($"[DEBUG_LOG] Signature file not available: {sigUrl} ({response.StatusCode})");
+                InformationalEvent?.Invoke(this,
+                    new InformationalEventArgs(AlpmEventType.TraceOutput,
+                        $"Signature file not available: {sigUrl} ({response.StatusCode})"));
                 // Delete any existing stale signature file to prevent mismatch
                 try
                 {
                     File.Delete(sigLocalPath);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    /* ignore */
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                        $"Failed to delete stale signature file: {sigLocalPath} ({ex.Message})"));
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                        ex.StackTrace ?? "No stack trace available"));
                 }
 
                 return;
@@ -787,19 +799,26 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
 
             // Move temp file to final destination
             File.Move(tempPath, sigLocalPath, overwrite: true);
-            Console.Error.WriteLine($"[DEBUG_LOG] Signature file downloaded successfully: {sigLocalPath}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Signature file downloaded: {sigUrl} -> {sigLocalPath}"));
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[DEBUG_LOG] Failed to download signature file {sigUrl}: {ex.Message}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Failed to download signature file: {sigUrl} ({ex.Message})"));
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                ex.StackTrace ?? "No stack trace available"));
             // Clean up temp file on failure
             try
             {
                 File.Delete(tempPath);
             }
-            catch
+            catch (Exception ex2)
             {
-                /* ignore */
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                    $"Failed to delete temp file: {tempPath} ({ex2.Message})"));
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                    ex2.StackTrace ?? "No stack trace available"));
             }
 
             // Delete any existing stale signature file to prevent mismatch
@@ -807,9 +826,12 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             {
                 File.Delete(sigLocalPath);
             }
-            catch
+            catch (Exception ex2)
             {
-                /* ignore */
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                    $"Failed to delete stale signature file: {sigLocalPath} ({ex2.Message})"));
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                    ex2.StackTrace ?? "No stack trace available"));
             }
         }
     }
