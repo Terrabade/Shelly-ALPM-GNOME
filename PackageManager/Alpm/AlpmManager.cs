@@ -29,7 +29,7 @@ namespace PackageManager.Alpm;
     "CS8618:Non-nullable field must contain a non-null value when exiting constructor. Consider adding the \'required\' modifier or declaring as nullable.")]
 public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, IAlpmManager
 {
-    private readonly PacmanConf _config = PacmanConfParser.Parse(configPath) ;
+    private readonly PacmanConf _config = PacmanConfParser.Parse(configPath);
     private IntPtr _handle = IntPtr.Zero;
 
     private static readonly SocketsHttpHandler AlpmSocketsHttpHandler = new()
@@ -840,7 +840,8 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         var syncDbsPtr = GetSyncDbs(_handle);
         if (syncDbsPtr == IntPtr.Zero)
         {
-            Console.WriteLine("No sync databases found");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                "No sync databases available"));
             return;
         }
 
@@ -885,7 +886,8 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             var dbFileName = $"{db.dbName}.db";
             var url = $"{db.serverUrl.TrimEnd('/')}/{dbFileName}";
             var localPath = Path.Combine(syncDirectory, dbFileName);
-            Console.Error.WriteLine($"[DEBUG_LOG] Downloading {url} to {localPath}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Downloading {url} to {localPath}"));
             PerformDownload(url, localPath);
         }));
 
@@ -893,11 +895,9 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         _preDownloadedFiles = databaseDownloads.SelectMany(d => new[] { d.dbName + ".db", d.dbName + "db.sig" })
             .ToHashSet();
         var result = Update(_handle, syncDbsPtr, force);
-        if (result < 0)
-        {
-            var error = ErrorNumber(_handle);
-            Console.Error.WriteLine($"Sync failed: {GetErrorMessage(error)}");
-        }
+        if (result >= 0) return;
+        var error = ErrorNumber(_handle);
+        ErrorEvent?.Invoke(this, new AlpmErrorEventArgs($"Sync failed: {error} with {GetErrorMessage(error)}"));
     }
 
     public List<AlpmPackageDto> GetInstalledPackages()
@@ -907,10 +907,10 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         var pkgPtr = DbGetPkgCache(dbPtr);
         var packages = AlpmPackage.FromList(pkgPtr).Select(p => p.ToDto()).ToList();
 
-        if (!_showHiddenPackages)
-        {
-            packages.RemoveAll(x => _config.IgnorePkg.Contains(x.Name));
-        }
+        if (_showHiddenPackages) return packages;
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+            "Showing hidden packages is disabled"));
+        packages.RemoveAll(x => _config.IgnorePkg.Contains(x.Name));
 
         return packages;
     }
@@ -923,6 +923,8 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
 
         if (pkgPtr == 0 || (!_showHiddenPackages && _config.IgnorePkg.Contains(name)))
         {
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                $"Hiding {name} because it is ignored."));
             return null;
         }
 
@@ -970,6 +972,8 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
 
         if (!_showHiddenPackages)
         {
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                $"Removing hidden packages from foreign packages list"));
             foreignPackages.RemoveAll(x => _config.IgnorePkg.Contains(x.Name));
         }
 
@@ -993,13 +997,15 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                 if (DbGetValid(node.Data) != 0)
                 {
                     var dbName = Marshal.PtrToStringUTF8(DbGetName(node.Data)) ?? "unknown";
-                    Console.Error.WriteLine($"[ALPM_WARNING] Database '{dbName}' is invalid, skipping");
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                        $"Database '{dbName}' is invalid, skipping"));
                     currentPtr = node.Next;
                     continue;
                 }
 
                 var dbPkgCachePtr = DbGetPkgCache(node.Data);
-                packages.AddRange(AlpmPackage.FromList(dbPkgCachePtr).Select(p => p.ToDto()).Where(pkg => seen.Add(pkg.Name)));
+                packages.AddRange(AlpmPackage.FromList(dbPkgCachePtr).Select(p => p.ToDto())
+                    .Where(pkg => seen.Add(pkg.Name)));
             }
 
             currentPtr = node.Next;
@@ -1081,7 +1087,8 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                 {
                     var dbNamePtr = DbGetName(node.Data);
                     var dbName = Marshal.PtrToStringUTF8(dbNamePtr);
-                    Console.Error.WriteLine($"[DEBUG_LOG] Found database: {dbName}");
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                        $"Found database '{dbName}'"));
                     if (dbName != null && dbName.Equals(repoName, StringComparison.OrdinalIgnoreCase))
                     {
                         pkgPtr = DbGetPkg(node.Data, pkgName);
@@ -1108,7 +1115,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             IntPtr pkgPtr = IntPtr.Zero;
             var syncDbsPtr = GetSyncDbs(_handle);
             var currentPtr = syncDbsPtr;
-            List<IntPtr> groupPkgs = null;
+            List<IntPtr> groupPkgs = [];
             while (currentPtr != IntPtr.Zero)
             {
                 var node = Marshal.PtrToStructure<AlpmList>(currentPtr);
@@ -1149,7 +1156,10 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                             }
                             catch (Exception ex)
                             {
-                                Console.Error.WriteLine($"[DEBUG_LOG] Exception: {ex.Message}");
+                                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                                    $"Failed to get group packages: {ex.Message}"));
+                                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                                    ex.StackTrace ?? "No stack trace available"));
                             }
                         }
 
@@ -1246,25 +1256,26 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             pkgPtrs.AddRange(result);
         }
 
-        Console.Error.WriteLine($"[DEBUG] TransInit: handle={_handle}, dbPath={_config.DbPath}");
-        Console.Error.WriteLine($"[DEBUG] db.lck exists: {File.Exists(Path.Combine(_config.DbPath, "db.lck"))}");
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+            $"TransInit: handle={_handle} flags={flags} pkgPtrs={pkgPtrs.Count} dbPath={_config.DbPath}"));
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+            $"db.lck exists: {File.Exists(Path.Combine(_config.DbPath, "db.lck"))}"));
+        //TODO: Fire a prompt here to remove if one is found out of scope for current eventing work.
 
         var lockfilePath = GetLockFile(_handle); // Need to bind alpm_option_get_lockfile
-        Console.Error.WriteLine($"[DEBUG] libalpm lockfile: {Marshal.PtrToStringAnsi(lockfilePath)}");
-        Console.Error.WriteLine($"[DEBUG] C# check path: {Path.Combine(_config.DbPath, "db.lck")}");
-        Console.Error.WriteLine($"[DEBUG] dbpath dir exists: {Directory.Exists(_config.DbPath)}");
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+            $"Lockfile: {Marshal.PtrToStringAnsi(lockfilePath)}"));
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+            $"C# check path: {Path.Combine(_config.DbPath, "db.lck")}"));
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+            $"DB path dir exists: {Directory.Exists(_config.DbPath)}"));
         // Initialize transaction
         if (TransInit(_handle, flags) != 0)
         {
-            // var posixErrno = Marshal.ReadInt32(ErrnoLocation());
-            // Console.Error.WriteLine($"[DEBUG] POSIX errno: {posixErrno}");
             var err = ErrorNumber(_handle);
-            // Console.Error.WriteLine($"[DEBUG] TransInit failed: errno={err} ({(int)err}), message={GetErrorMessage(err)}");
             ErrorEvent?.Invoke(this,
                 new AlpmErrorEventArgs(
                     $"Failed to initialize transaction: with Error Number: {err} and message: {GetErrorMessage(err)}"));
-
-
             return Task.FromResult(false);
         }
 
@@ -1278,13 +1289,14 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                     // If it's just a duplicate target, skip it silently
                     if (err == AlpmErrno.TransDupTarget)
                     {
-                        Console.Error.WriteLine($"[ALPM_WARN] Skipping duplicate package in transaction.");
+                        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                            "Skipping duplicate package in transaction"));
                         continue;
                     }
 
                     ErrorEvent?.Invoke(this,
                         new AlpmErrorEventArgs($"Failed to add package to transaction: {GetErrorMessage(err)}"));
-                    return Task.FromResult(false); // or just return Task.CompletedTask if keeping Task
+                    return Task.FromResult(false);
                 }
             }
 
@@ -1305,24 +1317,36 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             var localDb = GetLocalDb(_handle);
             foreach (var name in optDepNames)
             {
-                Console.Error.WriteLine($"[DEBUG] Installing optional dependency: {name}");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Installing optional dependency: {name}"));
                 var localPkg = DbGetPkg(localDb, name);
                 if (localPkg == IntPtr.Zero) continue; // not actually installed (skipped / failed)
                 if (PkgSetReason(localPkg, AlpmPkgReason.Depend) != 0)
                 {
                     var err = ErrorNumber(_handle);
-                    Console.Error.WriteLine(
-                        $"[ALPM_WARN] Failed to set reason for {name}: {GetErrorMessage(err)}");
-                    // don't abort — install already succeeded
+                    ErrorEvent?.Invoke(this,
+                        new AlpmErrorEventArgs(
+                            $"Failed to set reason for package: {name} with error: {GetErrorMessage(err)}"));
+                    // don't abort — install already succeeded just output trace that it should be updated manually
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                        $"Manually update optional dependency: {name} because it failed to update it's reason"));
+                    continue;
                 }
 
-                Console.Error.WriteLine($"[DEBUG] Installed optional dependency: {name}");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Installing optional dependency: {name}"));
             }
         }
         finally
         {
             // Release transaction
-            TransRelease(_handle);
+            if (TransRelease(_handle) != 0)
+            {
+                var err = ErrorNumber(_handle);
+                ErrorEvent?.Invoke(this,
+                    new AlpmErrorEventArgs(
+                        $"Failed to release transaction: with Error Number: {err} and message: {GetErrorMessage(err)}"));
+            }
         }
 
         return Task.FromResult(true);
@@ -1361,7 +1385,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         foreach (var packageName in packageNames)
         {
             IntPtr pkgPtr = IntPtr.Zero;
-            List<IntPtr> groupPkgs = null;
+            List<IntPtr> groupPkgs = [];
 
             // 1. Try exact package name in local db
             pkgPtr = DbGetPkg(localDbPtr, packageName);
@@ -1400,7 +1424,11 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                         }
                         catch (Exception ex)
                         {
-                            Console.Error.WriteLine($"[DEBUG_LOG] Exception: {ex.Message}");
+                            InformationalEvent?.Invoke(this,
+                                new InformationalEventArgs(AlpmEventType.DebugOutput, $"Exception  {ex.Message}"));
+                            InformationalEvent?.Invoke(this,
+                                new InformationalEventArgs(AlpmEventType.TraceOutput,
+                                    ex.StackTrace ?? "No stack trace available"));
                         }
                     }
 
@@ -2066,7 +2094,8 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         }
     }
 
-    private static void PercentLoggerHandler(string type, string pkgName, int percent, long bytes = 0, long totalBytes = 0)
+    private static void PercentLoggerHandler(string type, string pkgName, int percent, long bytes = 0,
+        long totalBytes = 0)
     {
         if (bytes > 0 && totalBytes > 0)
         {
