@@ -27,7 +27,7 @@ public class PackageUpdate(
     private CancellationTokenSource _cts = new();
     private int _loadGeneration;
     private bool _suppressToggleConfirmation;
-    private Box _box = null!;
+    private Overlay _box = null!;
     private ColumnView _columnView = null!;
     private SingleSelection _selectionModel = null!;
     private Gio.ListStore _listStore = null!;
@@ -58,6 +58,9 @@ public class PackageUpdate(
 
     private Revealer _detailRevealer = null!;
     private Box _detailBox = null!;
+    private Box _loadingOverlay = null!;
+    private Spinner _loadingSpinner = null!;
+    private Label _errorLabel = null!;
     private AlpmUpdateGObject? _currentDetailPkg;
     private HashSet<string> _installedPackageNames = [];
 
@@ -67,7 +70,7 @@ public class PackageUpdate(
         var builder = Builder.New();
         builder.TranslationDomain = Domain;
         builder.AddFromString(ResourceHelper.LoadUiFile("UiFiles/Package/UpdateWindow.ui"), -1);
-        _box = (Box)builder.GetObject("UpdateWindow")!;
+        _box = (Overlay)builder.GetObject("UpdateWindow")!;
         _columnView = (ColumnView)builder.GetObject("package_grid")!;
         var searchEntry = (SearchEntry)builder.GetObject("search_entry")!;
 
@@ -89,6 +92,9 @@ public class PackageUpdate(
         _noPackagesLabel.Visible = false;
         _detailRevealer = (Revealer)builder.GetObject("detail_revealer")!;
         _detailBox = (Box)builder.GetObject("detail_box")!;
+        _loadingOverlay = (Box)builder.GetObject("loading_overlay")!;
+        _loadingSpinner = (Spinner)builder.GetObject("loading_spinner")!;
+        _errorLabel = (Label)builder.GetObject("error_label")!;
         _listStore = Gio.ListStore.New(AlpmUpdateGObject.GetGType());
         _filter = PackageSearch.CreateSafeFilter(FilterPackage);
         _filterListModel = FilterListModel.New(_listStore, _filter);
@@ -618,6 +624,15 @@ public class PackageUpdate(
 
     private async Task LoadDataAsync(CancellationToken ct = default, int generation = 0)
     {
+        GLib.Functions.IdleAdd(0, () =>
+        {
+            if (ct.IsCancellationRequested || _loadGeneration != generation) return false;
+            _loadingOverlay.Visible = true;
+            _loadingSpinner.Spinning = true;
+            _errorLabel.Visible = false;
+            return false;
+        });
+
         try
         {
             var packages =
@@ -628,6 +643,9 @@ public class PackageUpdate(
             GLib.Functions.IdleAdd(0, () =>
             {
                 if (ct.IsCancellationRequested || _loadGeneration != generation) return false;
+
+                _loadingOverlay.Visible = false;
+                _loadingSpinner.Spinning = false;
 
                 _filterListModel.SetFilter(null);
                 _listStore.RemoveAll();
@@ -666,6 +684,13 @@ public class PackageUpdate(
         catch (Exception e)
         {
             Console.WriteLine($"Failed to load packages: {e.Message}");
+            GLib.Functions.IdleAdd(0, () =>
+            {
+                if (ct.IsCancellationRequested || _loadGeneration != generation) return false;
+                _loadingSpinner.Spinning = false;
+                _errorLabel.Visible = true;
+                return false;
+            });
         }
     }
 
@@ -736,6 +761,10 @@ public class PackageUpdate(
             var isFullUpgrade = selectedPackages.Count == _listStore.GetNItems();
             try
             {
+                _loadingOverlay.Visible = true;
+                _loadingSpinner.Spinning = true;
+                _errorLabel.Visible = false;
+
                 lockoutService.Show(T("Updating..."));
                 OperationResult upgradeResult;
                 if (isFullUpgrade)
@@ -784,6 +813,8 @@ public class PackageUpdate(
             }
             finally
             {
+                _loadingOverlay.Visible = false;
+                _loadingSpinner.Spinning = false;
                 lockoutService.Hide();
             }
         }

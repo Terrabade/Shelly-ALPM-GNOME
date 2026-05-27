@@ -59,6 +59,10 @@ public sealed class PackageInstall(
     private HashSet<string> _installedPackageNames = [];
     private static readonly ConditionalWeakTable<CheckButton, BindState> CheckState = new();
 
+    private Box _loadingOverlay = null!;
+    private Spinner _loadingSpinner = null!;
+    private Label _errorLabel = null!;
+
     public Widget CreateWindow()
     {
         var builder = Builder.NewFromString(ResourceHelper.LoadUiFile("UiFiles/Package/PackageWindow.ui"), -1);
@@ -84,6 +88,10 @@ public sealed class PackageInstall(
         _groupDropDown = (DropDown)builder.GetObject("grouping_selection")!;
         _upgradeCheck = (CheckButton)builder.GetObject("upgrade_check")!;
         _showHiddenCheck = (CheckButton)builder.GetObject("show_hidden_check")!;
+
+        _loadingOverlay = (Box)builder.GetObject("loading_overlay")!;
+        _loadingSpinner = (Spinner)builder.GetObject("loading_spinner")!;
+        _errorLabel = (Label)builder.GetObject("error_label")!;
 
         _listStore = ListStore.New(AlpmPackageGObject.GetGType());
         _filter = PackageSearch.CreateSafeFilter(FilterPackage);
@@ -637,6 +645,16 @@ public sealed class PackageInstall(
 
     private async Task LoadDataAsync(int generation = 0, CancellationToken ct = default)
     {
+        GLib.Functions.IdleAdd(0, () =>
+        {
+            if (_loadGeneration != generation) return false;
+            _loadingSpinner.SetVisible(true);
+            _loadingSpinner.SetSpinning(true);
+            _loadingOverlay.SetVisible(true);
+            _errorLabel.SetVisible(false);
+            return false;
+        });
+
         try
         {
             var cleared = new TaskCompletionSource();
@@ -697,6 +715,12 @@ public sealed class PackageInstall(
             {
                 if (ct.IsCancellationRequested || _loadGeneration != generation)
                 {
+                    if (_loadGeneration == generation)
+                    {
+                        _loadingSpinner.SetSpinning(false);
+                        _loadingSpinner.SetVisible(false);
+                        _loadingOverlay.SetVisible(false);
+                    }
                     packages.Clear();
                     packages.TrimExcess();
                     return false;
@@ -730,18 +754,56 @@ public sealed class PackageInstall(
                     _selectionModel.SetSelected(0);
 
                 if (index < packages.Count) return true;
+                var count = packages.Count;
                 packages.Clear();
                 packages.TrimExcess();
+
+                if (_loadGeneration == generation)
+                {
+                    _loadingSpinner.SetSpinning(false);
+                    _loadingSpinner.SetVisible(false);
+
+                    if (count == 0)
+                    {
+                        _errorLabel.SetVisible(true);
+                        _loadingOverlay.SetVisible(true);
+                    }
+                    else
+                    {
+                        _loadingOverlay.SetVisible(false);
+                    }
+                }
                 return false;
+                
             });
         }
         catch (OperationCanceledException)
         {
-            // nothing to do
+            if (_loadGeneration == generation)
+            {
+                _loadingSpinner.SetSpinning(false);
+                _loadingSpinner.SetVisible(false);
+                _loadingOverlay.SetVisible(false);
+            }
         }
         catch (Exception e)
         {
             Console.WriteLine($"Failed to load packages: {e.Message}");
+            if (_loadGeneration == generation)
+            {
+                GLib.Functions.IdleAdd(0, () =>
+                {
+                    if (_loadGeneration == generation)
+                    {
+                        _loadingSpinner.SetSpinning(false);
+                        _loadingSpinner.SetVisible(false);
+                        _loadingOverlay.SetVisible(true);
+                        _errorLabel.SetText(T("Failed to load packages."));
+                        _errorLabel.SetVisible(true);
+                    }
+                    return false;
+                });
+            }
         }
     }
 
@@ -807,6 +869,15 @@ public sealed class PackageInstall(
                     }
                 }
 
+                GLib.Functions.IdleAdd(0, () =>
+                {
+                    _loadingSpinner.SetVisible(true);
+                    _loadingSpinner.SetSpinning(true);
+                    _loadingOverlay.SetVisible(true);
+                    _errorLabel.SetVisible(false);
+                    return false;
+                });
+
                 lockoutService.Show(T("Installing..."));
                 var performUpgrade = _upgradeCheck.GetActive();
                 result = await privilegedOperationService.InstallPackagesAsync(selectedPackages, performUpgrade);
@@ -814,6 +885,13 @@ public sealed class PackageInstall(
             }
             catch (Exception e)
             {
+                GLib.Functions.IdleAdd(0, () =>
+                {
+                    _loadingSpinner.SetSpinning(false);
+                    _loadingSpinner.SetVisible(false);
+                    _loadingOverlay.SetVisible(false);
+                    return false;
+                });
                 Console.WriteLine($"Failed to install packages: {e.Message}");
             }
             finally

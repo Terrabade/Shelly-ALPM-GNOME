@@ -84,7 +84,7 @@
                 </child>
                 <child>
                     <object class="GtkSeparator"/>
-                </child>
+                </child>     
                 <child>
                     <object class="GtkBox" id="detail_hbox">
                         <property name="hexpand">true</property>
@@ -173,6 +173,36 @@
                                 </child>
                             </object>
                         </child>
+                    </object>
+                </child>
+            </object>
+        </child>
+        <child type="overlay">
+            <object class="GtkBox" id="loading_overlay">
+                <property name="visible">false</property>
+                <property name="halign">center</property>
+                <property name="valign">center</property>
+                <property name="orientation">vertical</property>
+                <property name="spacing">10</property>
+                <child>
+                    <object class="GtkSpinner" id="loading_spinner">
+                        <property name="spinning">true</property>
+                        <property name="width-request">32</property>
+                        <property name="height-request">32</property>
+                        <property name="halign">center</property>
+                        <property name="valign">center</property>
+                    </object>
+                </child>
+                <child>
+                    <object class="GtkLabel" id="error_label">
+                        <property name="visible">false</property>
+                        <property name="label" translatable="yes">Had an issue loading your packages. Check if you have a db lock.</property>
+                        <property name="wrap">true</property>
+                        <property name="justify">center</property>
+                        <property name="max-width-chars">40</property>
+                        <style>
+                            <class name="error"/>
+                        </style>
                     </object>
                 </child>
             </object>

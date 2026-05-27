@@ -1276,3 +1276,6 @@ msgstr ""
 
 msgid "Allow the tray service to autostart."
 msgstr ""
+
+msgid "Unable to load package data. You may have a db.lck."
+msgstr ""
