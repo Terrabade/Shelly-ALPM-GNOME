@@ -1365,8 +1365,9 @@ public sealed class AurPackageManager(string? configPath = null)
                     "sudo", $"-u {user} git -C {tempPath} pull --ff-only");
                 if (pc != 0)
                 {
-                    await Console.Error.WriteLineAsync(
-                        $"[Shelly] git pull failed for {pkgbase} (likely divergent history). Attempting fresh clone...");
+                    InformationalEvent?.Invoke(this,
+                        new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                            $"Git pull failed for {pkgbase} (likely divergent history). Attempting fresh clone..."));
                     needsClone = true;
                 }
             }
@@ -1390,8 +1391,8 @@ public sealed class AurPackageManager(string? configPath = null)
                     "sudo", $"-u {user} git clone {expectedRemote} {tempPath}");
                 if (cc != 0)
                 {
-                    await Console.Error.WriteLineAsync(
-                        $"[Shelly] git clone failed for {pkgbase}: {cerr.Trim()}");
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                        $"Failed to clone package {packageName} with pkgbase {pkgbase} from AUR: {cerr.Trim()}"));
                     return false;
                 }
             }
@@ -1401,8 +1402,10 @@ public sealed class AurPackageManager(string? configPath = null)
         }
         catch (Exception ex)
         {
-            await Console.Error.WriteLineAsync(
-                $"[Shelly] DownloadPackage failed for {packageName}: {ex.Message}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                $"Failed to download package {packageName} from AUR: {ex.Message}"));
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                ex.StackTrace ?? "No stack trace available"));
             return false;
         }
     }
@@ -1441,7 +1444,10 @@ public sealed class AurPackageManager(string? configPath = null)
         catch (Exception ex)
         {
             // Log but don't fail initialization if cache import fails
-            await Console.Error.WriteLineAsync($"Warning: Failed to import AUR helper caches: {ex.Message}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Failed to import foreign AUR package data: {ex.Message}"));
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                ex.StackTrace ?? "No stack trace available"));
         }
     }
 
@@ -1535,7 +1541,10 @@ public sealed class AurPackageManager(string? configPath = null)
         }
         catch (Exception ex)
         {
-            await Console.Error.WriteLineAsync($"Warning: Failed to import from {sourceCachePath}: {ex.Message}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Failed to import foreign AUR package data from {sourceCachePath}: {ex.Message}"));
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                ex.StackTrace ?? "No stack trace available"));
         }
     }
 
@@ -1549,11 +1558,13 @@ public sealed class AurPackageManager(string? configPath = null)
             .ToList();
         var depsToInstall = allDeps.Where(x => !_alpm.IsDependencySatisfiedByInstalled(x.ToString())).ToList();
         var satisfiedDeps = allDeps.Where(x => _alpm.IsDependencySatisfiedByInstalled(x.ToString())).ToList();
-        Console.Error.WriteLine(
-            $"[DEBUG] Total deps: {allDeps.Count}, Satisfied: {satisfiedDeps.Count}, To install: {depsToInstall.Count}");
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+            $"Total dependencies: {allDeps.Count}, satisfied: {satisfiedDeps.Count}, to install: {depsToInstall.Count}"));
+
         foreach (var dep in satisfiedDeps)
         {
-            Console.Error.WriteLine($"[DEBUG] Already satisfied: {dep}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Dependency satisfied: {dep}"));
         }
 
         var alpmPackages = new List<string>();
@@ -1564,12 +1575,14 @@ public sealed class AurPackageManager(string? configPath = null)
             var repoName = _alpm.FindSatisfierInSyncDbs(dep.ToString());
             if (repoName != null)
             {
-                Console.Error.WriteLine($"[DEBUG] Need: {dep} -> repo:{repoName}");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                    $"Need: {dep} from {repoName}"));
                 alpmPackages.Add(repoName);
             }
             else
             {
-                Console.Error.WriteLine($"[DEBUG] Need: {dep} -> AUR");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                    $"Need: {dep} from AUR"));
                 aurPackages.Add(dep);
             }
         }
@@ -1598,7 +1611,8 @@ public sealed class AurPackageManager(string? configPath = null)
     {
         var (repoPackages, aurPackages) = ResolveDependencies(pkgbuildInfo);
 
-        Console.Error.WriteLine($"[DEBUG] {pkgbuildInfo.PkgName}: repo={repoPackages.Count}, aur={aurPackages.Count}");
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+            $"{pkgbuildInfo.PkgName}: repo={repoPackages.Count}, aur={aurPackages.Count}"));
 
         allRepoPackages.AddRange(repoPackages);
 
@@ -1612,7 +1626,8 @@ public sealed class AurPackageManager(string? configPath = null)
             var success = DownloadPackage(aurDep.Name).Result;
             if (!success)
             {
-                Console.Error.WriteLine($"[Shelly] Failed to download {aurDep.Name}");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Failed to download {aurDep.Name} from AUR"));
                 continue;
             }
 
@@ -1624,9 +1639,8 @@ public sealed class AurPackageManager(string? configPath = null)
                 var aurVersion = depPkgbuildInfo.GetFullVersion();
                 if (!aurDep.IsSatisifiedBy(aurVersion))
                 {
-                    Console.Error.WriteLine(
-                        $"[Shelly] AUR package {aurDep.Name} version {aurVersion} " +
-                        $"does not satisfy {aurDep}. Skipping.");
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                        $"AUR dependency {aurDep.Name} is not satisfied by {aurVersion} Skipping..."));
                     continue;
                 }
             }
