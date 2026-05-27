@@ -35,7 +35,8 @@ public class FlatpakRemove(
 
         _listView = (ListView)builder.GetObject("installed_flatpaks")!;
         var removeButton = (Button)builder.GetObject("remove_button")!;
-
+        
+        var flatpakRepairButton = (Button)builder.GetObject("flatpak_repair_button")!;
         _listStore = Gio.ListStore.New(StringObject.GetGType());
         _selectionModel = SingleSelection.New(_listStore);
         _listView.SetModel(_selectionModel);
