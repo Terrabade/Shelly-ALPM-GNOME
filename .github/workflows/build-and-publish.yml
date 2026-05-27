@@ -40,17 +40,20 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     container:
       image: archlinux:latest
 
     steps:
-      - uses: actions/checkout@v6
-
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm
-          pacman -S --noconfirm dotnet-sdk base-devel gtk4 clang glibc
+          pacman -S --noconfirm dotnet-sdk base-devel gtk4 clang glibc git
+
+      - uses: actions/checkout@v6
+
+      - name: Mark workspace as safe for Git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Restore dependencies
         run: dotnet restore
@@ -69,9 +72,8 @@ jobs:
             exit 0
           fi
 
-          git checkout -B development
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .
-          git commit -m "generated"
+          git add wiki/cli_help.md
+          git commit -m "Generate CLI help reference [skip ci]"
           git push
