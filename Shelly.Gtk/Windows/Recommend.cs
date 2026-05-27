@@ -35,10 +35,10 @@ public class Recommend(
 
         _overlay = Overlay.New();
         var scrolledWindow = (ScrolledWindow)builder.GetObject("recommend_scrolled_window_widget")!;
-        
+
         box.Remove(scrolledWindow);
         _overlay.SetChild(scrolledWindow);
-        
+
         _noResultsOverlay = Box.New(Orientation.Vertical, 12);
         _noResultsOverlay.SetValign(Align.Center);
         _noResultsOverlay.SetHalign(Align.Center);
@@ -47,13 +47,13 @@ public class Recommend(
 
         var noResultsIcon = Image.NewFromIconName("search-none-symbolic");
         noResultsIcon.SetPixelSize(64);
-        
+
         var noResultsLabel = Label.New(T("No recommendations found. Please check your internet connection and try again."));
         noResultsLabel.AddCssClass("title-2");
 
         _noResultsOverlay.Append(noResultsIcon);
         _noResultsOverlay.Append(noResultsLabel);
-        
+
         _overlay.AddOverlay(_noResultsOverlay);
         box.Append(_overlay);
 
@@ -70,9 +70,9 @@ public class Recommend(
             var installedPackages = await privilegedOperationService.GetInstalledPackagesAsync();
 
             var values = await Client.GetStringAsync("https://www.seafoam-labs.org/recommend.json", ct);
-            
+
             var result = JsonSerializer.Deserialize(values, RecommendJsonContext.Default.ListRecommendModel) ?? [];
-            
+
             if (result.Count < 1)
             {
                 _noResultsOverlay?.SetVisible(true);
@@ -178,7 +178,7 @@ public class Recommend(
         var titleLabel = Label.New(item.Package);
         titleLabel.SetHalign(Align.Start);
         titleLabel.AddCssClass("title-4");
-        
+
         var versionLabel = Label.New(item.Version);
         versionLabel.SetHalign(Align.Start);
         versionLabel.SetValign(Align.Center);
@@ -187,6 +187,7 @@ public class Recommend(
         var installedCheck = Image.NewFromIconName("object-select-symbolic");
         installedCheck.SetVisible(item.IsInstalled);
         installedCheck.SetValign(Align.Center);
+        installedCheck.SetTooltipText(T("Package is already installed"));
 
         titleContainer.Append(titleLabel);
         titleContainer.Append(versionLabel);
@@ -203,21 +204,50 @@ public class Recommend(
 
         textContainer.Append(titleContainer);
         textContainer.Append(descLabel);
-        
+
         contentBox.Append(textContainer);
 
+        var removeButton = Button.NewFromIconName("edit-delete-symbolic");
         var downloadButton = Button.NewFromIconName("folder-download-symbolic");
+        
+        removeButton.SetVisible(item.IsInstalled);
+        removeButton.AddCssClass("destructive-action");
+        removeButton.SetValign(Align.Center);
+        removeButton.SetTooltipText(T("Remove ") + item.Package);
+        removeButton.OnClicked += async (_, _) =>
+        {
+            var result = new OperationResult();
+            try
+            {
+                lockoutService.Show(T("Removing package..."));
+                result = await privilegedOperationService.RemovePackagesAsync(packages: [item.Package],
+                    isCascade: true, isCleanup: false, removeOptionalDeps: true);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine(e);
+            }
+            finally
+            {
+                if (result.Success)
+                {
+                    genericQuestionService.RaiseToastMessage(
+                        new ToastMessageEventArgs(T("Package removed successfully")));
+                    installedCheck.SetVisible(false);
+                    downloadButton.SetVisible(true);
+                    removeButton.SetVisible(false);
+                }
+
+                lockoutService.Hide();
+            }
+        };
+
+        downloadButton.SetVisible(!item.IsInstalled);
         downloadButton.AddCssClass("suggested-action");
         downloadButton.SetValign(Align.Center);
-        downloadButton.SetTooltipText(item.IsInstalled ? T("Already installed") : T("Install ") + item.Package);
+        downloadButton.SetTooltipText(T("Install ") + item.Package);
         downloadButton.OnClicked += async (_, _) =>
         {
-            if (item.IsInstalled)
-            {
-                genericQuestionService.RaiseToastMessage(new ToastMessageEventArgs(T("Package is already installed")));
-                return;
-            }
-            
             var result = new OperationResult();
             try
             {
@@ -232,13 +262,18 @@ public class Recommend(
             {
                 if (result.Success)
                 {
-                    genericQuestionService.RaiseToastMessage(new ToastMessageEventArgs(T("Package installed successfully")));
+                    genericQuestionService.RaiseToastMessage(
+                        new ToastMessageEventArgs(T("Package installed successfully")));
                     installedCheck.SetVisible(true);
+                    downloadButton.SetVisible(false);
+                    removeButton.SetVisible(true);
                 }
+
                 lockoutService.Hide();
             }
         };
 
+        contentBox.Append(removeButton);
         contentBox.Append(downloadButton);
 
         var frame = Frame.New(null);

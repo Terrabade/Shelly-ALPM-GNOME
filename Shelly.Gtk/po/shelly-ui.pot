@@ -773,6 +773,15 @@ msgstr ""
 msgid "Package installed successfully"
 msgstr ""
 
+msgid "Remove "
+msgstr ""
+
+msgid "Removing package..."
+msgstr ""
+
+msgid "Package removed successfully"
+msgstr ""
+
 msgid "Reboot required after flatpak installation."
 msgstr ""
 
