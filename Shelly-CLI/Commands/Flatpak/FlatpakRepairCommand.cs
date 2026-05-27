@@ -144,10 +144,19 @@ public class FlatpakRepair : Command<FlatpakRepairSettings>
         {
             AnsiConsole.MarkupLine($"[yellow]Pruning repository:[/] {repo}");
             var result = ostreeManager.Prune(repo);
-            AnsiConsole.MarkupLine(
-                result.Success
-                    ? $"[green]Pruned:[/] {result.ObjectsPruned}/{result.ObjectsTotal} objects ({result.PrunedBytes} bytes)"
-                    : $"[red]Prune failed:[/] {result.ErrorMessage}");
+            if (result.Success)
+            {
+                if (result.ObjectsPruned > 0)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[green]Pruned:[/] {result.ObjectsPruned}/{result.ObjectsTotal} objects ({result.PrunedBytes} bytes)");
+                }
+            }
+            else
+            {
+                AnsiConsole.MarkupLine(
+                    $"[red]Prune failed:[/] {result.ErrorMessage}");
+            }        
         }
         
         // Step 5 - Enumerate all deployed refs and re-install any that are not in the repo (or are partial for a non-subdir deploy).
