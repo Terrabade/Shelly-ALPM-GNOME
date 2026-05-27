@@ -6,52 +6,63 @@
 
 ### Package Management
 
-| Command                   | Description                                                          |
-|---------------------------|----------------------------------------------------------------------|
-| `version`                 | Display the application version                                      |
-| `sync`                    | Synchronize package databases                                        |
-| `list-installed`          | List all installed packages                                          |
-| `list-local-installed`    | List all locally installed packages (.gz, .zst)                      |
-| `list-available`          | List all available packages                                          |
-| `list-updates`            | List packages that need updates                                      |
-| `list-repos`              | List configured repositories in order                                |
-| `info <packages>`         | Display information about a package                                  |
-| `install <packages>`      | Install one or more packages                                         |
-| `install-local`           | Install a local package file (.gz, .zst)                             |
-| `remove <packages>`       | Remove one or more packages                                          |
-| `remove-local <packages>` | Remove a locally installed package file                              |
-| `update <packages>`       | Update one or more packages                                          |
-| `upgrade`                 | Perform a full system upgrade                                        |
-| `downgrade <packages>`    | Downgrade a package                                                  |
-| `news`                    | Shows Arch news you haven't seen before                              |
-| `purify`                  | Find and remove corrupted packages                                   |
-| `fix-permissions`         | Restore user ownership of Shelly XDG directories (config/cache/data) |
-| `pacfile [pacfiles]`      | Manage stored pacfiles                                               |
+| Command                   | Description                                                           |
+|---------------------------|-----------------------------------------------------------------------|
+| `version`                 | Display the application version                                       |
+| `sync`                    | Synchronize package databases                                         |
+| `list-installed`          | List all installed packages                                           |
+| `list-local-installed`    | List all locally installed packages (.gz, .zst)                       |
+| `list-available`          | List all available packages                                           |
+| `list-updates`            | List packages that need updates                                       |
+| `list-repos`              | List configured repositories in order                                 |
+| `info <packages>`         | Display information about a package                                   |
+| `install <packages>`      | Install one or more packages                                          |
+| `install-local`           | Install a local package file (.gz, .zst)                              |
+| `remove <packages>`       | Remove one or more packages                                           |
+| `remove-local <packages>` | Remove a locally installed package file                               |
+| `update <packages>`       | Update one or more packages                                           |
+| `upgrade`                 | Perform a full system upgrade                                         |
+| `downgrade <packages>`    | Downgrade a package                                                   |
+| `news`                    | Shows Arch news you haven't seen before                               |
+| `purify`                  | Find and remove corrupted packages                                    |
+| `fix-permissions`         | Restore user ownership of Shelly XDG directories 
+(config/cache/data) |
+| `pacfile [pacfiles]`      | Manage stored pacfiles                                                |
+
+### Manage IgnorePkg entries in pacman.conf (`ignore`)
+
+| Command                    | Description                                     |
+|----------------------------|-------------------------------------------------|
+| `ignore list`              | List all IgnorePkg entries                      |
+| `ignore add <packages>`    | Add one or more packages to IgnorePkg list      |
+| `ignore remove <packages>` | Remove one or more packages from IgnorePkg list |
 
 ### Manage pacman keyring (`keyring`)
 
-| Command                   | Description                                             |
-|---------------------------|---------------------------------------------------------|
-| `keyring init`            | Initialize the pacman keyring                           |
-| `keyring populate [keys]` | Reload keys from keyrings in /usr/share/pacman/keyrings |
-| `keyring recv [keys]`     | Receive keys from a keyserver                           |
-| `keyring lsign [keys]`    | Locally sign the specified key(s)                       |
-| `keyring list`            | List all keys in the keyring                            |
-| `keyring refresh`         | Refresh keys from the keyserver                         |
+| Command                   | Description                                              |
+|---------------------------|----------------------------------------------------------|
+| `keyring init`            | Initialize the pacman keyring                            |
+| `keyring populate [keys]` | Reload keys from keyrings in 
+/usr/share/pacman/keyrings |
+| `keyring recv [keys]`     | Receive keys from a keyserver                            |
+| `keyring lsign [keys]`    | Locally sign the specified key(s)                        |
+| `keyring list`            | List all keys in the keyring                             |
+| `keyring refresh`         | Refresh keys from the keyserver                          |
 
 ### Manage AUR packages (`aur`)
 
-| Command                                  | Description                                                 |
-|------------------------------------------|-------------------------------------------------------------|
-| `aur search <query>`                     | Search for AUR packages                                     |
-| `aur list-installed`                     | List installed AUR packages                                 |
-| `aur list-updates`                       | List AUR packages that need updates                         |
-| `aur install <packages>`                 | Install AUR packages                                        |
-| `aur install-version <package> <commit>` | Install a specific version of an AUR package by commit hash |
-| `aur update <packages>`                  | Update specific AUR packages                                |
-| `aur upgrade`                            | Upgrade all AUR packages                                    |
-| `aur remove <packages>`                  | Remove AUR packages                                         |
-| `aur get-package-build <packages>`       | Get package build                                           |
+| Command                                  | Description                                                  |
+|------------------------------------------|--------------------------------------------------------------|
+| `aur search <query>`                     | Search for AUR packages                                      |
+| `aur list-installed`                     | List installed AUR packages                                  |
+| `aur list-updates`                       | List AUR packages that need updates                          |
+| `aur install <packages>`                 | Install AUR packages                                         |
+| `aur install-version <package> <commit>` | Install a specific version of an AUR package by commit 
+hash |
+| `aur update <packages>`                  | Update specific AUR packages                                 |
+| `aur upgrade`                            | Upgrade all AUR packages                                     |
+| `aur remove <packages>`                  | Remove AUR packages                                          |
+| `aur get-package-build <packages>`       | Get package build                                            |
 
 ### Manage flatpak (`flatpak`)
 
@@ -143,10 +154,14 @@ Synchronize package databases
 
 **Options:**
 
-- `-f, --force` — Force the operation even if it would normally be skipped or blocked
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `-f, --force` — Force the operation even if it would normally be skipped or
+blocked
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 **Examples:**
 
@@ -160,14 +175,21 @@ List all installed packages
 
 **Options:**
 
-- `-f, --filter` — Filter packages by name (case-insensitive fuzzy match)
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `-o, --order` — Sort order: ascending, descending (default: ascending
+- `-f, --filter` — Filter packages by name (case-insensitive fuzzy 
+match)
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `-o, --order` — Sort order: ascending, descending (default: 
+ascending
 - `-p, --page` — The page to render
-- `--show-hidden` — Show packages that are in the IgnorePkg list in pacman.conf
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts by name for non-aur packages)
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `--show-hidden` — Show packages that are in the IgnorePkg list in 
+pacman.conf
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts 
+by name for non-aur packages)
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 - `-t, --take` — The number of packages to render per page
 
 **Examples:**
@@ -186,13 +208,19 @@ List all locally installed packages (.gz, .zst)
 
 **Options:**
 
-- `-f, --filter` — Filter packages by name (case-insensitive fuzzy match)
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `-o, --order` — Sort order: ascending, descending (default: ascending
+- `-f, --filter` — Filter packages by name (case-insensitive fuzzy 
+match)
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `-o, --order` — Sort order: ascending, descending (default: 
+ascending
 - `-p, --page` — The page to render
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts by name for non-aur packages)
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts 
+by name for non-aur packages)
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 - `-t, --take` — The number of packages to render per page
 
 **Examples:**
@@ -211,14 +239,21 @@ List all available packages
 
 **Options:**
 
-- `-f, --filter` — Filter packages by name (case-insensitive fuzzy match)
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `-o, --order` — Sort order: ascending, descending (default: ascending
+- `-f, --filter` — Filter packages by name (case-insensitive fuzzy 
+match)
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `-o, --order` — Sort order: ascending, descending (default: 
+ascending
 - `-p, --page` — The page to render
-- `--show-hidden` — Show packages that are in the IgnorePkg list in pacman.conf
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts by name for non-aur packages)
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `--show-hidden` — Show packages that are in the IgnorePkg list in 
+pacman.conf
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts 
+by name for non-aur packages)
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 - `-t, --take` — The number of packages to render per page
 
 **Examples:**
@@ -237,13 +272,19 @@ List packages that need updates
 
 **Options:**
 
-- `-f, --filter` — Filter packages by name (case-insensitive fuzzy match)
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `-o, --order` — Sort order: ascending, descending (default: ascending
+- `-f, --filter` — Filter packages by name (case-insensitive fuzzy 
+match)
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `-o, --order` — Sort order: ascending, descending (default: 
+ascending
 - `-p, --page` — The page to render
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts by name for non-aur packages)
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts 
+by name for non-aur packages)
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 - `-t, --take` — The number of packages to render per page
 
 **Examples:**
@@ -268,16 +309,20 @@ Display information about a package
 
 **Arguments:**
 
-- `<packages>` *(required)* — One or more package names to operate on (space-separated)
+- `<packages>` *(required)* — One or more package names to operate on 
+(space-separated)
 
 **Options:**
 
 - `-i, --installed` — Searches installed packages
-- `-j, --json` — Output results in JSON format for UI integration and scripting
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
 - `-n, --no-confirm` — Proceed without asking for user confirmation
 - `-r, --repository` — Searches repository of available packages.
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 **Examples:**
 
@@ -294,17 +339,24 @@ Install one or more packages
 
 **Arguments:**
 
-- `<packages>` *(required)* — One or more package names to operate on (space-separated)
+- `<packages>` *(required)* — One or more package names to operate on 
+(space-separated)
 
 **Options:**
 
-- `-o, --build-deps` — Install build dependencies only for the specified packages
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `-m, --make-deps` — Install make dependencies only for the specified packages
+- `-o, --build-deps` — Install build dependencies only for the specified 
+packages
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `-m, --make-deps` — Install make dependencies only for the specified 
+packages
 - `-n, --no-confirm` — Proceed without asking for user confirmation
-- `-d, --no-deps` — Install package without checking/installing dependencies
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `-d, --no-deps` — Install package without checking/installing 
+dependencies
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 - `-u, --upgrade` — Triggers full system upgrade with install
 
 **Examples:**
@@ -329,9 +381,11 @@ Install a local package file (.gz, .zst)
 
 **Options:**
 
-- `-l, --location` — Location of the .pkg.tar.gz(zst) to be installed
+- `-l, --location` — Location of the .pkg.tar.gz(zst) to be 
+installed
 - `-n, --no-confirm` — Proceed without asking for user confirmation
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
 
 **Examples:**
 
@@ -352,19 +406,27 @@ Remove one or more packages
 
 **Arguments:**
 
-- `<packages>` *(required)* — One or more package names to operate on (space-separated)
+- `<packages>` *(required)* — One or more package names to operate on 
+(space-separated)
 
 **Options:**
 
-- `-c, --cascade` — Removes all things the removed package(s) are dependent on that have no other uses
-- `-j, --json` — Output results in JSON format for UI integration and scripting
+- `-c, --cascade` — Removes all things the removed package(s) are dependent on 
+that have no other uses
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
 - `-n, --no-confirm` — Proceed without asking for user confirmation
-- `-o, --opt-deps` — Removes optional dependencies installed with the package, that don't depend on other packages
-- `-r, --remove-config` — Removes any files in your ~/.config that can be tied exclusively to the removed package(s). This is 
-EXPERIMENTAL and has no guarantees of working
-- `-i, --ripple` — Removes packages that depend on the package being removed
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `-o, --opt-deps` — Removes optional dependencies installed with the package, 
+that don't depend on other packages
+- `-r, --remove-config` — Removes any files in your ~/.config that can be tied 
+exclusively to the removed package(s). This is EXPERIMENTAL and has no 
+guarantees of working
+- `-i, --ripple` — Removes packages that depend on the package being 
+removed
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 **Examples:**
 
@@ -380,14 +442,18 @@ Remove a locally installed package file
 
 **Arguments:**
 
-- `<packages>` *(required)* — One or more package names to operate on (space-separated)
+- `<packages>` *(required)* — One or more package names to operate on 
+(space-separated)
 
 **Options:**
 
-- `-j, --json` — Output results in JSON format for UI integration and scripting
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
 - `-n, --no-confirm` — Proceed without asking for user confirmation
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 **Examples:**
 
@@ -402,14 +468,18 @@ Update one or more packages
 
 **Arguments:**
 
-- `<packages>` *(required)* — One or more package names to operate on (space-separated)
+- `<packages>` *(required)* — One or more package names to operate on 
+(space-separated)
 
 **Options:**
 
-- `-j, --json` — Output results in JSON format for UI integration and scripting
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
 - `-n, --no-confirm` — Proceed without asking for user confirmation
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 **Examples:**
 
@@ -425,13 +495,18 @@ Perform a full system upgrade
 
 **Options:**
 
-- `-a, --all` — Upgrades all supported sources. (Standard, AUR, Flatpak
+- `-a, --all` — Upgrades all supported sources. (Standard, AUR, 
+Flatpak
 - `-u, --aur` — Upgrades AUR packages
 - `-l, --flatpak` — Upgrade Flatpak packages
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `-n, --no-confirm` — Proceed with system upgrade without asking for user confirmation
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `-n, --no-confirm` — Proceed with system upgrade without asking for user 
+confirmation
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 **Examples:**
 
@@ -446,16 +521,21 @@ Downgrade a package
 
 **Arguments:**
 
-- `<packages>` *(required)* — One or more package names to operate on (space-separated)
+- `<packages>` *(required)* — One or more package names to operate on 
+(space-separated)
 
 **Options:**
 
-- `-j, --json` — Output results in JSON format for UI integration and scripting
+- `-i, --ignore` — Add to IgnorePkg list
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
 - `-l, --latest` — Installs the newest matched version
 - `-n, --no-confirm` — Proceed without asking for user confirmation
 - `-o, --oldest` — Installs the oldest matched version
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 **Examples:**
 
@@ -463,6 +543,67 @@ Downgrade a package
 shelly downgrade firefox
 shelly downgrade firefox --oldest
 shelly downgrade firefox --latest
+shelly downgrade firefox --ignore
+```
+
+### `shelly ignore`
+
+Manage IgnorePkg entries in pacman.conf
+
+*Branch command — use one of the subcommands below.*
+
+**Subcommands:**
+
+- `shelly ignore list` — List all IgnorePkg entries
+- `shelly ignore add` — Add one or more packages to IgnorePkg list
+- `shelly ignore remove` — Remove one or more packages from IgnorePkg list
+
+
+### `shelly ignore list`
+
+List all IgnorePkg entries
+
+**Options:**
+
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+
+**Examples:**
+
+```sh
+shelly ignore list
+```
+
+### `shelly ignore add`
+
+Add one or more packages to IgnorePkg list
+
+**Arguments:**
+
+- `<packages>` *(required)* — One or more package names to add to IgnorePkg 
+(space-separated)
+
+**Examples:**
+
+```sh
+shelly ignore add firefox
+shelly ignore add firefox vlc
+```
+
+### `shelly ignore remove`
+
+Remove one or more packages from IgnorePkg list
+
+**Arguments:**
+
+- `<packages>` *(required)* — One or more package names to remove from IgnorePkg 
+(space-separated)
+
+**Examples:**
+
+```sh
+shelly ignore remove firefox
+shelly ignore remove firefox vlc
 ```
 
 ### `shelly news`
@@ -499,7 +640,8 @@ shelly purify --no-confirm
 
 ### `shelly fix-permissions`
 
-Restore user ownership of Shelly XDG directories (config/cache/data)
+Restore user ownership of Shelly XDG directories 
+(config/cache/data)
 
 **Examples:**
 
@@ -513,11 +655,13 @@ Manage stored pacfiles
 
 **Arguments:**
 
-- `<pacfiles>` — One or more pacfiles to interact with (space-separated). If empty uses all pacfiles
+- `<pacfiles>` — One or more pacfiles to interact with (space-separated). If
+empty uses all pacfiles
 
 **Options:**
 
-- `-d, --delete` — Deletes a pacfile however this is still not supported and is here as a placeholder.
+- `-d, --delete` — Deletes a pacfile however this is still not supported and 
+is here as a placeholder.
 - `-j, --json` — 
 
 **Examples:**
@@ -538,7 +682,8 @@ Manage pacman keyring
 **Subcommands:**
 
 - `shelly keyring init` — Initialize the pacman keyring
-- `shelly keyring populate` — Reload keys from keyrings in /usr/share/pacman/keyrings
+- `shelly keyring populate` — Reload keys from keyrings in 
+/usr/share/pacman/keyrings
 - `shelly keyring recv` — Receive keys from a keyserver
 - `shelly keyring lsign` — Locally sign the specified key(s)
 - `shelly keyring list` — List all keys in the keyring
@@ -557,15 +702,18 @@ shelly keyring init
 
 ### `shelly keyring populate`
 
-Reload keys from keyrings in /usr/share/pacman/keyrings
+Reload keys from keyrings in 
+/usr/share/pacman/keyrings
 
 **Arguments:**
 
-- `<keys>` — GPG key IDs or fingerprints to operate on (e.g., 0x12345678)
+- `<keys>` — GPG key IDs or fingerprints to operate on (e.g., 
+0x12345678)
 
 **Options:**
 
-- `--keyserver` — URL of the keyserver to fetch keys from (e.g., keyserver.ubuntu.com)
+- `--keyserver` — URL of the keyserver to fetch keys from (e.g., 
+keyserver.ubuntu.com)
 
 **Examples:**
 
@@ -580,11 +728,13 @@ Receive keys from a keyserver
 
 **Arguments:**
 
-- `<keys>` — GPG key IDs or fingerprints to operate on (e.g., 0x12345678)
+- `<keys>` — GPG key IDs or fingerprints to operate on (e.g., 
+0x12345678)
 
 **Options:**
 
-- `--keyserver` — URL of the keyserver to fetch keys from (e.g., keyserver.ubuntu.com)
+- `--keyserver` — URL of the keyserver to fetch keys from (e.g., 
+keyserver.ubuntu.com)
 
 **Examples:**
 
@@ -599,11 +749,13 @@ Locally sign the specified key(s)
 
 **Arguments:**
 
-- `<keys>` — GPG key IDs or fingerprints to operate on (e.g., 0x12345678)
+- `<keys>` — GPG key IDs or fingerprints to operate on (e.g., 
+0x12345678)
 
 **Options:**
 
-- `--keyserver` — URL of the keyserver to fetch keys from (e.g., keyserver.ubuntu.com)
+- `--keyserver` — URL of the keyserver to fetch keys from (e.g., 
+keyserver.ubuntu.com)
 
 **Examples:**
 
@@ -643,7 +795,8 @@ Manage AUR packages
 - `shelly aur list-installed` — List installed AUR packages
 - `shelly aur list-updates` — List AUR packages that need updates
 - `shelly aur install` — Install AUR packages
-- `shelly aur install-version` — Install a specific version of an AUR package by commit hash
+- `shelly aur install-version` — Install a specific version of an AUR package by commit 
+hash
 - `shelly aur update` — Update specific AUR packages
 - `shelly aur upgrade` — Upgrade all AUR packages
 - `shelly aur remove` — Remove AUR packages
@@ -656,13 +809,17 @@ Search for AUR packages
 
 **Arguments:**
 
-- `<query>` *(required)* — Search term to find packages in the Arch User Repository
+- `<query>` *(required)* — Search term to find packages in the Arch User 
+Repository
 
 **Options:**
 
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 **Examples:**
 
@@ -676,14 +833,21 @@ List installed AUR packages
 
 **Options:**
 
-- `-f, --filter` — Filter packages by name (case-insensitive fuzzy match)
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `-o, --order` — Sort order: ascending, descending (default: ascending
+- `-f, --filter` — Filter packages by name (case-insensitive fuzzy 
+match)
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `-o, --order` — Sort order: ascending, descending (default: 
+ascending
 - `-p, --page` — The page to render
-- `--show-hidden` — Show packages that are in the IgnorePkg list in pacman.conf
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts by name for non-aur packages)
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `--show-hidden` — Show packages that are in the IgnorePkg list in 
+pacman.conf
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts
+by name for non-aur packages)
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 - `-t, --take` — The number of packages to render per page
 
 **Examples:**
@@ -702,14 +866,21 @@ List AUR packages that need updates
 
 **Options:**
 
-- `-f, --filter` — Filter packages by name (case-insensitive fuzzy match)
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `-o, --order` — Sort order: ascending, descending (default: ascending
+- `-f, --filter` — Filter packages by name (case-insensitive fuzzy 
+match)
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `-o, --order` — Sort order: ascending, descending (default: 
+ascending
 - `-p, --page` — The page to render
-- `--show-hidden` — Show packages that are in the IgnorePkg list in pacman.conf
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts by name for non-aur packages)
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `--show-hidden` — Show packages that are in the IgnorePkg list in 
+pacman.conf
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-s, --sort` — Sort results by: name, size, popularity (popularity sorts
+by name for non-aur packages)
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 - `-t, --take` — The number of packages to render per page
 
 **Examples:**
@@ -728,16 +899,23 @@ Install AUR packages
 
 **Arguments:**
 
-- `<packages>` *(required)* — One or more AUR package names to operate on (space-separated)
+- `<packages>` *(required)* — One or more AUR package names to operate on 
+(space-separated)
 
 **Options:**
 
-- `-o, --build-deps` — Install build dependencies only for the specified AUR packages
-- `--check` — Run the check() function during AUR package builds (disabled by default)
-- `-c, --chroot` — Build packages in a clean chroot environment using makechrootpkg
-- `-m, --make-deps` — Install make dependencies only for the specified AUR packages
-- `--no-confirm` — Proceed without asking for user confirmation
-- `--singlepane` — Render output as a single pacman-style linear stream instead of the split two-pane layout
+- `-o, --build-deps` — Install build dependencies only for the specified AUR 
+packages
+- `--check` — Run the check() function during AUR package builds 
+(disabled by default)
+- `-c, --chroot` — Build packages in a clean chroot environment using 
+makechrootpkg
+- `-m, --make-deps` — Install make dependencies only for the specified AUR 
+packages
+- `--no-confirm` — Proceed without asking for user 
+confirmation
+- `--singlepane` — Render output as a single pacman-style linear stream 
+instead of the split two-pane layout
 
 **Examples:**
 
@@ -755,16 +933,19 @@ shelly aur install yay -o -m
 
 ### `shelly aur install-version`
 
-Install a specific version of an AUR package by commit hash
+Install a specific version of an AUR package by commit 
+hash
 
 **Arguments:**
 
 - `<package>` *(required)* — Name of the AUR package to install
-- `<commit>` *(required)* — Git commit hash specifying the exact version to install
+- `<commit>` *(required)* — Git commit hash specifying the exact version to 
+install
 
 **Options:**
 
-- `--check` — Run the check() function during AUR package builds (disabled by default)
+- `--check` — Run the check() function during AUR package builds 
+(disabled by default)
 
 **Examples:**
 
@@ -778,13 +959,17 @@ Update specific AUR packages
 
 **Arguments:**
 
-- `<packages>` *(required)* — One or more AUR package names to operate on (space-separated)
+- `<packages>` *(required)* — One or more AUR package names to operate on 
+(space-separated)
 
 **Options:**
 
-- `--check` — Run the check() function during AUR package builds (disabled by default)
-- `--no-confirm` — Proceed without asking for user confirmation
-- `--singlepane` — Render output as a single pacman-style linear stream instead of the split two-pane layout
+- `--check` — Run the check() function during AUR package builds 
+(disabled by default)
+- `--no-confirm` — Proceed without asking for user 
+confirmation
+- `--singlepane` — Render output as a single pacman-style linear stream 
+instead of the split two-pane layout
 
 **Examples:**
 
@@ -800,9 +985,12 @@ Upgrade all AUR packages
 
 **Options:**
 
-- `--check` — Run the check() function during AUR package builds (disabled by default)
-- `--no-confirm` — Proceed without asking for user confirmation
-- `--singlepane` — Render output as a single pacman-style linear stream instead of the split two-pane layout
+- `--check` — Run the check() function during AUR package builds 
+(disabled by default)
+- `--no-confirm` — Proceed without asking for user 
+confirmation
+- `--singlepane` — Render output as a single pacman-style linear stream 
+instead of the split two-pane layout
 
 **Examples:**
 
@@ -817,17 +1005,23 @@ Remove AUR packages
 
 **Arguments:**
 
-- `<packages>` *(required)* — One or more AUR package names to operate on (space-separated)
+- `<packages>` *(required)* — One or more AUR package names to operate on 
+(space-separated)
 
 **Options:**
 
-- `-c, --cascade` — Removes all things the removed package(s) are dependent on that have no other uses
-- `--check` — Run the check() function during AUR package builds (disabled by default)
-- `--no-confirm` — Proceed without asking for user confirmation
-- `-o, --opt-deps` — Removes optional dependencies installed with the package, that don't depend on other 
-packages
-- `-i, --ripple` — Removes packages that depend on the package being removed
-- `--singlepane` — Render output as a single pacman-style linear stream instead of the split two-pane layout
+- `-c, --cascade` — Removes all things the removed package(s) are dependent 
+on that have no other uses
+- `--check` — Run the check() function during AUR package builds 
+(disabled by default)
+- `--no-confirm` — Proceed without asking for user 
+confirmation
+- `-o, --opt-deps` — Removes optional dependencies installed with the package,
+that don't depend on other packages
+- `-i, --ripple` — Removes packages that depend on the package being 
+removed
+- `--singlepane` — Render output as a single pacman-style linear stream 
+instead of the split two-pane layout
 
 **Examples:**
 
@@ -843,13 +1037,17 @@ Get package build
 
 **Arguments:**
 
-- `<packages>` *(required)* — One or more AUR package names to operate on (space-separated)
+- `<packages>` *(required)* — One or more AUR package names to operate on 
+(space-separated)
 
 **Options:**
 
-- `--check` — Run the check() function during AUR package builds (disabled by default)
-- `--no-confirm` — Proceed without asking for user confirmation
-- `--singlepane` — Render output as a single pacman-style linear stream instead of the split two-pane layout
+- `--check` — Run the check() function during AUR package builds 
+(disabled by default)
+- `--no-confirm` — Proceed without asking for user 
+confirmation
+- `--singlepane` — Render output as a single pacman-style linear stream 
+instead of the split two-pane layout
 
 **Examples:**
 
@@ -891,15 +1089,21 @@ Install flatpak app
 
 **Arguments:**
 
-- `<package>` *(required)* — Flatpak application ID (e.g., com.spotify.Client)
+- `<package>` *(required)* — Flatpak application ID (e.g., 
+com.spotify.Client)
 
 **Options:**
 
-- `-b, --branch` — Branch to install (e.g., stable, beta). Defaults to stable
-- `-r, --remote` — Remote to install from (e.g., flathub, flathub-beta)
-- `--remove-unused` — Remove unused dependencies after uninstalling
-- `--runtime` — Install as a runtime instead of an application
-- `--user` — Install to user scope instead of system scope
+- `-b, --branch` — Branch to install (e.g., stable, beta). Defaults to 
+stable
+- `-r, --remote` — Remote to install from (e.g., flathub, 
+flathub-beta)
+- `--remove-unused` — Remove unused dependencies after 
+uninstalling
+- `--runtime` — Install as a runtime instead of an 
+application
+- `--user` — Install to user scope instead of system 
+scope
 
 **Examples:**
 
@@ -913,15 +1117,21 @@ Update flatpak app
 
 **Arguments:**
 
-- `<package>` *(required)* — Flatpak application ID (e.g., com.spotify.Client)
+- `<package>` *(required)* — Flatpak application ID (e.g., 
+com.spotify.Client)
 
 **Options:**
 
-- `-b, --branch` — Branch to install (e.g., stable, beta). Defaults to stable
-- `-r, --remote` — Remote to install from (e.g., flathub, flathub-beta)
-- `--remove-unused` — Remove unused dependencies after uninstalling
-- `--runtime` — Install as a runtime instead of an application
-- `--user` — Install to user scope instead of system scope
+- `-b, --branch` — Branch to install (e.g., stable, beta). Defaults to 
+stable
+- `-r, --remote` — Remote to install from (e.g., flathub, 
+flathub-beta)
+- `--remove-unused` — Remove unused dependencies after 
+uninstalling
+- `--runtime` — Install as a runtime instead of an 
+application
+- `--user` — Install to user scope instead of system 
+scope
 
 **Examples:**
 
@@ -935,9 +1145,12 @@ List installed flatpak apps
 
 **Options:**
 
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 **Examples:**
 
@@ -951,9 +1164,12 @@ List installed flatpak apps
 
 **Options:**
 
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 **Examples:**
 
@@ -977,12 +1193,15 @@ Remove flatpak app
 
 **Arguments:**
 
-- `<package>` *(required)* — Flatpak application ID (e.g., com.spotify.Client)
+- `<package>` *(required)* — Flatpak application ID (e.g., 
+com.spotify.Client)
 
 **Options:**
 
-- `-c, --config` — Removes flatpak configuration for removed app
-- `-r, --remove-unused` — Remove unused dependencies after uninstalling
+- `-c, --config` — Removes flatpak configuration for removed 
+app
+- `-r, --remove-unused` — Remove unused dependencies after 
+uninstalling
 
 **Examples:**
 
@@ -996,15 +1215,21 @@ Run flatpak app
 
 **Arguments:**
 
-- `<package>` *(required)* — Flatpak application ID (e.g., com.spotify.Client)
+- `<package>` *(required)* — Flatpak application ID (e.g., 
+com.spotify.Client)
 
 **Options:**
 
-- `-b, --branch` — Branch to install (e.g., stable, beta). Defaults to stable
-- `-r, --remote` — Remote to install from (e.g., flathub, flathub-beta)
-- `--remove-unused` — Remove unused dependencies after uninstalling
-- `--runtime` — Install as a runtime instead of an application
-- `--user` — Install to user scope instead of system scope
+- `-b, --branch` — Branch to install (e.g., stable, beta). Defaults to 
+stable
+- `-r, --remote` — Remote to install from (e.g., flathub, 
+flathub-beta)
+- `--remove-unused` — Remove unused dependencies after 
+uninstalling
+- `--runtime` — Install as a runtime instead of an 
+application
+- `--user` — Install to user scope instead of system 
+scope
 
 **Examples:**
 
@@ -1018,15 +1243,21 @@ Kill running flatpak app
 
 **Arguments:**
 
-- `<package>` *(required)* — Flatpak application ID (e.g., com.spotify.Client)
+- `<package>` *(required)* — Flatpak application ID (e.g., 
+com.spotify.Client)
 
 **Options:**
 
-- `-b, --branch` — Branch to install (e.g., stable, beta). Defaults to stable
-- `-r, --remote` — Remote to install from (e.g., flathub, flathub-beta)
-- `--remove-unused` — Remove unused dependencies after uninstalling
-- `--runtime` — Install as a runtime instead of an application
-- `--user` — Install to user scope instead of system scope
+- `-b, --branch` — Branch to install (e.g., stable, beta). Defaults to 
+stable
+- `-r, --remote` — Remote to install from (e.g., flathub, 
+flathub-beta)
+- `--remove-unused` — Remove unused dependencies after 
+uninstalling
+- `--runtime` — Install as a runtime instead of an 
+application
+- `--user` — Install to user scope instead of system 
+scope
 
 **Examples:**
 
@@ -1040,13 +1271,17 @@ Search flatpak
 
 **Arguments:**
 
-- `<query>` *(required)* — Search term to find Flatpak applications on Flathub
+- `<query>` *(required)* — Search term to find Flatpak applications on 
+Flathub
 
 **Options:**
 
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `-l, --limit` — Maximum number of search results to display per page
-- `-p, --page` — Page number for paginated results (starts at 1)
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `-l, --limit` — Maximum number of search results to display per 
+page
+- `-p, --page` — Page number for paginated results (starts at 
+1)
 
 **Examples:**
 
@@ -1072,7 +1307,8 @@ Returns remote appstream json
 
 **Arguments:**
 
-- `<query>` *(required)* — Gets appstream data in json (use all to retreive all appstreams)
+- `<query>` *(required)* — Gets appstream data in json (use all to retreive all 
+appstreams)
 
 **Examples:**
 
@@ -1096,9 +1332,12 @@ Returns all remotes currently added
 
 **Options:**
 
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 
 ### `shelly flatpak add-remotes`
@@ -1253,7 +1492,8 @@ export sync file
 **Options:**
 
 - `-n, --name` — Set name of the exported sync
-- `-o, --output` — Output location for the exported sync (defaut: .cache/Shelly/sync.json)
+- `-o, --output` — Output location for the exported sync (defaut: 
+.cache/Shelly/sync.json)
 
 **Examples:**
 
@@ -1269,11 +1509,16 @@ checks for updates as non-root user
 
 - `-a, --aur` — Pass this setting if aur should be checked.
 - `-c, --count` — Returns the number of updates.
-- `-l, --flatpak` — Pass this setting if flatpak should be checked.
-- `-f, --force` — Force the operation even if it would normally be skipped or blocked
-- `-j, --json` — Output results in JSON format for UI integration and scripting
-- `--singlepane` — Use pacman-style single-stream output instead of the split-pane Live layout
-- `-y, --sync` — Synchronize package databases before performing the operation
+- `-l, --flatpak` — Pass this setting if flatpak should be 
+checked.
+- `-f, --force` — Force the operation even if it would normally be skipped 
+or blocked
+- `-j, --json` — Output results in JSON format for UI integration and 
+scripting
+- `--singlepane` — Use pacman-style single-stream output instead of the 
+split-pane Live layout
+- `-y, --sync` — Synchronize package databases before performing the 
+operation
 
 **Examples:**
 
@@ -1294,7 +1539,10 @@ Cleans the cache of all downloaded packages
 - `-c, --cache-dir` — Path to the cache directory
 - `-d, --dry-run` — Show what would be removed
 - `-k, --keep` — Number of versions to keep
+- `--no-confirm` — Skips confirmation checks if true
 - `-r, --remove` — Removes all candidate entries
+- `-t, --target` — Removes all cached entries related to the selected 
+package
 - `-u, --uninstalled` — target uninstalled packages
 
 **Examples:**
@@ -1306,6 +1554,7 @@ shelly utility cache-clean -r
 shelly utility cache-clean -r -k 2
 shelly utility cache-clean -r --uninstalled
 shelly utility cache-clean -r -c /var/cache/pacman/pkg
+shelly utility cache-clean -t vivaldi
 ```
 
 ### `shelly config`
@@ -1373,9 +1622,12 @@ Install an appimage file
 **Options:**
 
 - `-l, --location` — Location of the .AppImage to be installed
-- `-n, --no-confirm` — Proceed without asking for user confirmation
-- `-t, --type` — Set the update type (None, StaticUrl, GitHub, GitLab, Codeberg, Forgejo)
-- `-u, --update-url` — Set the release URL for update checking (e.g., https://github.com/owner/repo/releases)
+- `-n, --no-confirm` — Proceed without asking for user 
+confirmation
+- `-t, --type` — Set the update type (None, StaticUrl, GitHub, GitLab, 
+Codeberg, Forgejo)
+- `-u, --update-url` — Set the release URL for update checking (e.g., 
+https://github.com/owner/repo/releases)
 
 **Examples:**
 
@@ -1393,7 +1645,8 @@ Remove an appimage file
 
 **Options:**
 
-- `-n, --no-confirm` — Proceed without asking for user confirmation
+- `-n, --no-confirm` — Proceed without asking for user 
+confirmation
 
 **Examples:**
 
@@ -1416,11 +1669,13 @@ Update an appimage file
 
 **Arguments:**
 
-- `<Name>` — Name of the AppImage to update. If omitted, all available updates will be processed.
+- `<Name>` — Name of the AppImage to update. If omitted, all available
+updates will be processed.
 
 **Options:**
 
-- `-n, --no-confirm` — Proceed without asking for user confirmation
+- `-n, --no-confirm` — Proceed without asking for user 
+confirmation
 
 **Examples:**
 
@@ -1439,8 +1694,10 @@ Configure update settings for an AppImage
 
 **Options:**
 
-- `-t, --type` — Set the update type (None, StaticUrl, GitHub, GitLab, Codeberg, Forgejo)
-- `-u, --update-url` — Set the update URL (e.g., https://github.com/owner/repo)
+- `-t, --type` — Set the update type (None, StaticUrl, GitHub, GitLab, 
+Codeberg, Forgejo)
+- `-u, --update-url` — Set the update URL (e.g., 
+https://github.com/owner/repo)
 
 **Examples:**
 
@@ -1459,7 +1716,8 @@ Syncs meta data for an AppImage
 **Options:**
 
 - `-j, --json` — Json output
-- `-n, --no-confirm` — Proceed without asking for user confirmation
+- `-n, --no-confirm` — Proceed without asking for user 
+confirmation
 
 **Examples:**
 
