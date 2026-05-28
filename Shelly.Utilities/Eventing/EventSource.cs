@@ -46,5 +46,10 @@ public enum AlpmEvents
     HookStart = 34,
     HookDone = 35,
     HookRunStart = 36,
-    HookRunDone = 37
+    HookRunDone = 37,
+    
+    //Custom event types
+    InformationalOutput = 256,
+    DebugOutput = 257,
+    TraceOutput = 258,
 }
