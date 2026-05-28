@@ -16,9 +16,12 @@ public class FlatpakKillCommand : Command<FlatpakPackageSettings>
         }
 
         AnsiConsole.MarkupLine("[yellow]Killing selected flatpak app...[/]");
-        var result = new FlatpakManager().KillApp(settings.Packages);
-
-        AnsiConsole.MarkupLine("[red]" + result.EscapeMarkup() + "[/]");
+        var flatpakManager = new FlatpakManager();
+        flatpakManager.FlatpakEvent += (sender, args) =>
+        {
+            AnsiConsole.MarkupLine($"[yellow]{args.Message.EscapeMarkup()}[/]");
+        };
+        flatpakManager.KillApp(settings.Packages);
 
         return 0;
     }
@@ -26,10 +29,9 @@ public class FlatpakKillCommand : Command<FlatpakPackageSettings>
     private static int HandleUiModeKill(FlatpakPackageSettings settings)
     {
         Console.Error.WriteLine("Killing selected flatpak app...");
-        var result = new FlatpakManager().KillApp(settings.Packages);
-
-        Console.Error.WriteLine(result);
-
+        var manager = new FlatpakManager();
+        manager.FlatpakEvent += (sender, args) => { Console.Error.WriteLine(args.Message); };
+        manager.KillApp(settings.Packages);
         return 0;
     }
 }
