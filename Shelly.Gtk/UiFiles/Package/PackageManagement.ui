@@ -101,8 +101,65 @@
                     </object>
                 </child>
                 <child>
-                    <object class="GtkSeparator"/>
+                    <object class="GtkBox">
+                        <property name="hexpand">true</property>
+                    </object>
                 </child>
+                <child>
+                    <object class="GtkCheckButton" id="cascade_delete_check">
+                        <property name="active">true</property>
+                        <property name="label" translatable="yes">Clean Uninstall</property>
+                        <property name="valign">center</property>
+                    </object>
+                </child>
+                <child>
+                    <object class="GtkCheckButton" id="remove_configs_check">
+                        <property name="label" translatable="yes">Remove Configs</property>
+                        <property name="valign">center</property>
+                    </object>
+                </child>
+                <child>
+                    <object class="GtkCheckButton" id="remove_optdeps_check">
+                        <property name="active">true</property>
+                        <property name="label" translatable="yes">Remove Optional Deps</property>
+                        <property name="tooltip-text" translatable="yes">Also remove orphaned optional dependencies installed with these packages.</property>
+                        <property name="valign">center</property>
+                    </object>
+                </child>
+                <child>
+                    <object class="GtkCheckButton" id="show_hidden_check">
+                        <property name="halign">start</property>
+                        <property name="label" translatable="yes">Show Hidden</property>
+                        <property name="tooltip-text" translatable="yes">Show packages in the IgnorePkg list from pacman.conf</property>
+                        <property name="active">false</property>
+                    </object>
+                </child>
+                <child>
+                    <object class="GtkButton" id="remove_button">
+                        <property name="halign">start</property>
+                        <property name="label" translatable="yes">Remove Selected</property>
+                        <style>
+                            <class name="destructive-action"/>
+                        </style>
+                    </object>
+                </child>
+                <child>
+                    <object class="GtkButton" id="downgrade_button">
+                        <property name="halign">start</property>
+                        <property name="label" translatable="yes">Downgrade Selected</property>
+                        <property name="tooltip-text" translatable="yes">Downgrade selected packages one by one</property>
+                    </object>
+                </child>
+            </object>
+        </child>
+        <child>
+            <object class="GtkSeparator"/>
+        </child>
+        <child>
+            <object class="GtkBox" id="detail_hbox">
+                <property name="hexpand">true</property>
+                <property name="orientation">horizontal</property>
+                <property name="vexpand">true</property>
                 <child>
                     <object class="GtkBox" id="detail_hbox">
                         <property name="hexpand">true</property>
