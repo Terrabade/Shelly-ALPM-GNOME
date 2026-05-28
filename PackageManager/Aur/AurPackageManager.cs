@@ -408,6 +408,11 @@ public sealed class AurPackageManager(string? configPath = null)
 
     public async Task InstallPackages(List<string> packageNames)
     {
+        // Ensure sync DBs are current before resolving dependencies, so that
+        // real repo packages aren't misrouted to the AUR resolver due to a
+        // stale sync DB on the alpm handle. See issue #880 follow-up.
+        _alpm.Refresh();
+
         // Per-call map of selected optional dependencies (by top-level package).
         var selectedOptDepsByPkg = new Dictionary<string, List<string>>();
 
@@ -1563,8 +1568,8 @@ public sealed class AurPackageManager(string? configPath = null)
 
         foreach (var dep in satisfiedDeps)
         {
-            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
-                $"Dependency satisfied: {dep}"));
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                $"Dependency satisfied (skipping install): {dep}"));
         }
 
         var alpmPackages = new List<string>();
@@ -1572,17 +1577,19 @@ public sealed class AurPackageManager(string? configPath = null)
 
         foreach (var dep in depsToInstall)
         {
-            var repoName = _alpm.FindSatisfierInSyncDbs(dep.ToString());
-            if (repoName != null)
+            var match = _alpm.FindSatisfierInSyncDbsEx(dep.ToString());
+            if (match is { } m)
             {
-                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
-                    $"Need: {dep} from {repoName}"));
-                alpmPackages.Add(repoName);
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    m.ViaProvides
+                        ? $"Need: {dep} from {m.RealName} (matched via provides=)"
+                        : $"Need: {dep} from {m.RealName}"));
+                alpmPackages.Add(m.RealName);
             }
             else
             {
-                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
-                    $"Need: {dep} from AUR"));
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Need: {dep} from AUR (no repo satisfier)"));
                 aurPackages.Add(dep);
             }
         }
@@ -1616,8 +1623,9 @@ public sealed class AurPackageManager(string? configPath = null)
 
         allRepoPackages.AddRange(repoPackages);
 
-        foreach (var aurDep in aurPackages)
+        foreach (var originalAurDep in aurPackages)
         {
+            var aurDep = originalAurDep;
             if (!visited.Add(aurDep.Name))
             {
                 continue;
@@ -1626,9 +1634,63 @@ public sealed class AurPackageManager(string? configPath = null)
             var success = DownloadPackage(aurDep.Name).Result;
             if (!success)
             {
+                // The literal dep name doesn't exist as an AUR package; try to
+                // resolve it through `provides=` to honor virtual/renamed deps
+                // (e.g. `python-trayer` → `python-trayer-git`). See issue #880.
+                var providers = _aurSearchManager.FindProvidersAsync(aurDep.Name).GetAwaiter().GetResult();
+                string? chosenProvider = null;
+                if (providers.Count == 1)
+                {
+                    chosenProvider = providers[0];
+                }
+                else if (providers.Count > 1)
+                {
+                    List<ProviderOption> availableProviders = [];
+                    foreach (var provider in providers)
+                    {
+                        var isInstalled = _alpm.IsPackageInstalled(provider);
+                        availableProviders.Add(new ProviderOption(provider, "No Description", isInstalled));
+                    }
+
+                    var qArgs = new AlpmQuestionEventArgs(
+                        AlpmQuestionType.SelectProvider,
+                        $"Multiple AUR providers for '{aurDep.Name}'",
+                        availableProviders,
+                        aurDep.Name);
+                    _alpm.RaiseQuestion(qArgs);
+                    qArgs.WaitForResponse();
+                    chosenProvider = qArgs.Response.ProviderOptions?
+                        .Where(x => x.IsSelected)
+                        .Select(x => x.Name)
+                        .FirstOrDefault() ?? providers[0];
+                }
+
+                if (chosenProvider == null || string.Equals(chosenProvider, aurDep.Name, StringComparison.Ordinal))
+                {
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                        $"Failed to download {aurDep.Name} from AUR"));
+                    continue;
+                }
+
                 InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
-                    $"Failed to download {aurDep.Name} from AUR"));
-                continue;
+                    $"Resolved virtual AUR dep '{aurDep.Name}' via provider '{chosenProvider}'"));
+
+                if (!visited.Add(chosenProvider))
+                {
+                    continue;
+                }
+
+                success = DownloadPackage(chosenProvider).Result;
+                if (!success)
+                {
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                        $"Failed to download provider {chosenProvider} from AUR"));
+                    continue;
+                }
+
+                // Remap the dep to the real provider package so downstream build/install
+                // operates on the actual AUR package name.
+                aurDep = new ParsedDependency(chosenProvider, aurDep.Operator, aurDep.Version);
             }
 
             var tempPath = XdgPaths.ShellyCache(aurDep.Name);
@@ -1826,6 +1888,9 @@ public sealed class AurPackageManager(string? configPath = null)
                 }
             }
 
+            // Refresh sync DBs before resolving recursive AUR dep tree, otherwise
+            // a stale local sync DB can cause real repo deps to be misrouted to AUR.
+            _alpm.Refresh();
             var (allRepoPackages, orderedAurPackages) = CollectAllDependencies(pkgbuildInfo);
             InstallCollectedDependencies(allRepoPackages, orderedAurPackages, AlpmTransFlag.AllDeps);
 
@@ -1970,7 +2035,11 @@ public sealed class AurPackageManager(string? configPath = null)
     private System.Diagnostics.Process CreateBuildProcess(string tempPath,
         string? makepkgArgs = null)
     {
-        makepkgArgs ??= "-f -c --noconfirm --skippgpcheck" + (_noCheck ? " --nocheck" : "");
+        // Use `-s --needed` as defense-in-depth: if Shelly's resolver ever misses a repo dep,
+        // makepkg itself will install it via pacman instead of aborting with
+        // "could not resolve all dependencies". `--needed` makes this a no-op when Shelly
+        // already installed everything. See issue #880 follow-up.
+        makepkgArgs ??= "-f -c -s --noconfirm --needed --skippgpcheck" + (_noCheck ? " --nocheck" : "");
         if (_useChroot)
         {
             return new System.Diagnostics.Process

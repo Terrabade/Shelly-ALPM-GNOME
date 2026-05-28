@@ -1801,11 +1801,14 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
 
     public bool IsDependencySatisfiedByInstalled(string dependency)
     {
+        Console.WriteLine($"IsDependencySatisfiedByInstalled {dependency}");
         if (_handle == IntPtr.Zero) Initialize();
         var localDbPtr = GetLocalDb(_handle);
         var pkgCache = DbGetPkgCache(localDbPtr);
         var pkgPtr = PkgFindSatisfier(pkgCache, dependency);
-        return pkgPtr != IntPtr.Zero;
+        var result = pkgPtr != IntPtr.Zero;
+        Console.WriteLine($"IsDependencySatisfiedByInstalled {dependency} {result}");
+        return result;
     }
 
     public bool IsDepdencySatisfiedBySyncDbs(string dependency)
@@ -1815,7 +1818,13 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
 
     public string? FindSatisfierInSyncDbs(string dependency)
     {
+        return FindSatisfierInSyncDbsEx(dependency)?.RealName;
+    }
+
+    public (string RealName, bool ViaProvides)? FindSatisfierInSyncDbsEx(string dependency)
+    {
         if (_handle == IntPtr.Zero) Initialize();
+        var parsedDepName = ParsedDependency.Parse(dependency).Name;
         var syncDbsPtr = GetSyncDbs(_handle);
         var currentPtr = syncDbsPtr;
 
@@ -1827,7 +1836,11 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
                 var dbPkgCache = DbGetPkgCache(node.Data);
                 var pkgPtr = PkgFindSatisfier(dbPkgCache, dependency);
                 if (pkgPtr != IntPtr.Zero)
-                    return Marshal.PtrToStringUTF8(GetPkgName(pkgPtr));
+                {
+                    var realName = Marshal.PtrToStringUTF8(GetPkgName(pkgPtr))!;
+                    var viaProvides = !string.Equals(realName, parsedDepName, StringComparison.Ordinal);
+                    return (realName, viaProvides);
+                }
             }
 
             currentPtr = node.Next;

@@ -87,6 +87,18 @@ public interface IAlpmManager
     /// <returns>The package name that satisfies the dependency, or null if not found</returns>
     string? FindSatisfierInSyncDbs(string dependency);
 
+    /// <summary>
+    /// Finds the package name in sync databases that satisfies the given dependency string,
+    /// also reporting whether the match was made via a <c>provides=</c> relationship rather
+    /// than a direct package-name match.
+    /// </summary>
+    /// <param name="dependency">The dependency string (e.g., "python>=3.10", "libgl")</param>
+    /// <returns>
+    /// A tuple of the real package name and whether it matched via <c>provides=</c>, or null
+    /// if no satisfier exists.
+    /// </returns>
+    (string RealName, bool ViaProvides)? FindSatisfierInSyncDbsEx(string dependency);
+
     void Refresh();
 
     /// <summary>
