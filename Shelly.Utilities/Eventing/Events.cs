@@ -30,7 +30,7 @@ public abstract record ProgressEvent(
     DateTimeOffset TimeStamp = default)
     : Event(Source, EventLevel.Information, TimeStamp);
 
-public sealed record AlpmPackageProgress(
+public sealed record AlpmPackageProgresEvent(
     string PackageName,
     int CurrentIndex,
     int TotalPackages,
