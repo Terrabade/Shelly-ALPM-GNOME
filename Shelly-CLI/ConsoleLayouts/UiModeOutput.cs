@@ -8,9 +8,19 @@ namespace Shelly_CLI.ConsoleLayouts;
 
 internal static class UiModeOutput
 {
-    public static async Task<bool> Run(AurPackageManager mananger, Func<AurPackageManager, Task> operation)
+    public static async Task<bool> Run(AurPackageManager manager, Func<AurPackageManager, Task> operation)
     {
         var hadError = false;
+        Attach(manager, () => hadError = true);
+        try
+        {
+            await operation(manager);
+        }
+        catch (Exception ex)
+        {
+            JsonPackFrame.WriteToStdout<Event>(new AlpmErrorEvent(EventLevel.Error, ex.Message));
+            return false;
+        }
         return !hadError;
     }
 
@@ -35,14 +45,22 @@ internal static class UiModeOutput
         };
         manager.Progress += (_, e) =>
         {
-            JsonPackFrame.WriteToStdout<Event>(new AlpmPackageProgressEvent(e.PackageName ?? "Unknown Package",
-                e.Current ?? 0, e.HowMany ?? 0, e.ProgressType.ToProgressType(), e.Percent ?? 0, null));
+            JsonPackFrame.WriteToStdout<Event>(new AlpmPackageProgressEvent(
+                e.PackageName ?? "Unknown Package",
+                e.Current ?? 0,
+                e.HowMany ?? 0,
+                e.ProgressType.ToProgressType(),
+                e.Percent ?? 0,
+                e.Message));
         };
-        manager.BuildOutput += (_, e) =>
+        manager.InformationalEvent += (_, e) =>
         {
-            JsonPackFrame.WriteToStdout<Event>(new AlpmBuildOutputEvent(
-                e.IsError ? EventLevel.Error : EventLevel.Information, e.PackageName, e.Percent ?? 0, e.ProgressMessage,
-                e.Line));
+            JsonPackFrame.WriteToStdout<Event>(new AlpmInformationalEvent(
+                (AlpmEvents)(int)e.EventType,
+                e.Message,
+                e.PackageName,
+                e.CurrentIndex,
+                e.TotalCount));
         };
     }
 }

@@ -92,25 +92,26 @@ public class AurUpdateCommand : AsyncCommand<AurPackageSettings>
                 hadError = true;
             };
 
-            manager.PackageProgress += (sender, args) =>
+            manager.InformationalEvent += (_, args) =>
             {
-                Console.Error.WriteLine($"[{args.CurrentIndex}/{args.TotalCount}] {args.PackageName}: {args.Status}" +
-                                        (args.Message != null ? $" - {args.Message}" : ""));
+                if (args.EventType == AlpmEventType.AurBuildOutput)
+                    Console.Error.WriteLine($"[Shelly] makepkg: {args.Message}");
+                else if (args.EventType == AlpmEventType.AurBuildError)
+                    Console.Error.WriteLine($"[Shelly] makepkg error: {args.Message}");
+                else if (args.PackageName != null)
+                    Console.Error.WriteLine($"[{args.CurrentIndex}/{args.TotalCount}] {args.PackageName}: {args.EventType}" +
+                                            (!string.IsNullOrEmpty(args.Message) ? $" - {args.Message}" : ""));
             };
 
-            manager.Progress += (sender, args) => { Console.Error.WriteLine($"{args.PackageName}: {args.Percent}%"); };
+            manager.Progress += (sender, args) =>
+            {
+                if (args.ProgressType == AlpmProgressType.MakepkgBuild)
+                    Console.Error.WriteLine($"[AUR_PROGRESS]Percent: {args.Percent}% Message: {args.Message}");
+                else
+                    Console.Error.WriteLine($"{args.PackageName}: {args.Percent}%");
+            };
 
             manager.Question += (sender, args) => { QuestionHandler.HandleQuestion(args, true, settings.NoConfirm); };
-
-            manager.BuildOutput += (sender, e) =>
-            {
-                if (e.IsError)
-                    Console.Error.WriteLine($"[Shelly] makepkg error: {e.Line}");
-                else if (e.Percent.HasValue)
-                    Console.Error.WriteLine($"[AUR_PROGRESS]Percent: {e.Percent}% Message: {e.ProgressMessage}");
-                else
-                    Console.Error.WriteLine($"[Shelly] makepkg: {e.Line}");
-            };
 
             manager.PkgbuildDiffRequest += (sender, args) =>
             {

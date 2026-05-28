@@ -11,7 +11,6 @@ namespace Shelly.Utilities.Eventing;
 [JsonSerializable(typeof(AlpmScriptletEvent))]
 [JsonSerializable(typeof(AlpmReplaceEvent))]
 [JsonSerializable(typeof(AlpmPackageProgressEvent))]
-[JsonSerializable(typeof(AlpmBuildOutputEvent))]
 [JsonSerializable(typeof(AlpmPkgBuildDiffEvent))]
 [JsonSerializable(typeof(AlpmStatusEvent))]
 [JsonSerializable(typeof(AlpmInformationalEvent))]

@@ -59,4 +59,6 @@ public enum AlpmEventType
     AurCleanupDone = 519,
     AurPackageFailed = 520,
     AurPackageCompleted = 521,
+    AurBuildOutput = 522,
+    AurBuildError = 523,
 }

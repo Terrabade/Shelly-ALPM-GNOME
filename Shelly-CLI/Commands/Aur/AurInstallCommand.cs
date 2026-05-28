@@ -135,29 +135,19 @@ public class AurInstallCommand : AsyncCommand<AurInstallSettings>
 
             var packageList = settings.Packages.ToList();
 
-            // Handle package progress events
-            manager.PackageProgress += (sender, args) =>
-            {
-                Console.Error.WriteLine($"[{args.CurrentIndex}/{args.TotalCount}] {args.PackageName}: {args.Status}" +
-                                        (args.Message != null ? $" - {args.Message}" : ""));
-            };
-
             // Handle progress events
             manager.Progress += (sender, args) => { Console.Error.WriteLine($"{args.PackageName}: {args.Percent}%"); };
 
+            // Handle informational events (formerly PackageProgress + BuildOutput raw lines)
+            manager.InformationalEvent += (_, args) =>
+            {
+                Console.Error.WriteLine(args.PackageName != null
+                    ? $"[{args.CurrentIndex}/{args.TotalCount}] {args.PackageName}: {args.EventType} - {args.Message}"
+                    : $"{args.EventType}: {args.Message}");
+            };
+
             // Handle questions
             manager.Question += (sender, args) => { QuestionHandler.HandleQuestion(args, true, settings.NoConfirm); };
-
-            // Handle build output
-            manager.BuildOutput += (sender, e) =>
-            {
-                if (e.IsError)
-                    Console.Error.WriteLine($"[Shelly] makepkg error: {e.Line}");
-                else if (e.Percent.HasValue)
-                    Console.Error.WriteLine($"[AUR_PROGRESS]Percent: {e.Percent}% Message: {e.ProgressMessage}");
-                else
-                    Console.Error.WriteLine($"[Shelly] makepkg: {e.Line}");
-            };
 
             manager.ErrorEvent += (_, e) =>
             {

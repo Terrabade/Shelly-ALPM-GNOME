@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using PackageManager.Alpm;
 using PackageManager.Aur;
 using Shelly_CLI.Configuration;
 using Shelly_CLI.ConsoleLayouts;
@@ -133,26 +134,21 @@ public class AurUpgradeCommand : AsyncCommand<AurUpgradeSettings>
 
             manager.ScriptletInfo += (_, args) => Console.Error.WriteLine($"[Shelly][ALPM_SCRIPTLET]{args.Line}");
 
-            manager.PackageProgress += (sender, args) =>
+            manager.InformationalEvent += (_, args) =>
             {
-                Console.Error.WriteLine($"[{args.CurrentIndex}/{args.TotalCount}] {args.PackageName}: {args.Status}" +
-                                        (args.Message != null ? $" - {args.Message}" : ""));
+                if (args.EventType == AlpmEventType.AurBuildOutput)
+                    Console.Error.WriteLine($"[Shelly] makepkg: {args.Message}");
+                else if (args.EventType == AlpmEventType.AurBuildError)
+                    Console.Error.WriteLine($"[Shelly] makepkg error: {args.Message}");
+                else if (args.PackageName != null)
+                    Console.Error.WriteLine($"[{args.CurrentIndex}/{args.TotalCount}] {args.PackageName}: {args.EventType}" +
+                                            (!string.IsNullOrEmpty(args.Message) ? $" - {args.Message}" : ""));
             };
 
-            manager.BuildOutput += (sender, e) =>
+            manager.Progress += (_, args) =>
             {
-                if (e.IsError)
-                {
-                    Console.Error.WriteLine($"[Shelly] makepkg error: {e.Line}");
-                }
-                else if (e.Percent.HasValue)
-                {
-                    Console.Error.WriteLine($"[AUR_PROGRESS]Percent: {e.Percent}% Message: {e.ProgressMessage}");
-                }
-                else
-                {
-                    Console.Error.WriteLine($"[Shelly] makepkg: {e.Line}");
-                }
+                if (args.ProgressType == AlpmProgressType.MakepkgBuild)
+                    Console.Error.WriteLine($"[AUR_PROGRESS]Percent: {args.Percent}% Message: {args.Message}");
             };
 
             manager.PkgbuildDiffRequest += (sender, args) =>

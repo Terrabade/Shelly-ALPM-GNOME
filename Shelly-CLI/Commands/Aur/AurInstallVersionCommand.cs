@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using PackageManager.Alpm;
 using PackageManager.Aur;
 using Shelly_CLI.Utility;
 using Spectre.Console;
@@ -34,21 +35,22 @@ public class AurInstallVersionCommand : AsyncCommand<AurInstallVersionSettings>
             manager = new AurPackageManager();
             await manager.Initialize(root: true, noCheck: !settings.Check);
 
-            manager.PackageProgress += (sender, args) =>
+            manager.InformationalEvent += (_, args) =>
             {
-                var statusColor = args.Status switch
+                var statusColor = args.EventType switch
                 {
-                    PackageProgressStatus.Downloading => "yellow",
-                    PackageProgressStatus.Building => "blue",
-                    PackageProgressStatus.Installing => "cyan",
-                    PackageProgressStatus.Completed => "green",
-                    PackageProgressStatus.Failed => "red",
-                    _ => "white"
+                    AlpmEventType.AurDownloadStart   => "yellow",
+                    AlpmEventType.AurBuildStart      => "blue",
+                    AlpmEventType.AurInstallStart    => "cyan",
+                    AlpmEventType.AurPackageCompleted => "green",
+                    AlpmEventType.AurPackageFailed   => "red",
+                    _ => null
                 };
+                if (statusColor == null) return;
 
                 AnsiConsole.MarkupLine(
-                    $"[{statusColor}][[{args.CurrentIndex}/{args.TotalCount}]] {args.PackageName.EscapeMarkup()}: {args.Status}[/]" +
-                    (args.Message != null ? $" - {args.Message.EscapeMarkup()}" : ""));
+                    $"[{statusColor}][[{args.CurrentIndex}/{args.TotalCount}]] {(args.PackageName ?? "").EscapeMarkup()}: {args.EventType}[/]" +
+                    (!string.IsNullOrEmpty(args.Message) ? $" - {args.Message.EscapeMarkup()}" : ""));
             };
 
             AnsiConsole.MarkupLine(
@@ -89,10 +91,11 @@ public class AurInstallVersionCommand : AsyncCommand<AurInstallVersionSettings>
             manager = new AurPackageManager();
             await manager.Initialize(root: true, noCheck: !settings.Check);
 
-            manager.PackageProgress += (sender, args) =>
+            manager.InformationalEvent += (_, args) =>
             {
-                Console.Error.WriteLine($"[{args.CurrentIndex}/{args.TotalCount}] {args.PackageName}: {args.Status}" +
-                    (args.Message != null ? $" - {args.Message}" : ""));
+                if (args.PackageName == null) return;
+                Console.Error.WriteLine($"[{args.CurrentIndex}/{args.TotalCount}] {args.PackageName}: {args.EventType}" +
+                    (!string.IsNullOrEmpty(args.Message) ? $" - {args.Message}" : ""));
             };
 
             Console.Error.WriteLine($"Installing AUR package {settings.Package} at commit {settings.Commit}");

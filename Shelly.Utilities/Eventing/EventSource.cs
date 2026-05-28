@@ -64,6 +64,8 @@ public enum AlpmEvents
     AurCleanupDone = 519,
     AurPackageFailed = 520,
     AurPackageCompleted = 521,
+    AurBuildOutput = 522,
+    AurBuildError = 523,
 }
 
 public enum ProgressType
