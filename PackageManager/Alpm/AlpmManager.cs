@@ -1116,7 +1116,7 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             IntPtr pkgPtr = IntPtr.Zero;
             var syncDbsPtr = GetSyncDbs(_handle);
             var currentPtr = syncDbsPtr;
-            List<IntPtr> groupPkgs = [];
+            List<IntPtr> groupPkgs = null!;
             while (currentPtr != IntPtr.Zero)
             {
                 var node = Marshal.PtrToStructure<AlpmList>(currentPtr);
