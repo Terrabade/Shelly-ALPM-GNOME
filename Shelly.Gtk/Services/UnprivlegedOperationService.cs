@@ -151,7 +151,7 @@ public class UnprivilegedOperationService(
 
     public async Task<UnprivilegedOperationResult> FlatpakRepair()
     {
-        var result = await ExecuteUnprivilegedCommandAsync("Flatpak repair", "flatpak repair --ui-mode");
+        var result = await ExecuteUnprivilegedCommandAsync("Flatpak repair", "flatpak repair");
         return result;
     }
 
