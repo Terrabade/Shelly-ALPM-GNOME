@@ -119,11 +119,4 @@ public class FlatpakBundleInstallSettings : CommandSettings
     public bool SystemWide { get; set; } = true;
 }
 
-public class FlatpakRepairSettings : CommandSettings
-{
-    [CommandOption("-u|--user")]
-    public bool User { get; set; }
-    [CommandOption("--dry-run")]
-    public bool DryRun { get; set; }
-}
 

@@ -8,9 +8,9 @@ using Spectre.Console.Cli;
 
 namespace Shelly_CLI.Commands.Flatpak;
 
-public class FlatpakRepair : Command<FlatpakRepairSettings>
+public class FlatpakRepair : Command
 {
-    public override int Execute([NotNull] CommandContext context, [NotNull] FlatpakRepairSettings settings)
+    public override int Execute([NotNull] CommandContext context)
     {
         
         if (Program.IsUiMode)
