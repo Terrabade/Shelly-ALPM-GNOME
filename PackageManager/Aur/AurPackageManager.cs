@@ -1812,9 +1812,8 @@ public sealed class AurPackageManager(string? configPath = null)
                 var aurVersion = pkgbuildInfo.GetFullVersion();
                 if (!package.IsSatisifiedBy(aurVersion))
                 {
-                    Console.Error.WriteLine(
-                        $"[Shelly] AUR package {packageName} version {aurVersion} " +
-                        $"does not satisfy {package}. Skipping build.");
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                        $"AUR dependency {packageName} is not satisfied by {aurVersion} Skipping..."));
                     PackageProgress?.Invoke(this, new PackageProgressEventArgs
                     {
                         PackageName = packageName,
@@ -1886,15 +1885,16 @@ public sealed class AurPackageManager(string? configPath = null)
             buildProcess.WaitForExit();
             if (buildProcess.ExitCode != 0)
             {
-                Console.Error.WriteLine(
-                    $"[Shelly] Failed to build AUR dependency: {packageName} (exit code {buildProcess.ExitCode})");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Failed to build {packageName} with makepkg exit code: {buildProcess.ExitCode}"));
                 return;
             }
 
             var pkgFile = SelectBuiltPackageFile(tempPath, packageName);
             if (pkgFile is null)
             {
-                Console.Error.WriteLine($"[Shelly] No package file matching '{packageName}' produced by makepkg");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"No package file found for {packageName} in {tempPath} produced by makepkg"));
                 return;
             }
 
@@ -2078,7 +2078,7 @@ public sealed class AurPackageManager(string? configPath = null)
     /// <summary>
     /// Runs git ls-remote to get the current commit SHA for a given URL and branch.
     /// </summary>
-    private static async Task<string?> GetRemoteCommitSha(string url, string branch, int timeoutSeconds = 15)
+    private async Task<string?> GetRemoteCommitSha(string url, string branch, int timeoutSeconds = 15)
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         try
@@ -2113,7 +2113,8 @@ public sealed class AurPackageManager(string? configPath = null)
         }
         catch (OperationCanceledException)
         {
-            await Console.Error.WriteLineAsync($"Timeout checking git remote: {url}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Timeout checking git remove {url}"));
             return null;
         }
         catch
@@ -2152,7 +2153,8 @@ public sealed class AurPackageManager(string? configPath = null)
         }
         catch (Exception ex)
         {
-            await Console.Error.WriteLineAsync($"Warning: Failed to update VCS store for {packageName}: {ex.Message}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                $"Failed to update VCS info store for {packageName}: {ex.Message}"));
         }
     }
 
