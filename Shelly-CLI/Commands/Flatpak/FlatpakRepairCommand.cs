@@ -204,15 +204,17 @@ public class FlatpakRepair : Command
     
     private static int HandleUiModeRepair()
     {
+        var hasErrors = false;
+        
         var flatpakManager = new FlatpakManager();
         var ostreeManager = new OstreeManager();
-        var status = AnsiConsole.Status();
 
         List<OstreeRepositoryRef> invalidRefs = [];
         List<OstreeRepositoryRef> validRefs = [];
         
         // Step 1 - Scan all locally available refs, removing any that don't correspond to a deployed ref.
 
+        Console.Error.WriteLine("Working on Flatpak installation...");
         var repositories = flatpakManager.GetRepositoryPaths();
 
         var installed = flatpakManager.SearchInstalled();
@@ -283,7 +285,12 @@ public class FlatpakRepair : Command
                 var uninstallResult =
                     flatpakManager.UninstallAppFromRef(
                         installedRef);
-
+                
+                if (!uninstallResult)
+                {
+                    hasErrors = true;
+                }
+                
                 Console.Error.WriteLine(uninstallResult
                     ? $"Uninstalled: {reference.FullRef}"
                     : $"Failed uninstall: {reference.FullRef}");
@@ -330,8 +337,20 @@ public class FlatpakRepair : Command
             Console.Error.WriteLine(success
                 ? $"Installed: {installedRef.Name}"
                 : $"Failed install: {installedRef.Name}");
+
+            if (!success)
+            {
+                hasErrors = true;
+            }
+        }
+
+        if (!hasErrors)
+        {
+            Console.Error.WriteLine("Flatpak installation repaired");
+            return 0;
         }
         
+        Console.Error.WriteLine("Flatpak repair completed with errors");
         return 0;
     }
 
