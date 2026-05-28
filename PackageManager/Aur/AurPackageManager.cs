@@ -87,7 +87,6 @@ public sealed class AurPackageManager(string? configPath = null)
     public event EventHandler<AlpmQuestionEventArgs>? Question;
     public event EventHandler<AlpmProgressEventArgs>? Progress;
     public event EventHandler<BuildOutputEventArgs>? BuildOutput;
-    public event EventHandler<AlpmPackageOperationEventArgs>? PackageOperation;
     public event EventHandler<AlpmScriptletEventArgs>? ScriptletInfo;
     public event EventHandler<AlpmHookEventArgs>? HookRun;
     public event EventHandler<AlpmReplacesEventArgs>? Replaces;
@@ -105,7 +104,6 @@ public sealed class AurPackageManager(string? configPath = null)
         _alpm.Initialize(root, useTempPath: useTempPath, tempPath: tempPath, showHiddenPackages: showHiddenPackages);
         _alpm.Question += (_, args) => Question?.Invoke(this, args);
         _alpm.Progress += (_, args) => Progress?.Invoke(this, args);
-        _alpm.PackageOperation += (_, args) => PackageOperation?.Invoke(this, args);
         _alpm.ScriptletInfo += (_, args) => ScriptletInfo?.Invoke(this, args);
         _alpm.HookRun += (_, args) => HookRun?.Invoke(this, args);
         _alpm.Replaces += (_, args) => Replaces?.Invoke(this, args);

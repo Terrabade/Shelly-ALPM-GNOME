@@ -47,10 +47,7 @@ public class AurUpdateCommand : AsyncCommand<AurPackageSettings>
             var useSinglePane = settings.SinglePane ||
                                 string.Equals(cfg.OutputMode, "singlepane", StringComparison.OrdinalIgnoreCase) ||
                                 Console.IsOutputRedirected;
-            var result = useSinglePane
-                ? await AurSinglePaneOutput.Output(manager, m => m.UpdatePackages(settings.Packages.ToList()),
-                    settings.NoConfirm)
-                : await AurSplitOutput.Output(manager, m => m.UpdatePackages(settings.Packages.ToList()),
+            var result = await AurSinglePaneOutput.Output(manager, m => m.UpdatePackages(settings.Packages.ToList()),
                     settings.NoConfirm);
             if (!result)
             {

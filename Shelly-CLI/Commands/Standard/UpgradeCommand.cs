@@ -104,13 +104,7 @@ public class UpgradeCommand : AsyncCommand<UpgradeSettings>
             }
 
             AnsiConsole.MarkupLine("[yellow] Starting System Upgrade...[/]");
-            var cfg = ConfigManager.ReadConfig();
-            var useSinglePane = settings.SinglePane
-                || string.Equals(cfg.OutputMode, "singlepane", StringComparison.OrdinalIgnoreCase)
-                || Console.IsOutputRedirected;
-            var upgradeResult = useSinglePane
-                ? await StandardSinglePaneOutput.Output(manager, x => x.SyncSystemUpdate(), settings.NoConfirm)
-                : await SplitOutput.Output(manager, x => x.SyncSystemUpdate(), settings.NoConfirm);
+            var upgradeResult = await StandardSinglePaneOutput.Output(manager, x => x.SyncSystemUpdate(), settings.NoConfirm);
             manager.Dispose();
             if (!upgradeResult)
             {

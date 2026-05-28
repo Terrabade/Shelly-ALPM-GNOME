@@ -1,8 +1,19 @@
 using System;
+using System.Text.Json.Serialization;
 
 
 namespace Shelly.Utilities.Eventing;
 
+
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "$kind")]
+[JsonDerivedType(typeof(AlpmErrorEvent),         "alpm.error")]
+[JsonDerivedType(typeof(AlpmHookEvent),          "alpm.hook")]
+[JsonDerivedType(typeof(AlpmScriptletEvent),     "alpm.scriptlet")]
+[JsonDerivedType(typeof(AlpmReplaceEvent),       "alpm.replace")]
+[JsonDerivedType(typeof(AlpmPackageProgressEvent),"alpm.progress")]
+[JsonDerivedType(typeof(AlpmBuildOutputEvent),   "alpm.build")]
+[JsonDerivedType(typeof(AlpmPkgBuildDiffEvent),  "alpm.pkgbuilddiff")]
+[JsonDerivedType(typeof(AlpmStatusEvent),        "alpm.status")]
 public abstract record Event(EventSource Source, EventLevel Level, DateTimeOffset TimeStamp = default)
 {
     public DateTimeOffset TimeStamp { get; init; } = TimeStamp == default ? DateTimeOffset.Now : TimeStamp;
@@ -25,18 +36,31 @@ public sealed record AlpmReplaceEvent(
 
 public abstract record ProgressEvent(
     EventSource Source,
-    string ProgressType,
+    ProgressType ProgressType,
     int Percent,
     DateTimeOffset TimeStamp = default)
     : Event(Source, EventLevel.Information, TimeStamp);
 
-public sealed record AlpmPackageProgresEvent(
+public sealed record AlpmPackageProgressEvent(
     string PackageName,
-    int CurrentIndex,
-    int TotalPackages,
-    string Status,
-    string ProgressType,
+    ulong CurrentDownload,
+    ulong TotalDownload,
+    ProgressType ProgressType,
     int Percent,
     string? Message,
     DateTimeOffset TimeStamp = default)
     : ProgressEvent(EventSource.Alpm, ProgressType, Percent, TimeStamp);
+
+public sealed record AlpmBuildOutputEvent(
+    EventLevel Level,
+    string PackageName,
+    int Percent,
+    string? Message,
+    string OutputLine,
+    DateTimeOffset TimeStamp = default) : Event(EventSource.Alpm, Level, TimeStamp);
+
+public sealed record AlpmPkgBuildDiffEvent(string OldPkgBuild, string NewPkgBuild, DateTimeOffset TimeStamp = default)
+    : Event(EventSource.Alpm, EventLevel.Information, TimeStamp);
+
+public sealed record AlpmStatusEvent(string Status, DateTimeOffset TimeStamp = default)
+    : Event(EventSource.Alpm, EventLevel.Information, TimeStamp);

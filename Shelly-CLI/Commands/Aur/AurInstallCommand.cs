@@ -28,10 +28,12 @@ public class AurInstallCommand : AsyncCommand<AurInstallSettings>
             AnsiConsole.MarkupLine("[red]No packages specified.[/]");
             return 1;
         }
+
         RootElevator.EnsureRootExectuion();
         var packageList = settings.Packages.ToList();
 
-        AnsiConsole.MarkupLine($"[yellow]AUR packages to install:[/] {string.Join(", ", packageList.Select(p => p.EscapeMarkup()))}");
+        AnsiConsole.MarkupLine(
+            $"[yellow]AUR packages to install:[/] {string.Join(", ", packageList.Select(p => p.EscapeMarkup()))}");
 
         if (!settings.NoConfirm)
         {
@@ -44,13 +46,12 @@ public class AurInstallCommand : AsyncCommand<AurInstallSettings>
 
         var cfg = ConfigManager.ReadConfig();
         var useSinglePane = settings.SinglePane
-            || string.Equals(cfg.OutputMode, "singlepane", StringComparison.OrdinalIgnoreCase)
-            || Console.IsOutputRedirected;
+                            || string.Equals(cfg.OutputMode, "singlepane", StringComparison.OrdinalIgnoreCase)
+                            || Console.IsOutputRedirected;
 
-        Func<AurPackageManager, Func<AurPackageManager, Task>, bool, Task<bool>> runOutput =
-            useSinglePane
-                ? (m, op, nc) => AurSinglePaneOutput.Output(m, op, nc)
-                : (m, op, nc) => AurSplitOutput.Output(m, op, nc);
+        Task<bool> RunOutput(AurPackageManager m, Func<AurPackageManager, Task> op, bool nc) =>
+            AurSinglePaneOutput.Output(m, op, nc);
+
 
         try
         {
@@ -68,36 +69,39 @@ public class AurInstallCommand : AsyncCommand<AurInstallSettings>
                 if (settings.MakeDepsOn)
                 {
                     AnsiConsole.MarkupLine("[yellow]Installing dependencies (including make dependencies)...[/]");
-                    var makeDepsResult = await runOutput(manager, m => m.InstallDependenciesOnly(packageList.First(), true), settings.NoConfirm);
+                    var makeDepsResult = await RunOutput(manager,
+                        m => m.InstallDependenciesOnly(packageList.First(), true), settings.NoConfirm);
                     if (!makeDepsResult)
                     {
                         AnsiConsole.MarkupLine("[red]Dependency installation failed. See errors above.[/]");
                         return 1;
                     }
+
                     AnsiConsole.MarkupLine("[green]Dependencies installed successfully![/]");
                     return 0;
                 }
 
                 AnsiConsole.MarkupLine("[yellow]Installing dependencies...[/]");
-                var depsResult = await runOutput(manager, m => m.InstallDependenciesOnly(packageList.First(), false), settings.NoConfirm);
+                var depsResult = await RunOutput(manager, m => m.InstallDependenciesOnly(packageList.First(), false),
+                    settings.NoConfirm);
                 if (!depsResult)
                 {
                     AnsiConsole.MarkupLine("[red]Dependency installation failed. See errors above.[/]");
                     return 1;
                 }
+
                 AnsiConsole.MarkupLine("[green]Dependencies installed successfully![/]");
                 return 0;
             }
 
-            AnsiConsole.MarkupLine($"[yellow]Installing AUR packages: {string.Join(", ", settings.Packages.Select(p => p.EscapeMarkup()))}[/]");
-            var installResult = await runOutput(manager, m => m.InstallPackages(packageList), settings.NoConfirm);
+            AnsiConsole.MarkupLine(
+                $"[yellow]Installing AUR packages: {string.Join(", ", settings.Packages.Select(p => p.EscapeMarkup()))}[/]");
+            var installResult = await RunOutput(manager, m => m.InstallPackages(packageList), settings.NoConfirm);
             if (!installResult)
             {
                 AnsiConsole.MarkupLine("[red]Installation failed. See errors above.[/]");
                 return 1;
             }
-
-
         }
         catch (Exception ex)
         {
@@ -108,7 +112,7 @@ public class AurInstallCommand : AsyncCommand<AurInstallSettings>
         {
             manager?.Dispose();
         }
-        
+
         AnsiConsole.MarkupLine("[green]Installation complete.[/]");
 
         return 0;
@@ -199,12 +203,12 @@ public class AurInstallCommand : AsyncCommand<AurInstallSettings>
         {
             manager?.Dispose();
         }
-        
+
         Console.Error.WriteLine("Installation complete.");
 
         return 0;
     }
-    
+
     private static async Task<List<string>> GetMissingPackages(AurPackageManager manager, List<string> packageList)
     {
         var installedPackages = await manager.GetInstalledPackages();

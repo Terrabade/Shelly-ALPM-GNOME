@@ -53,15 +53,8 @@ public class RemoveCommand : AsyncCommand<RemovePackageSettings>
         {
             flags |= AlpmTransFlag.Cascade;
         }
-
-        var cfg = ConfigManager.ReadConfig();
-        var useSinglePane = settings.SinglePane
-            || string.Equals(cfg.OutputMode, "singlepane", StringComparison.OrdinalIgnoreCase)
-            || Console.IsOutputRedirected;
-
-        var result = useSinglePane
-            ? await StandardSinglePaneOutput.Output(manager, x => x.RemovePackages(packageList, flags,settings.OptDeps), settings.NoConfirm)
-            : await SplitOutput.Output(manager, x => x.RemovePackages(packageList, flags,settings.OptDeps), settings.NoConfirm);
+        
+        var result = await StandardSinglePaneOutput.Output(manager, x => x.RemovePackages(packageList, flags,settings.OptDeps), settings.NoConfirm);
 
         if (settings.RemoveConfig)
         {

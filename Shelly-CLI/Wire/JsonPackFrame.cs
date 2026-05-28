@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using Shelly.Utilities.Eventing;
 
 namespace PackageManager.Wire;
 
@@ -19,10 +20,11 @@ public static class JsonPackFrame
 
     public static void WriteToStdout<T>(T value)
     {
-        var info = Shelly_CLI.ShellyCLIJsonContext.Default.GetTypeInfo(typeof(T))
-            ?? throw new InvalidOperationException(
-                $"ShellyCLIJsonContext has no [JsonSerializable] entry for {typeof(T)}. " +
-                $"Add [JsonSerializable(typeof({typeof(T).Name}))] to Shelly-CLI/ShellyCLIJsonContext.cs.");
+        var info = EventingJsonContext.Default.GetTypeInfo(typeof(T)) ??
+                   Shelly_CLI.ShellyCLIJsonContext.Default.GetTypeInfo(typeof(T))
+                   ?? throw new InvalidOperationException(
+                       $"ShellyCLIJsonContext has no [JsonSerializable] entry for {typeof(T)}. " +
+                       $"Add [JsonSerializable(typeof({typeof(T).Name}))] to Shelly-CLI/ShellyCLIJsonContext.cs.");
         var typeInfo = (JsonTypeInfo<T>)info;
         var json = JsonSerializer.Serialize(value, typeInfo);
         var encoded = Convert.ToBase64String(Encoding.UTF8.GetBytes(json));

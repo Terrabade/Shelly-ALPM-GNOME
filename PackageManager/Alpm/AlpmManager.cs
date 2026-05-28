@@ -61,7 +61,6 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
     private bool _isPackageDownload;
 
     public event EventHandler<AlpmProgressEventArgs>? Progress;
-    public event EventHandler<AlpmPackageOperationEventArgs>? PackageOperation;
     public event EventHandler<AlpmQuestionEventArgs>? Question;
     public event EventHandler<AlpmReplacesEventArgs>? Replaces;
     public event EventHandler<AlpmScriptletEventArgs>? ScriptletInfo;

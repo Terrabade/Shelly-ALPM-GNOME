@@ -112,13 +112,7 @@ public static class AurSinglePaneOutput
                     region.WritePlain(line);
             }
         };
-
-        manager.PackageOperation += (_, e) =>
-        {
-            region.WriteLine(string.IsNullOrWhiteSpace(e.PackageName)
-                ? $":: {e.EventType}".EscapeMarkup()
-                : $":: {e.EventType} for {e.PackageName}".EscapeMarkup());
-        };
+        
 
         manager.ScriptletInfo += (_, e) =>
         {
@@ -193,7 +187,7 @@ public static class AurSinglePaneOutput
             try
             {
                 AnsiConsole.MarkupLine($"[bold]:: PKGBUILD for {args.PackageName.EscapeMarkup()}:[/]");
-                foreach (var line in AurSplitOutput.BuildUnifiedDiffLines(
+                foreach (var line in PackageBuilderDiffGenerator.BuildUnifiedDiffLines(
                              args.OldPkgbuild ?? string.Empty,
                              args.NewPkgbuild ?? string.Empty))
                 {

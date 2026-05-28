@@ -53,3 +53,18 @@ public enum AlpmEvents
     DebugOutput = 257,
     TraceOutput = 258,
 }
+
+public enum ProgressType
+{
+    AddStart = 0,
+    UpgradeStart,
+    DowngradeStart,
+    ReinstallStart,
+    RemoveStart,
+    ConflictsStart,
+    DiskspaceStart,
+    IntegrityStart,
+    LoadStart,
+    KeyringStart,
+    PackageDownload = 100
+}

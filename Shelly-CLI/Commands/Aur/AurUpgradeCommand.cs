@@ -55,9 +55,7 @@ public class AurUpgradeCommand : AsyncCommand<AurUpgradeSettings>
                                 || Console.IsOutputRedirected;
 
             var packageNames = updates.Select(u => u.Name).ToList();
-            var result = useSinglePane
-                ? await AurSinglePaneOutput.Output(manager, m => m.UpdatePackages(packageNames), settings.NoConfirm)
-                : await AurSplitOutput.Output(manager, m => m.UpdatePackages(packageNames), settings.NoConfirm);
+            var result = await AurSinglePaneOutput.Output(manager, m => m.UpdatePackages(packageNames), settings.NoConfirm);
             if (!result)
             {
                 AnsiConsole.MarkupLine("[red]Upgrade failed. See errors above.[/]");

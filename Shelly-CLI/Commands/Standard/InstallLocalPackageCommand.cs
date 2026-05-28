@@ -65,15 +65,8 @@ public class InstallLocalPackageCommand : AsyncCommand<InstallLocalPackageSettin
         var manager = new AlpmManager();
         AnsiConsole.MarkupLine("[yellow]Initializing ALPM...[/]");
         manager.Initialize();
-        var cfg = ConfigManager.ReadConfig();
-        var useSinglePane = settings.SinglePane
-                            || string.Equals(cfg.OutputMode, "singlepane", StringComparison.OrdinalIgnoreCase)
-                            || Console.IsOutputRedirected;
-        var result = useSinglePane
-            ? await StandardSinglePaneOutput.Output(manager,
-                x => x.InstallLocalPackage(Path.GetFullPath(settings.PackageLocation)), settings.NoConfirm)
-            : await SplitOutput.Output(manager, x => x.InstallLocalPackage(Path.GetFullPath(settings.PackageLocation)),
-                settings.NoConfirm);
+        var result = await StandardSinglePaneOutput.Output(manager,
+                x => x.InstallLocalPackage(Path.GetFullPath(settings.PackageLocation)), settings.NoConfirm);
         manager.Dispose();
         return result;
     }
