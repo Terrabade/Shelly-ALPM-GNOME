@@ -624,14 +624,8 @@ public class PackageUpdate(
 
     private async Task LoadDataAsync(CancellationToken ct = default, int generation = 0)
     {
-        GLib.Functions.IdleAdd(0, () =>
-        {
-            if (ct.IsCancellationRequested || _loadGeneration != generation) return false;
-            _loadingOverlay.Visible = true;
-            _loadingSpinner.Spinning = true;
-            _errorLabel.Visible = false;
-            return false;
-        });
+        if (ct.IsCancellationRequested || _loadGeneration != generation) return;
+        OverlayHelper.ShowLoading(_loadingOverlay, _loadingSpinner, _errorLabel);
 
         try
         {
@@ -644,8 +638,7 @@ public class PackageUpdate(
             {
                 if (ct.IsCancellationRequested || _loadGeneration != generation) return false;
 
-                _loadingOverlay.Visible = false;
-                _loadingSpinner.Spinning = false;
+                OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
 
                 _filterListModel.SetFilter(null);
                 _listStore.RemoveAll();
@@ -684,13 +677,11 @@ public class PackageUpdate(
         catch (Exception e)
         {
             Console.WriteLine($"Failed to load packages: {e.Message}");
-            GLib.Functions.IdleAdd(0, () =>
+            if (!ct.IsCancellationRequested && _loadGeneration == generation)
             {
-                if (ct.IsCancellationRequested || _loadGeneration != generation) return false;
-                _loadingSpinner.Spinning = false;
+                OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
                 _errorLabel.Visible = true;
-                return false;
-            });
+            }
         }
     }
 
@@ -761,9 +752,7 @@ public class PackageUpdate(
             var isFullUpgrade = selectedPackages.Count == _listStore.GetNItems();
             try
             {
-                _loadingOverlay.Visible = true;
-                _loadingSpinner.Spinning = true;
-                _errorLabel.Visible = false;
+                OverlayHelper.ShowLoading(_loadingOverlay, _loadingSpinner, _errorLabel);
 
                 lockoutService.Show(T("Updating..."));
                 OperationResult upgradeResult;
@@ -813,8 +802,7 @@ public class PackageUpdate(
             }
             finally
             {
-                _loadingOverlay.Visible = false;
-                _loadingSpinner.Spinning = false;
+                OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
                 lockoutService.Hide();
             }
         }

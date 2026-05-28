@@ -691,15 +691,8 @@ public sealed class PackageManagement(
 
     private async Task LoadDataAsync(int generation = 0, CancellationToken ct = default)
     {
-        GLib.Functions.IdleAdd(0, () =>
-        {
-            if (_loadGeneration != generation) return false;
-            _loadingSpinner.SetVisible(true);
-            _loadingSpinner.SetSpinning(true);
-            _loadingOverlay.SetVisible(true);
-            _errorLabel.SetVisible(false);
-            return false;
-        });
+        if (_loadGeneration != generation) return;
+        OverlayHelper.ShowLoading(_loadingOverlay, _loadingSpinner, _errorLabel);
 
         try
         {
@@ -714,9 +707,7 @@ public sealed class PackageManagement(
                 {
                     if (_loadGeneration == generation)
                     {
-                        _loadingSpinner.SetSpinning(false);
-                        _loadingSpinner.SetVisible(false);
-                        _loadingOverlay.SetVisible(false);
+                        OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
                     }
                     return false;
                 }
@@ -759,9 +750,7 @@ public sealed class PackageManagement(
                     }
                 }
 
-                _loadingSpinner.SetSpinning(false);
-                _loadingSpinner.SetVisible(false);
-                _loadingOverlay.SetVisible(false);
+                OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
 
                 packages.Clear();
                 packages.TrimExcess();
@@ -770,14 +759,11 @@ public sealed class PackageManagement(
         }
         catch (Exception e)
         {
-            GLib.Functions.IdleAdd(0, () =>
+            if (_loadGeneration == generation)
             {
-                if (_loadGeneration != generation) return false;
-                _loadingSpinner.SetSpinning(false);
-                _loadingSpinner.SetVisible(false);
+                OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
                 _errorLabel.SetVisible(true);
-                return false;
-            });
+            }
             Console.WriteLine($"Failed to load packages: {e.Message}");
         }
     }
@@ -817,14 +803,7 @@ public sealed class PackageManagement(
 
             try
             {
-                GLib.Functions.IdleAdd(0, () =>
-                {
-                    _loadingSpinner.SetVisible(true);
-                    _loadingSpinner.SetSpinning(true);
-                    _loadingOverlay.SetVisible(true);
-                    _errorLabel.SetVisible(false);
-                    return false;
-                });
+                OverlayHelper.ShowLoading(_loadingOverlay, _loadingSpinner, _errorLabel);
 
                 lockoutService.Show(T("Removing..."));
                 var result = await privilegedOperationService.RemovePackagesAsync(selectedPackages,
@@ -844,13 +823,7 @@ public sealed class PackageManagement(
             }
             catch (Exception e)
             {
-                GLib.Functions.IdleAdd(0, () =>
-                {
-                    _loadingSpinner.SetSpinning(false);
-                    _loadingSpinner.SetVisible(false);
-                    _loadingOverlay.SetVisible(false);
-                    return false;
-                });
+                OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
                 Console.WriteLine($"Failed to remove packages: {e.Message}");
             }
             finally

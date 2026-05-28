@@ -645,15 +645,8 @@ public sealed class PackageInstall(
 
     private async Task LoadDataAsync(int generation = 0, CancellationToken ct = default)
     {
-        GLib.Functions.IdleAdd(0, () =>
-        {
-            if (_loadGeneration != generation) return false;
-            _loadingSpinner.SetVisible(true);
-            _loadingSpinner.SetSpinning(true);
-            _loadingOverlay.SetVisible(true);
-            _errorLabel.SetVisible(false);
-            return false;
-        });
+        if (_loadGeneration != generation) return;
+        OverlayHelper.ShowLoading(_loadingOverlay, _loadingSpinner, _errorLabel);
 
         try
         {
@@ -717,9 +710,7 @@ public sealed class PackageInstall(
                 {
                     if (_loadGeneration == generation)
                     {
-                        _loadingSpinner.SetSpinning(false);
-                        _loadingSpinner.SetVisible(false);
-                        _loadingOverlay.SetVisible(false);
+                        OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
                     }
                     packages.Clear();
                     packages.TrimExcess();
@@ -770,7 +761,7 @@ public sealed class PackageInstall(
                     }
                     else
                     {
-                        _loadingOverlay.SetVisible(false);
+                        OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
                     }
                 }
                 return false;
@@ -781,9 +772,7 @@ public sealed class PackageInstall(
         {
             if (_loadGeneration == generation)
             {
-                _loadingSpinner.SetSpinning(false);
-                _loadingSpinner.SetVisible(false);
-                _loadingOverlay.SetVisible(false);
+                OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
             }
         }
         catch (Exception e)
@@ -791,18 +780,9 @@ public sealed class PackageInstall(
             Console.WriteLine($"Failed to load packages: {e.Message}");
             if (_loadGeneration == generation)
             {
-                GLib.Functions.IdleAdd(0, () =>
-                {
-                    if (_loadGeneration == generation)
-                    {
-                        _loadingSpinner.SetSpinning(false);
-                        _loadingSpinner.SetVisible(false);
-                        _loadingOverlay.SetVisible(true);
-                        _errorLabel.SetText(T("Failed to load packages."));
-                        _errorLabel.SetVisible(true);
-                    }
-                    return false;
-                });
+                OverlayHelper.ShowLoading(_loadingOverlay, _loadingSpinner, _errorLabel);
+                _errorLabel.SetText(T("Failed to load packages."));
+                _errorLabel.SetVisible(true);
             }
         }
     }
@@ -869,14 +849,7 @@ public sealed class PackageInstall(
                     }
                 }
 
-                GLib.Functions.IdleAdd(0, () =>
-                {
-                    _loadingSpinner.SetVisible(true);
-                    _loadingSpinner.SetSpinning(true);
-                    _loadingOverlay.SetVisible(true);
-                    _errorLabel.SetVisible(false);
-                    return false;
-                });
+                OverlayHelper.ShowLoading(_loadingOverlay, _loadingSpinner, _errorLabel);
 
                 lockoutService.Show(T("Installing..."));
                 var performUpgrade = _upgradeCheck.GetActive();
@@ -885,13 +858,7 @@ public sealed class PackageInstall(
             }
             catch (Exception e)
             {
-                GLib.Functions.IdleAdd(0, () =>
-                {
-                    _loadingSpinner.SetSpinning(false);
-                    _loadingSpinner.SetVisible(false);
-                    _loadingOverlay.SetVisible(false);
-                    return false;
-                });
+                OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
                 Console.WriteLine($"Failed to install packages: {e.Message}");
             }
             finally
