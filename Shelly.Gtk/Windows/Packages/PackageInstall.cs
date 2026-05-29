@@ -130,7 +130,8 @@ public sealed class PackageInstall(
                 _packageData,
                 _packageGObjectRefs,
                 sortColumn.Value,
-                order
+                order,
+                _searchText
             );
         };
 
@@ -165,6 +166,7 @@ public sealed class PackageInstall(
         {
             _searchText = _searchEntry.GetText();
             ApplyFilter();
+            ReapplySort();
         };
         _installButton.OnClicked += (_, _) => { _ = InstallSelectedAsync(); };
         _installButton.CanFocus = true;
@@ -792,6 +794,21 @@ public sealed class PackageInstall(
         _filter.Changed(FilterChange.Different);
     }
 
+    private void ReapplySort()
+    {
+        var primaryColumn = _columnViewSorter.GetPrimarySortColumn();
+        var sortColumn = primaryColumn is null ? null : GetSortColumn(primaryColumn);
+        var order = _columnViewSorter.GetPrimarySortOrder();
+        Sort(
+            _listStore,
+            _packageData,
+            _packageGObjectRefs,
+            sortColumn ?? PackageSortColumn.Name,
+            order,
+            _searchText
+        );
+    }
+
     private bool FilterPackage(GObject.Object obj)
     {
         if (obj is not AlpmPackageGObject pkgObj) return false;
@@ -799,7 +816,7 @@ public sealed class PackageInstall(
         var pkg = _packageData[pkgObj.Index];
 
         return PackageSearch.MatchesGroup(pkg.Groups, _selectedGroup) &&
-               PackageSearch.MatchesNameOrDescription(pkg.Name, pkg.Description, _searchText);
+               PackageSearch.Matches(pkg.Name, pkg.Description, _searchText);
     }
 
 

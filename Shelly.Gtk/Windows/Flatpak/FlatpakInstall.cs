@@ -623,7 +623,7 @@ public class FlatpakInstall(
             }
         }
 
-        return PackageSearch.MatchesNameOrDescription(pkg.Name, pkg.Description, _searchText);
+        return PackageSearch.Matches(pkg.Name, pkg.Description, _searchText);
     }
 
     private void SetUrlLinks(Dictionary<string, string>? urls)

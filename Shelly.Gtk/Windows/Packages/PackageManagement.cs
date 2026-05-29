@@ -138,7 +138,8 @@ public sealed class PackageManagement(
                 _packageData,
                 _packageGObjectRefs,
                 sortColumn.Value,
-                order
+                order,
+                _searchText
             );
         };
 
@@ -185,6 +186,7 @@ public sealed class PackageManagement(
         {
             _searchText = _searchEntry.GetText();
             ApplyFilter();
+            ReapplySort();
         };
         _removeButton.OnClicked += (_, _) => { _ = RemoveSelectedAsync(); };
         _downgradeButton.OnClicked += (_, _) => { _ = DowngradeSelectedAsync(); };
@@ -693,7 +695,7 @@ public sealed class PackageManagement(
         var pkg = _packageData[pkgObj.Index];
 
         return PackageSearch.MatchesGroup(pkg.Groups, _selectedGroup) &&
-               PackageSearch.MatchesNameOrDescription(pkg.Name, pkg.Description, _searchText);
+               PackageSearch.Matches(pkg.Name, pkg.Description, _searchText);
     }
 
     private async Task LoadDataAsync(int generation = 0, CancellationToken ct = default)
@@ -778,6 +780,21 @@ public sealed class PackageManagement(
     private void ApplyFilter()
     {
         _filter.Changed(FilterChange.Different);
+    }
+
+    private void ReapplySort()
+    {
+        var primaryColumn = _columnViewSorter.GetPrimarySortColumn();
+        var sortColumn = primaryColumn is null ? null : GetSortColumn(primaryColumn);
+        var order = _columnViewSorter.GetPrimarySortOrder();
+        Sort(
+            _listStore,
+            _packageData,
+            _packageGObjectRefs,
+            sortColumn ?? PackageSortColumn.Name,
+            order,
+            _searchText
+        );
     }
 
     private async Task RemoveSelectedAsync()
