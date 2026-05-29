@@ -28,10 +28,11 @@ public class FlatpakKillCommand : Command<FlatpakPackageSettings>
 
     private static int HandleUiModeKill(FlatpakPackageSettings settings)
     {
-        Console.Error.WriteLine("Killing selected flatpak app...");
+        UiFrames.Info("Killing selected flatpak app...", Shelly.Utilities.Eventing.AlpmEvents.TransactionStart);
         var manager = new FlatpakManager();
-        manager.FlatpakEvent += (sender, args) => { Console.Error.WriteLine(args.Message); };
+        manager.FlatpakEvent += (sender, args) => UiFrames.Info(args.Message);
         manager.KillApp(settings.Packages);
+        UiFrames.Done(true, "Flatpak app killed.", "Failed to kill flatpak app.");
         return 0;
     }
 }

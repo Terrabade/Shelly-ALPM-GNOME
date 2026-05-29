@@ -28,10 +28,11 @@ public class FlatpakInstallCommand : Command<FlatpakPackageSettings>
 
     private static int HandleUiModeInstall(FlatpakPackageSettings settings)
     {
-        Console.Error.WriteLine("Installing flatpak app...");
+        UiFrames.Info("Installing flatpak app...", Shelly.Utilities.Eventing.AlpmEvents.TransactionStart);
         var manager = new FlatpakManager();
-        manager.FlatpakEvent += (sender, args) => { Console.Error.WriteLine(args.Message); };
+        manager.FlatpakEvent += (sender, args) => UiFrames.Info(args.Message);
         manager.InstallApp(settings.Packages, settings.Remote, settings.IsUser);
+        UiFrames.Done(true, "Flatpak install complete.", "Flatpak install failed.");
         return 0;
     }
 }

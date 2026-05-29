@@ -35,9 +35,11 @@ public class FlatpakRemoveCommand : Command<FlatpakRemoveSettings>
 
     private static int HandleUiModeRemove(FlatpakRemoveSettings settings)
     {
+        UiFrames.Info("Removing flatpak app...", Shelly.Utilities.Eventing.AlpmEvents.TransactionStart);
         var manager = new FlatpakManager();
-        manager.FlatpakEvent += (sender, args) => { Console.Error.WriteLine(args.Message); };
+        manager.FlatpakEvent += (sender, args) => UiFrames.Info(args.Message);
         manager.UninstallApp(settings.Packages, settings.RemoveUnused);
+        UiFrames.Done(true, "Flatpak removal complete.", "Flatpak removal failed.");
         return 0;
     }
 
