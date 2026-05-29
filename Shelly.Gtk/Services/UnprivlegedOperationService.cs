@@ -150,6 +150,12 @@ public class UnprivilegedOperationService(
         return result;
     }
 
+    public async Task<UnprivilegedOperationResult> FlatpakRepair()
+    {
+        var result = await ExecuteUnprivilegedCommandAsync("Flatpak repair", "flatpak repair");
+        return result;
+    }
+
     public async Task<List<FlatpakRemoteDto>> FlatpakListRemotes()
     {
         var result = await ExecuteUnprivilegedCommandAsync("flatpak list remotes", "flatpak list-remotes", "-j");

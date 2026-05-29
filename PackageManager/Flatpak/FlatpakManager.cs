@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using PackageManager.Flatpak.Events;
+using Shelly.Utilities;
 
 namespace PackageManager.Flatpak;
 
@@ -2450,7 +2451,259 @@ public class FlatpakManager : IDisposable
             return null;
         }
     }
+    
+    /// <summary>
+    /// Helper method to get all available flatpak repository paths
+    /// </summary>
+    public List<string> GetRepositoryPaths()
+    {
+        var paths = new List<string>();
 
+        var systemRepo = "/var/lib/flatpak/repo";
+        
+        if (Directory.Exists(systemRepo))
+        {
+            paths.Add(systemRepo);
+        }
+
+        var userRepo = Path.Combine(
+            XdgPaths.DataHome(),
+            "flatpak",
+            "repo");
+
+        if (Directory.Exists(userRepo))
+        {
+            paths.Add(userRepo);
+        }
+
+        return paths;
+    }
+
+    /// <summary>
+    /// Helper method for flatpak repair uninstall
+    /// </summary>
+
+    public bool FlatpakRepairRestore(FlatpakPackageDto installedRef)
+    {
+        var installationPtr =
+            FlatpakReference.FlatpakInstallationNewSystem(
+                IntPtr.Zero,
+                out var error);
+
+        if (installationPtr == IntPtr.Zero)
+        {
+            installationPtr =
+                FlatpakReference.InstallationNewUser(
+                    IntPtr.Zero,
+                    out error);
+        }
+
+        if (installationPtr == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            var transactionPtr =
+                FlatpakReference.TransactionNewForInstallation(
+                    installationPtr,
+                    IntPtr.Zero,
+                    out var transError);
+
+            if (transactionPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            try
+            {
+                FlatpakReference.TransactionSetNoInteraction(
+                    transactionPtr,
+                    true);
+
+                var addSuccess =
+                    FlatpakReference.TransactionAddInstall(
+                        transactionPtr,
+                        installedRef.Remote,
+                        installedRef.Ref,
+                        IntPtr.Zero,
+                        out var addError);
+
+                if (!addSuccess)
+                {
+                    if (addError != IntPtr.Zero)
+                    {
+                        var msg =
+                            FlatpakReference.GetErrorMessage(
+                                addError);
+
+                        FlatpakEvent?.Invoke(this,
+                            new FlatpakEventArgs(FlatpakEventEnum.Error, 
+                                $"Failed to add reinstall transaction for {installedRef.Id}: {msg}"));
+                        
+                        FlatpakReference.GErrorFree(
+                            addError);
+                    }
+
+                    return false;
+                }
+
+                var runSuccess =
+                    FlatpakReference.TransactionRun(
+                        transactionPtr,
+                        IntPtr.Zero,
+                        out var runError);
+
+                if (!runSuccess)
+                {
+                    if (runError != IntPtr.Zero)
+                    {
+                        var msg =
+                            FlatpakReference.GetErrorMessage(
+                                runError);
+
+                        FlatpakEvent?.Invoke(this,
+                            new FlatpakEventArgs(FlatpakEventEnum.Error, 
+                                $"Failed to reinstall {installedRef.Id}: {msg}"));
+                        
+                        FlatpakReference.GErrorFree(
+                            runError);
+                    }
+
+                    return false;
+                }
+
+                return true;
+            }
+            finally
+            {
+                FlatpakReference.GObjectUnref(
+                    transactionPtr);
+            }
+        }
+        finally
+        {
+            FlatpakReference.GObjectUnref(
+                installationPtr);
+        }
+    }
+    
+    /// <summary>
+    /// Uninstalls an application or runtime directly from a full Flatpak ref.
+    /// Intended for repair and recovery operations.
+    /// </summary>
+    public bool UninstallAppFromRef(
+        FlatpakPackageDto installedRef)
+    {
+        var installationsPtr =
+            FlatpakReference.GetSystemInstallations(
+                IntPtr.Zero,
+                out IntPtr error);
+
+        if (error == IntPtr.Zero &&
+            installationsPtr != IntPtr.Zero)
+        {
+            try
+            {
+                var dataPtr =
+                    Marshal.ReadIntPtr(installationsPtr);
+
+                var length =
+                    Marshal.ReadInt32(
+                        installationsPtr + IntPtr.Size);
+
+                for (var i = 0; i < length; i++)
+                {
+                    var installationPtr =
+                        Marshal.ReadIntPtr(
+                            dataPtr + i * IntPtr.Size);
+
+                    if (installationPtr == IntPtr.Zero)
+                    {
+                        continue;
+                    }
+
+                    if (RunUninstallTransaction(
+                            installationPtr,
+                            installedRef.Ref))
+                    {
+                        return true;
+                    }
+                }
+            }
+            finally
+            {
+                FlatpakReference.GPtrArrayUnref(
+                    installationsPtr);
+            }
+        }
+
+        return false;
+    }
+    
+    /// <summary>
+    /// Creates and executes a Flatpak uninstall transaction for a given ref.
+    /// </summary>
+    private bool RunUninstallTransaction(
+        IntPtr installationPtr,
+        string refString)
+    {
+        var transactionPtr =
+            FlatpakReference.TransactionNewForInstallation(
+                installationPtr,
+                IntPtr.Zero,
+                out IntPtr transactionError);
+
+        if (transactionError != IntPtr.Zero ||
+            transactionPtr == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            var addSuccess =
+                FlatpakReference.TransactionAddUninstall(
+                    transactionPtr,
+                    refString,
+                    out IntPtr addError);
+
+            if (!addSuccess || addError != IntPtr.Zero)
+            {
+                if (addError != IntPtr.Zero)
+                {
+                    FlatpakReference.GErrorFree(addError);
+                }
+
+                return false;
+            }
+
+            var runSuccess =
+                FlatpakReference.TransactionRun(
+                    transactionPtr,
+                    IntPtr.Zero,
+                    out IntPtr runError);
+
+            if (!runSuccess || runError != IntPtr.Zero)
+            {
+                if (runError != IntPtr.Zero)
+                {
+                    FlatpakReference.GErrorFree(runError);
+                }
+
+                return false;
+            }
+
+            return true;
+        }
+        finally
+        {
+            FlatpakReference.GObjectUnref(transactionPtr);
+        }
+    }
+
+    
     public void Dispose()
     {
         //Currently just here to have it when needed.
@@ -2462,4 +2715,5 @@ public class FlatpakManager : IDisposable
         public bool? GpgVerify { get; set; }
         public string? GpgKey { get; set; }
     }
+
 }

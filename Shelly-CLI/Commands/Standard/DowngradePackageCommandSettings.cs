@@ -6,12 +6,8 @@ namespace Shelly_CLI.Commands.Standard;
 public class DowngradePackageCommandSettings : PackageSettings
 {
     [CommandOption("-o | --oldest")]
-    [Description("Installs the oldest matched version")]
+    [Description("Installs the oldest matched version (default newest)")]
     public bool UseOldest { get; set; }
-
-    [CommandOption("-l | --latest")]
-    [Description("Installs the newest matched version")]
-    public bool UseNewest { get; set; }
 
     [CommandOption("-i | --ignore")]
     [Description("Add to IgnorePkg list")]

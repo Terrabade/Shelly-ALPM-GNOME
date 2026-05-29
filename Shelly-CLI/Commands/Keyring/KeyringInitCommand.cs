@@ -33,7 +33,7 @@ public class KeyringInitCommand : Command
     {
         UiFrames.Info("Initializing pacman keyring...", Shelly.Utilities.Eventing.AlpmEvents.TransactionStart);
         var result = PacmanKeyRunner.Run("--init");
-        UiFrames.Done(result == 0, "Keyring initialized successfully!", "Failed to initialize keyring.");
+        UiFrames.TxFinish(result == 0, "Keyring initialized successfully!", "Failed to initialize keyring.");
         return result;
     }
 }
