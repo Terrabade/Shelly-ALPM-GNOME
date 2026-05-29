@@ -119,3 +119,4 @@ public class FlatpakBundleInstallSettings : CommandSettings
     public bool SystemWide { get; set; } = true;
 }
 
+

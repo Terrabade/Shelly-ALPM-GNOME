@@ -3,7 +3,7 @@ msgstr ""
 "Project-Id-Version: shelly-ui 2.2.4.1\n"
 "Report-Msgid-Bugs-To: csnyder@seafoamlabs.org\n"
 "POT-Creation-Date: 2026-05-14 18:41-0400\n"
-"PO-Revision-Date: 2026-05-15 08:45+EST\n"
+"PO-Revision-Date: 2026-05-27 13:04+EST\n"
 "Last-Translator: csnyder@seafoamlabs.org\n"
 "Language-Team: csnyder@seafoamlabs.org\n"
 "Language: en\n"
@@ -938,6 +938,12 @@ msgid "Scope"
 msgstr ""
 
 msgid "Remove Selected"
+msgstr ""
+
+msgid "Flatpak Repair"
+msgstr ""
+
+msgid "Repairs Flatpak Installation (Experimental)"
 msgstr ""
 
 msgid "Update All"
