@@ -1118,6 +1118,7 @@ public class FlatpakManager : IDisposable
         var installations = new List<(IntPtr Ptr, bool IsUser)>();
         var totalUpdated = 0;
         var errorMessages = new List<string>();
+        var updatedNames = new List<string>();
 
         var sysInstallationsPtr = FlatpakReference.GetSystemInstallations(IntPtr.Zero, out var sysError);
         if (sysError == IntPtr.Zero && sysInstallationsPtr != IntPtr.Zero)
@@ -1175,7 +1176,10 @@ public class FlatpakManager : IDisposable
                             if (refPtr == IntPtr.Zero) continue;
 
                             var package = new FlatpackPackage(refPtr);
-                            var refString = BuildRefString(package.ToDto());
+                            var dto = package.ToDto();
+                            var refString = BuildRefString(dto);
+
+                            updatedNames.Add(dto.Name);
 
                             FlatpakReference.TransactionAddUpdate(
                                 transactionPtr, refString, IntPtr.Zero, null, out IntPtr addError);
@@ -1221,6 +1225,11 @@ public class FlatpakManager : IDisposable
         if (errorMessages.Count > 0 && totalUpdated == 0)
         {
             return $"Update failed: {string.Join(" | ", errorMessages)}";
+        }
+
+        if (updatedNames.Count > 0)
+        {
+            return $"Successfully updated {totalUpdated} packages across all installations: {string.Join(", ", updatedNames)}";
         }
 
         return $"Successfully updated {totalUpdated} packages across all installations.";
