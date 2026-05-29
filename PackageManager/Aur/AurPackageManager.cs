@@ -430,6 +430,13 @@ public sealed class AurPackageManager(string? configPath = null)
                 {
                     var name = StripDepDecorations(pkg);
                     if (string.IsNullOrEmpty(name)) continue;
+                   
+                    if (!Regex.IsMatch(name, @"^[a-zA-Z0-9@._+][a-zA-Z0-9@._+\-]*$"))
+                    {
+                        System.Console.Error.WriteLine(
+                            $"[Shelly] Ignoring malformed optdepend token from PKGBUILD: '{pkg}' (parsed name='{name}')");
+                        continue;
+                    }
                     // PKGBUILD optdepends are typically "name: description" — preserve the
                     // description for the UI tooltip/label while keeping Name to the bare
                     // package name so downstream installers can resolve it.

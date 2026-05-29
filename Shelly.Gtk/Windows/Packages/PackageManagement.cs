@@ -41,6 +41,8 @@ public sealed class PackageManagement(
 
     private readonly bool _deletePackageCache = configService.LoadConfig().RemoveCache;
     private Overlay _box = null!;
+    private ScrolledWindow _scroller = null!;
+    private ColumnView _columnView = null!;
     private SearchEntry _searchEntry = null!;
     private CheckButton _cascadeDeleteCheck = null!;
     private CheckButton _removeConfigsCheck = null!;
@@ -72,7 +74,9 @@ public sealed class PackageManagement(
         var builder = Builder.NewFromString(ResourceHelper.LoadUiFile("UiFiles/Package/PackageManagement.ui"), -1);
         builder.TranslationDomain = Domain;
         _box = (Overlay)builder.GetObject("PackageManagement")!;
-        var columnView = (ColumnView)builder.GetObject("package_grid")!;
+        _columnView = (ColumnView)builder.GetObject("package_grid")!;
+        var columnView = _columnView;
+        _scroller = (ScrolledWindow)columnView.GetParent()!;
         _searchEntry = (SearchEntry)builder.GetObject("search_entry")!;
         _cascadeDeleteCheck = (CheckButton)builder.GetObject("cascade_delete_check")!;
         _removeConfigsCheck = (CheckButton)builder.GetObject("remove_configs_check")!;
@@ -138,7 +142,8 @@ public sealed class PackageManagement(
                 _packageData,
                 _packageGObjectRefs,
                 sortColumn.Value,
-                order
+                order,
+                _searchText
             );
         };
 
@@ -185,6 +190,9 @@ public sealed class PackageManagement(
         {
             _searchText = _searchEntry.GetText();
             ApplyFilter();
+            ReapplySort();
+            _selectionModel.SetSelected(uint.MaxValue);
+            ScrollToTop();
         };
         _removeButton.OnClicked += (_, _) => { _ = RemoveSelectedAsync(); };
         _downgradeButton.OnClicked += (_, _) => { _ = DowngradeSelectedAsync(); };
@@ -198,6 +206,8 @@ public sealed class PackageManagement(
             var item = (StringObject)_groupDropDown.GetModel()!.GetObject(idx)!;
             _selectedGroup = item.GetString();
             ApplyFilter();
+            _selectionModel.SetSelected(uint.MaxValue);
+            ScrollToTop();
         };
 
         _sub = DirtySubscription.Attach(dirtyService, this);
@@ -693,7 +703,7 @@ public sealed class PackageManagement(
         var pkg = _packageData[pkgObj.Index];
 
         return PackageSearch.MatchesGroup(pkg.Groups, _selectedGroup) &&
-               PackageSearch.MatchesNameOrDescription(pkg.Name, pkg.Description, _searchText);
+               PackageSearch.Matches(pkg.Name, pkg.Description, _searchText);
     }
 
     private async Task LoadDataAsync(int generation = 0, CancellationToken ct = default)
@@ -778,6 +788,38 @@ public sealed class PackageManagement(
     private void ApplyFilter()
     {
         _filter.Changed(FilterChange.Different);
+    }
+
+    private void ScrollToTop()
+    {
+        GLib.Functions.IdleAdd(0, () =>
+        {
+            var frames = 0;
+            _scroller.AddTickCallback((_, _) =>
+            {
+                var vadj = _scroller.GetVadjustment();
+                if (vadj is not null) vadj.SetValue(vadj.GetLower());
+                var hadj = _scroller.GetHadjustment();
+                if (hadj is not null) hadj.SetValue(hadj.GetLower());
+                return ++frames < 3;
+            });
+            return false;
+        });
+    }
+
+    private void ReapplySort()
+    {
+        var primaryColumn = _columnViewSorter.GetPrimarySortColumn();
+        var sortColumn = primaryColumn is null ? null : GetSortColumn(primaryColumn);
+        var order = _columnViewSorter.GetPrimarySortOrder();
+        Sort(
+            _listStore,
+            _packageData,
+            _packageGObjectRefs,
+            sortColumn ?? PackageSortColumn.Name,
+            order,
+            _searchText
+        );
     }
 
     private async Task RemoveSelectedAsync()
