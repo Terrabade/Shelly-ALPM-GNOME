@@ -1,4 +1,6 @@
 using PackageManager.Alpm;
+using PackageManager.Wire;
+using Shelly.Utilities.Eventing;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -10,8 +12,9 @@ public class PackageInformationCommand : Command<PackageInformationSettings>
     {
         if (Program.IsUiMode || settings.JsonOutput)
         {
-            Console.WriteLine("Not supported for ui methods yet");
-            return 0;
+            JsonPackFrame.WriteToStdout<Event>(new AlpmErrorEvent(
+                EventLevel.Error, "Package information is not supported in UI mode yet"));
+            return 1;
         }
 
         if (settings.Packages.Length > 1)

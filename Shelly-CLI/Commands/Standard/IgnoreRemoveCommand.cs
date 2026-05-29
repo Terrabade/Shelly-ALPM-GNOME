@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using PackageManager.Alpm;
+using PackageManager.Wire;
+using Shelly.Utilities.Eventing;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -19,7 +21,7 @@ public class IgnoreRemoveCommand : Command<IgnoreRemoveSettings>
         if (settings.Packages.Length == 0)
         {
             if (Program.IsUiMode)
-                Console.Error.WriteLine("Error: No packages specified");
+                JsonPackFrame.WriteToStdout<Event>(new AlpmErrorEvent(EventLevel.Error, "No packages specified"));
             else
                 AnsiConsole.MarkupLine("[red]Error: No packages specified[/]");
 
@@ -36,7 +38,8 @@ public class IgnoreRemoveCommand : Command<IgnoreRemoveSettings>
 
             var formattedPackages = string.Join(", ", settings.Packages);
             if (Program.IsUiMode)
-                Console.Error.WriteLine($"Removed from IgnorePkg list: {formattedPackages}");
+                JsonPackFrame.WriteToStdout<Event>(new AlpmInformationalEvent(
+                    AlpmEvents.InformationalOutput, $"Removed from IgnorePkg list: {formattedPackages}"));
             else
                 AnsiConsole.MarkupLine(
                     $"Removed from IgnorePkg list: [green]{formattedPackages.EscapeMarkup()}[/]");
@@ -46,7 +49,7 @@ public class IgnoreRemoveCommand : Command<IgnoreRemoveSettings>
         catch (Exception e)
         {
             if (Program.IsUiMode)
-                Console.Error.WriteLine($"Error: {e.Message}");
+                JsonPackFrame.WriteToStdout<Event>(new AlpmErrorEvent(EventLevel.Error, e.Message));
             else
                 AnsiConsole.MarkupLine($"[red]Error: {e.Message.EscapeMarkup()}[/]");
 

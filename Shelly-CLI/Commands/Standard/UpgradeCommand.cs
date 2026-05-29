@@ -2,10 +2,12 @@ using System.Diagnostics;
 using PackageManager.Alpm;
 using PackageManager.Flatpak;
 using PackageManager.Utilities;
+using PackageManager.Wire;
 using Shelly_CLI.Commands.Aur;
 using Shelly_CLI.Configuration;
 using Shelly_CLI.ConsoleLayouts;
 using Shelly_CLI.Utility;
+using Shelly.Utilities.Eventing;
 using Spectre.Console;
 using Spectre.Console.Cli;
 using static System.Enum;
@@ -104,13 +106,7 @@ public class UpgradeCommand : AsyncCommand<UpgradeSettings>
             }
 
             AnsiConsole.MarkupLine("[yellow] Starting System Upgrade...[/]");
-            var cfg = ConfigManager.ReadConfig();
-            var useSinglePane = settings.SinglePane
-                || string.Equals(cfg.OutputMode, "singlepane", StringComparison.OrdinalIgnoreCase)
-                || Console.IsOutputRedirected;
-            var upgradeResult = useSinglePane
-                ? await StandardSinglePaneOutput.Output(manager, x => x.SyncSystemUpdate(), settings.NoConfirm)
-                : await SplitOutput.Output(manager, x => x.SyncSystemUpdate(), settings.NoConfirm);
+            var upgradeResult = await StandardSinglePaneOutput.Output(manager, x => x.SyncSystemUpdate(), settings.NoConfirm);
             manager.Dispose();
             if (!upgradeResult)
             {
@@ -168,115 +164,67 @@ public class UpgradeCommand : AsyncCommand<UpgradeSettings>
 
     private static async Task<int> HandleUiModeUpgrade(CommandContext context, UpgradeSettings settings)
     {
-        await Console.Error.WriteLineAsync("Performing full system upgrade...");
+        JsonPackFrame.WriteToStdout<Event>(new AlpmInformationalEvent(
+            AlpmEvents.InformationalOutput, "Performing full system upgrade..."));
 
-        var manager = new AlpmManager();
-        object renderLock = new();
+        using var manager = new AlpmManager();
+        manager.Question += (_, args) => QuestionHandler.HandleQuestion(args, true, settings.NoConfirm);
 
-        manager.Replaces += (_, args) =>
-        {
-            foreach (var replace in args.Replaces)
-            {
-                Console.Error.WriteLine(
-                    $"Replacement: {args.Repository}/{args.PackageName} replaces {replace}");
-            }
-        };
-
-        manager.Question += (_, args) =>
-        {
-            lock (renderLock)
-            {
-                Console.Error.WriteLine();
-                QuestionHandler.HandleQuestion(args, Program.IsUiMode, settings.NoConfirm);
-            }
-        };
-
-        await Console.Error.WriteLineAsync("Checking for system updates...");
-        await Console.Error.WriteLineAsync(" Initializing and syncing repositories...");
+        JsonPackFrame.WriteToStdout<Event>(new AlpmInformationalEvent(
+            AlpmEvents.InformationalOutput, "Initializing and syncing repositories..."));
         manager.IntializeWithSync();
+
         var packagesNeedingUpdate = manager.GetPackagesNeedingUpdate();
         if (packagesNeedingUpdate.Count == 0)
         {
-            await Console.Error.WriteLineAsync("Standard Packages are up to date!");
+            JsonPackFrame.WriteToStdout<Event>(new AlpmInformationalEvent(
+                AlpmEvents.InformationalOutput, "Standard Packages are up to date!"));
         }
-
-        if (packagesNeedingUpdate.Count > 0)
+        else
         {
-            await Console.Error.WriteLineAsync($"{packagesNeedingUpdate.Count} packages need updates:");
-            foreach (var pkg in packagesNeedingUpdate)
-            {
-                await Console.Error.WriteLineAsync(
-                    $"  {pkg.Name}: {pkg.CurrentVersion} -> {pkg.NewVersion} ({pkg.DownloadSize} bytes)");
-            }
+            JsonPackFrame.WriteToStdout<Event>(new AlpmInformationalEvent(
+                AlpmEvents.TransactionStart,
+                $"{packagesNeedingUpdate.Count} packages need updates"));
 
-            await Console.Error.WriteLineAsync(" Starting System Upgrade...");
+            var ok = await UiModeOutput.Run(manager, m => m.SyncSystemUpdate());
 
-            manager.Progress += (_, args) =>
-            {
-                lock (renderLock)
-                {
-                    var name = args.PackageName ?? "unknown";
-                    var pct = args.Percent ?? 0;
-                    var actionType = args.ProgressType;
-                    Console.Error.WriteLine($"{name}: {pct}% - {actionType}");
-                }
-            };
-
-            manager.HookRun += (_, args) => { Console.Error.WriteLine($"[ALPM_HOOK]{args.Description}"); };
-
-            bool hadError = false;
-            manager.ErrorEvent += (_, e) =>
-            {
-                Console.Error.WriteLine($"[ALPM_ERROR]{e.Error}");
-                hadError = true;
-            };
-
-            var result = await manager.SyncSystemUpdate();
-            manager.Dispose();
-            if (!result || hadError)
-            {
-                await Console.Error.WriteLineAsync("System upgrade failed.");
-                return 1;
-            }
+            JsonPackFrame.WriteToStdout<Event>(new AlpmInformationalEvent(
+                ok ? AlpmEvents.TransactionDone : AlpmEvents.TransactionFailed,
+                ok ? "System upgraded successfully!" : "System upgrade failed."));
+            if (!ok) return 1;
         }
 
         if ((settings.Aur || settings.All) && ConfigManager.ReadConfig().AurEnabled)
         {
             var aurCommand = new AurUpgradeCommand();
-            var aurSettings = new AurUpgradeSettings()
-            {
-                NoConfirm = settings.NoConfirm,
-            };
+            var aurSettings = new AurUpgradeSettings { NoConfirm = settings.NoConfirm };
             var aurResult = await aurCommand.ExecuteAsync(context, aurSettings);
             if (aurResult != 0)
-            {
-                await Console.Error.WriteLineAsync("AUR upgrade failed.");
-            }
+                JsonPackFrame.WriteToStdout<Event>(new AlpmErrorEvent(EventLevel.Error, "AUR upgrade failed."));
         }
 
         if ((settings.Flatpak || settings.All) && ConfigManager.ReadConfig().FlatPackEnabled)
         {
             var flatpakResult = ExecuteFlatpakUpdate();
             if (!string.IsNullOrEmpty(flatpakResult))
-            {
-                await Console.Error.WriteLineAsync(flatpakResult);
-            }
+                JsonPackFrame.WriteToStdout<Event>(new AlpmInformationalEvent(
+                    AlpmEvents.InformationalOutput, flatpakResult));
         }
 
         var (needsReboot, services) = RestartManager.CheckForRequiredRestarts();
         if (needsReboot)
         {
-            await Console.Error.WriteLineAsync("[RESTART_REQUIRED]reboot");
+            JsonPackFrame.WriteToStdout<Event>(new AlpmInformationalEvent(
+                AlpmEvents.InformationalOutput, "[RESTART_REQUIRED]reboot"));
         }
         else if (services.Count > 0)
         {
             var failures = await RestartManager.RestartServicesAsync(services);
             foreach (var (svc, error) in failures)
-                await Console.Error.WriteLineAsync($"[RESTART_FAILED]service:{svc}|{error}");
+                JsonPackFrame.WriteToStdout<Event>(new AlpmErrorEvent(
+                    EventLevel.Error, $"[RESTART_FAILED]service:{svc}|{error}"));
         }
 
-        await Console.Error.WriteLineAsync("System upgraded successfully!");
-        manager.Dispose();
         return 0;
     }
 

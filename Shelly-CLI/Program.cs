@@ -83,7 +83,7 @@ public class Program
         app.Configure(config =>
         {
             config.SetApplicationName("shelly");
-            config.SetApplicationVersion(Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown");
+            config.SetApplicationVersion(Assembly.GetExecutingAssembly().GetName().Version?.ToString(4) ?? "unknown");
 
             config.AddCommand<VersionCommand>("version")
                 .WithDescription("Display the application version")
@@ -186,6 +186,8 @@ public class Program
                 .WithExample("downgrade", "firefox")
                 .WithExample("downgrade", "firefox", "--oldest")
                 .WithExample("downgrade", "firefox", "--latest")
+                .WithExample("downgrade", "firefox", "--exact", "67.0.4-2")
+                .WithExample("downgrade", "firefox", "--list-options")
                 .WithExample("downgrade", "firefox", "--ignore");
 
             config.AddBranch("ignore", ignore =>
