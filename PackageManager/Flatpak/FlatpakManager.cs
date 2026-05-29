@@ -2537,9 +2537,10 @@ public class FlatpakManager : IDisposable
                             FlatpakReference.GetErrorMessage(
                                 addError);
 
-                        Console.Error.WriteLine(
-                            $"Failed to add reinstall transaction for {installedRef.Id}: {msg}");
-
+                        FlatpakEvent?.Invoke(this,
+                            new FlatpakEventArgs(FlatpakEventEnum.Error, 
+                                $"Failed to add reinstall transaction for {installedRef.Id}: {msg}"));
+                        
                         FlatpakReference.GErrorFree(
                             addError);
                     }
@@ -2561,9 +2562,10 @@ public class FlatpakManager : IDisposable
                             FlatpakReference.GetErrorMessage(
                                 runError);
 
-                        Console.Error.WriteLine(
-                            $"Failed to reinstall {installedRef.Id}: {msg}");
-
+                        FlatpakEvent?.Invoke(this,
+                            new FlatpakEventArgs(FlatpakEventEnum.Error, 
+                                $"Failed to reinstall {installedRef.Id}: {msg}"));
+                        
                         FlatpakReference.GErrorFree(
                             runError);
                     }
