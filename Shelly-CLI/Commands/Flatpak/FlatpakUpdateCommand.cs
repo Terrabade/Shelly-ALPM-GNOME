@@ -30,7 +30,7 @@ public class FlatpakUpdateCommand : Command<FlatpakPackageSettings>
         var manager = new FlatpakManager();
         var result = manager.UpdateApp(settings.Packages);
         UiFrames.Info(result);
-        UiFrames.Done(true, "Flatpak update complete.", "Flatpak update failed.");
+        UiFrames.TxFinish(true, "Flatpak update complete.", "Flatpak update failed.");
         return 0;
     }
 }

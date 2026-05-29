@@ -33,7 +33,7 @@ public class KeyringRefreshCommand : Command
     {
         UiFrames.Info("Refreshing keys from keyserver...", Shelly.Utilities.Eventing.AlpmEvents.TransactionStart);
         var result = PacmanKeyRunner.Run("--refresh-keys");
-        UiFrames.Done(result == 0, "Keys refreshed successfully!", "Failed to refresh keys.");
+        UiFrames.TxFinish(result == 0, "Keys refreshed successfully!", "Failed to refresh keys.");
         return result;
     }
 }

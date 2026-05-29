@@ -57,7 +57,7 @@ public class KeyringRecvCommand : Command<KeyringSettings>
 
         UiFrames.Info($"Receiving keys: {string.Join(", ", settings.Keys)}...", Shelly.Utilities.Eventing.AlpmEvents.TransactionStart);
         var result = PacmanKeyRunner.Run(args);
-        UiFrames.Done(result == 0, "Keys received successfully!", "Failed to receive keys.");
+        UiFrames.TxFinish(result == 0, "Keys received successfully!", "Failed to receive keys.");
         return result;
     }
 }

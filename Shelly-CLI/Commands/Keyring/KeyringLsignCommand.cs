@@ -53,12 +53,12 @@ public class KeyringLsignCommand : Command<KeyringSettings>
             if (result != 0)
             {
                 UiFrames.Error($"Failed to sign key: {key}");
-                UiFrames.Done(false, "Keys signed successfully!", "Failed to sign keys.");
+                UiFrames.TxFinish(false, "Keys signed successfully!", "Failed to sign keys.");
                 return result;
             }
         }
 
-        UiFrames.Done(true, "Keys signed successfully!", "Failed to sign keys.");
+        UiFrames.TxFinish(true, "Keys signed successfully!", "Failed to sign keys.");
         return 0;
     }
 }

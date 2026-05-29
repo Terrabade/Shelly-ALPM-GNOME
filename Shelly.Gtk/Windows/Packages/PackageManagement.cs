@@ -914,17 +914,12 @@ public sealed class PackageManagement(
             List<DowngradeOptionDto> options;
             try
             {
-                lockoutService.Show(T("Fetching downgrade options for {0}...", packageName));
                 options = await privilegedOperationService.GetDowngradeOptionsAsync(packageName);
             }
             catch (Exception e)
             {
                 Console.WriteLine($"Failed to fetch downgrade options for {packageName}: {e.Message}");
                 options = [];
-            }
-            finally
-            {
-                lockoutService.Hide();
             }
 
             if (options.Count == 0)

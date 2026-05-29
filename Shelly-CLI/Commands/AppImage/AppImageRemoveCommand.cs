@@ -84,7 +84,7 @@ public class AppImageRemoveCommand : AsyncCommand<AppImageRemoveSettings>
 
         var result = await manager.RemoveAppImage(targetAppImage);
         if (Program.IsUiMode)
-            UiFrames.Done(result == 0, "AppImage removed.", "Failed to remove AppImage.");
+            UiFrames.TxFinish(result == 0, "AppImage removed.", "Failed to remove AppImage.");
         return result;
     }
 }

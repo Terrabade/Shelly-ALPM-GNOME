@@ -23,7 +23,7 @@ public class KeyringListCommand : Command
     {
         UiFrames.Info("Listing keys in keyring...", Shelly.Utilities.Eventing.AlpmEvents.TransactionStart);
         var result = PacmanKeyRunner.Run("--list-keys");
-        UiFrames.Done(result == 0, "Keys listed.", "Failed to list keys.");
+        UiFrames.TxFinish(result == 0, "Keys listed.", "Failed to list keys.");
         return result;
     }
 }
