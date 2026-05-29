@@ -30,7 +30,7 @@ public sealed class ShellySearch(
     private readonly Dictionary<ColumnViewCell, EventHandler> _checkBinding = [];
     private readonly Dictionary<ColumnViewCell, EventHandler> _installedBinding = [];
 
-    private const int MatchScore = 67;
+    private const int MatchScore = 1;
     private Stack _searchStack = null!;
     private Spinner _searchSpinner = null!;
     private SearchEntry _searchEntry = null!;
@@ -328,8 +328,9 @@ public sealed class ShellySearch(
             models = models
                 .Select(y => new { Package = y, Score = MatchObject(query, y.Name, y.Description) })
                 .Where(x => x.Score >= MatchScore)
-                .OrderByDescending(x => x.Package.IsInstalled)
-                .ThenByDescending(x => x.Score)
+                .OrderByDescending(x => x.Score)
+                .ThenByDescending(x => x.Package.IsInstalled)
+                .ThenBy(x => x.Package.Name, StringComparer.OrdinalIgnoreCase)
                 .Select(x => x.Package)
                 .ToList();
 
@@ -456,10 +457,11 @@ public sealed class ShellySearch(
 
     private static int MatchObject(string query, string name, string description)
     {
-        var nameScore = StringMatching.PartialRatio(query, name);
-        var descScore = StringMatching.PartialRatio(query, description);
-
-        return (int)(nameScore * 0.5 + descScore * 0.5);
+        var tier = PackageSearch.Score(name, description, query);
+        if (tier == 0) return 0;
+        var fuzz = (int)(StringMatching.PartialRatio(query, name) * 0.5
+                       + StringMatching.PartialRatio(query, description) * 0.5);
+        return tier * 1000 + fuzz;
     }
 
     private async Task InstallSelectedAsync()
