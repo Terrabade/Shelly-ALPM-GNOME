@@ -31,6 +31,8 @@ public sealed class PackageInstall(
     private DirtySubscription? _sub;
     public string[] ListensTo => [DirtyScopes.NativeInstalled];
     private Overlay _overlay = null!;
+    private ScrolledWindow _scroller = null!;
+    private ColumnView _columnView = null!;
     private CancellationTokenSource _cts = new();
     private int _loadGeneration;
     private SingleSelection _selectionModel = null!;
@@ -68,7 +70,9 @@ public sealed class PackageInstall(
         var builder = Builder.NewFromString(ResourceHelper.LoadUiFile("UiFiles/Package/PackageWindow.ui"), -1);
         builder.TranslationDomain = Domain;
         _overlay = (Overlay)builder.GetObject("PackageWindow")!;
-        var columnView = (ColumnView)builder.GetObject("package_column_view")!;
+        _columnView = (ColumnView)builder.GetObject("package_column_view")!;
+        var columnView = _columnView;
+        _scroller = (ScrolledWindow)columnView.GetParent()!;
         var checkColumn = (ColumnViewColumn)builder.GetObject("check_column")!;
         checkColumn.Resizable = true;
         _nameColumn = (ColumnViewColumn)builder.GetObject("name_column")!;
@@ -167,6 +171,8 @@ public sealed class PackageInstall(
             _searchText = _searchEntry.GetText();
             ApplyFilter();
             ReapplySort();
+            _selectionModel.SetSelected(uint.MaxValue);
+            ScrollToTop();
         };
         _installButton.OnClicked += (_, _) => { _ = InstallSelectedAsync(); };
         _installButton.CanFocus = true;
@@ -792,6 +798,23 @@ public sealed class PackageInstall(
     private void ApplyFilter()
     {
         _filter.Changed(FilterChange.Different);
+    }
+
+    private void ScrollToTop()
+    {
+        GLib.Functions.IdleAdd(0, () =>
+        {
+            var frames = 0;
+            _scroller.AddTickCallback((_, _) =>
+            {
+                var vadj = _scroller.GetVadjustment();
+                if (vadj is not null) vadj.SetValue(vadj.GetLower());
+                var hadj = _scroller.GetHadjustment();
+                if (hadj is not null) hadj.SetValue(hadj.GetLower());
+                return ++frames < 3;
+            });
+            return false;
+        });
     }
 
     private void ReapplySort()
