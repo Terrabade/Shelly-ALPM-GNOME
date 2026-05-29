@@ -7,6 +7,7 @@
         <Nullable>enable</Nullable>
         <!-- Enable Native AOT -->
         <PublishAot>true</PublishAot>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
         <SelfContained>true</SelfContained>
         <PublishSingleFile>true</PublishSingleFile>
@@ -29,6 +30,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <PackageReference Include="GirCore.GLib-2.0" Version="0.8.0-preview.1" />
         <PackageReference Include="Tmds.DBus.Protocol" Version="0.92.0" />
         <PackageReference Include="Tmds.DBus.SourceGenerator" Version="0.0.22">
             <PrivateAssets>all</PrivateAssets>

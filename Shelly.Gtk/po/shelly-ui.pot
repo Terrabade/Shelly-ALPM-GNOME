@@ -773,6 +773,15 @@ msgstr ""
 msgid "Package installed successfully"
 msgstr ""
 
+msgid "Remove "
+msgstr ""
+
+msgid "Removing package..."
+msgstr ""
+
+msgid "Package removed successfully"
+msgstr ""
+
 msgid "Reboot required after flatpak installation."
 msgstr ""
 
@@ -1266,4 +1275,7 @@ msgid "Tray Icon Autostart"
 msgstr ""
 
 msgid "Allow the tray service to autostart."
+msgstr ""
+
+msgid "Unable to load package data. You may have a db.lck."
 msgstr ""
