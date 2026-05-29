@@ -28,7 +28,7 @@ public class ShellyConfig
     public int TrayCheckIntervalHours { get; set; } = 12;
     public bool NoConfirm { get; set; } = false;
     public bool NewInstall { get; set; } = true;
-    public string CurrentVersion { get; set; } = "0.0.0";
+    public string CurrentVersion { get; set; } = "0.0.0.0";
     public bool UseWeeklySchedule { get; set; } = false;
     public List<DayOfWeek> DaysOfWeek { get; set; } = [];
     public TimeOnly? Time { get; set; } = null;
@@ -41,20 +41,22 @@ public class ShellyConfig
 
     public string? TrayIconPath { get; set; }
     public string? TrayUpdatesIconPath { get; set; }
-    
+
     public ShellyTabs DefaultPageDropDown { get; set; } = ShellyTabs.Packages;
 
     public bool SuppressFingerprintWarning { get; set; } = false;
 
     public bool RecommendedEnabled { get; set; } = false;
-    
+
     public string ProgressBarStyle { get; set; } = nameof(ProgressBarStyleKind.Blocks);
     public int ProgressBarFps { get; set; } = 7;
     public int ProgressBarWidth { get; set; } = 24;
-    
+
     public string OutputMode { get; set; } = "singlepane";
-    
+
     public int SinglePaneMaxStickies { get; set; } = 6;
-    
+
     public bool TrayAutoStart { get; set; } = false;
+
+    public bool PackageDowngradeEnabled { get; set; }
 }

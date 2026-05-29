@@ -31,6 +31,8 @@ public sealed class PackageInstall(
     private DirtySubscription? _sub;
     public string[] ListensTo => [DirtyScopes.NativeInstalled];
     private Overlay _overlay = null!;
+    private ScrolledWindow _scroller = null!;
+    private ColumnView _columnView = null!;
     private CancellationTokenSource _cts = new();
     private int _loadGeneration;
     private SingleSelection _selectionModel = null!;
@@ -59,12 +61,18 @@ public sealed class PackageInstall(
     private HashSet<string> _installedPackageNames = [];
     private static readonly ConditionalWeakTable<CheckButton, BindState> CheckState = new();
 
+    private Box _loadingOverlay = null!;
+    private Spinner _loadingSpinner = null!;
+    private Label _errorLabel = null!;
+
     public Widget CreateWindow()
     {
         var builder = Builder.NewFromString(ResourceHelper.LoadUiFile("UiFiles/Package/PackageWindow.ui"), -1);
         builder.TranslationDomain = Domain;
         _overlay = (Overlay)builder.GetObject("PackageWindow")!;
-        var columnView = (ColumnView)builder.GetObject("package_column_view")!;
+        _columnView = (ColumnView)builder.GetObject("package_column_view")!;
+        var columnView = _columnView;
+        _scroller = (ScrolledWindow)columnView.GetParent()!;
         var checkColumn = (ColumnViewColumn)builder.GetObject("check_column")!;
         checkColumn.Resizable = true;
         _nameColumn = (ColumnViewColumn)builder.GetObject("name_column")!;
@@ -84,6 +92,10 @@ public sealed class PackageInstall(
         _groupDropDown = (DropDown)builder.GetObject("grouping_selection")!;
         _upgradeCheck = (CheckButton)builder.GetObject("upgrade_check")!;
         _showHiddenCheck = (CheckButton)builder.GetObject("show_hidden_check")!;
+
+        _loadingOverlay = (Box)builder.GetObject("loading_overlay")!;
+        _loadingSpinner = (Spinner)builder.GetObject("loading_spinner")!;
+        _errorLabel = (Label)builder.GetObject("error_label")!;
 
         _listStore = ListStore.New(AlpmPackageGObject.GetGType());
         _filter = PackageSearch.CreateSafeFilter(FilterPackage);
@@ -122,7 +134,8 @@ public sealed class PackageInstall(
                 _packageData,
                 _packageGObjectRefs,
                 sortColumn.Value,
-                order
+                order,
+                _searchText
             );
         };
 
@@ -157,6 +170,9 @@ public sealed class PackageInstall(
         {
             _searchText = _searchEntry.GetText();
             ApplyFilter();
+            ReapplySort();
+            _selectionModel.SetSelected(uint.MaxValue);
+            ScrollToTop();
         };
         _installButton.OnClicked += (_, _) => { _ = InstallSelectedAsync(); };
         _installButton.CanFocus = true;
@@ -296,6 +312,8 @@ public sealed class PackageInstall(
         AddDetail(T("Version"), pkg.Version);
         AddDetail(T("Repository"), pkg.Repository);
         AddDetail(T("Size"), SizeHelpers.FormatSize(pkg.InstalledSize));
+        AddDetail(T("Installed Size"), SizeHelpers.FormatSize(pkg.InstalledSize));
+        AddDetail(T("Build Date"), pkg.BuildDate.ToString("yyyy-MM-dd HH:mm:ss"));
         if (!string.IsNullOrEmpty(pkg.Url))
         {
             var row = Box.New(Orientation.Horizontal, 12);
@@ -637,6 +655,9 @@ public sealed class PackageInstall(
 
     private async Task LoadDataAsync(int generation = 0, CancellationToken ct = default)
     {
+        if (_loadGeneration != generation) return;
+        OverlayHelper.ShowLoading(_loadingOverlay, _loadingSpinner, _errorLabel);
+
         try
         {
             var cleared = new TaskCompletionSource();
@@ -697,6 +718,10 @@ public sealed class PackageInstall(
             {
                 if (ct.IsCancellationRequested || _loadGeneration != generation)
                 {
+                    if (_loadGeneration == generation)
+                    {
+                        OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
+                    }
                     packages.Clear();
                     packages.TrimExcess();
                     return false;
@@ -730,24 +755,83 @@ public sealed class PackageInstall(
                     _selectionModel.SetSelected(0);
 
                 if (index < packages.Count) return true;
+                var count = packages.Count;
                 packages.Clear();
                 packages.TrimExcess();
+
+                if (_loadGeneration == generation)
+                {
+                    _loadingSpinner.SetSpinning(false);
+                    _loadingSpinner.SetVisible(false);
+
+                    if (count == 0)
+                    {
+                        _errorLabel.SetVisible(true);
+                        _loadingOverlay.SetVisible(true);
+                    }
+                    else
+                    {
+                        OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
+                    }
+                }
                 return false;
+                
             });
         }
         catch (OperationCanceledException)
         {
-            // nothing to do
+            if (_loadGeneration == generation)
+            {
+                OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
+            }
         }
         catch (Exception e)
         {
             Console.WriteLine($"Failed to load packages: {e.Message}");
+            if (_loadGeneration == generation)
+            {
+                OverlayHelper.ShowLoading(_loadingOverlay, _loadingSpinner, _errorLabel);
+                _errorLabel.SetText(T("Failed to load packages."));
+                _errorLabel.SetVisible(true);
+            }
         }
     }
 
     private void ApplyFilter()
     {
         _filter.Changed(FilterChange.Different);
+    }
+
+    private void ScrollToTop()
+    {
+        GLib.Functions.IdleAdd(0, () =>
+        {
+            var frames = 0;
+            _scroller.AddTickCallback((_, _) =>
+            {
+                var vadj = _scroller.GetVadjustment();
+                if (vadj is not null) vadj.SetValue(vadj.GetLower());
+                var hadj = _scroller.GetHadjustment();
+                if (hadj is not null) hadj.SetValue(hadj.GetLower());
+                return ++frames < 3;
+            });
+            return false;
+        });
+    }
+
+    private void ReapplySort()
+    {
+        var primaryColumn = _columnViewSorter.GetPrimarySortColumn();
+        var sortColumn = primaryColumn is null ? null : GetSortColumn(primaryColumn);
+        var order = _columnViewSorter.GetPrimarySortOrder();
+        Sort(
+            _listStore,
+            _packageData,
+            _packageGObjectRefs,
+            sortColumn ?? PackageSortColumn.Name,
+            order,
+            _searchText
+        );
     }
 
     private bool FilterPackage(GObject.Object obj)
@@ -757,7 +841,7 @@ public sealed class PackageInstall(
         var pkg = _packageData[pkgObj.Index];
 
         return PackageSearch.MatchesGroup(pkg.Groups, _selectedGroup) &&
-               PackageSearch.MatchesNameOrDescription(pkg.Name, pkg.Description, _searchText);
+               PackageSearch.Matches(pkg.Name, pkg.Description, _searchText);
     }
 
 
@@ -807,6 +891,8 @@ public sealed class PackageInstall(
                     }
                 }
 
+                OverlayHelper.ShowLoading(_loadingOverlay, _loadingSpinner, _errorLabel);
+
                 lockoutService.Show(T("Installing..."));
                 var performUpgrade = _upgradeCheck.GetActive();
                 result = await privilegedOperationService.InstallPackagesAsync(selectedPackages, performUpgrade);
@@ -814,6 +900,7 @@ public sealed class PackageInstall(
             }
             catch (Exception e)
             {
+                OverlayHelper.HideLoading(_loadingOverlay, _loadingSpinner);
                 Console.WriteLine($"Failed to install packages: {e.Message}");
             }
             finally
