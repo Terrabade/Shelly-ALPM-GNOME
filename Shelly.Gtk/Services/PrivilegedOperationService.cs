@@ -3,6 +3,7 @@ using System.Text;
 using Shelly.Gtk.Enums;
 using Shelly.Gtk.Helpers;
 using Shelly.Gtk.Services.TrayServices;
+using Shelly.Gtk.Services.Wire;
 using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
 
@@ -657,13 +658,34 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         var restartNeedsReboot = false;
         var restartFailures = new List<(string Service, string Error)>();
 
-        process.OutputDataReceived += (sender, e) =>
+        var eventRouter = new EventRouter(_alpmEventService, _lockoutService);
+
+        process.OutputDataReceived += async (sender, e) =>
         {
-            if (e.Data != null)
+            if (e.Data == null) return;
+            outputBuilder.AppendLine(e.Data);
+
+            if (JsonPackFrame.TryExtractPayload(e.Data, out var b64))
             {
-                outputBuilder.AppendLine(e.Data);
-                Console.WriteLine(e.Data);
+                if (eventRouter.TryDispatch(b64)) return;
+                Interlocked.Increment(ref pendingCallbacks);
+                try
+                {
+                    await QuestionRouter.TryDispatchAsync(b64, SafeWriteAsync);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"QuestionRouter error: {ex.Message}");
+                }
+                finally
+                {
+                    if (Interlocked.Decrement(ref pendingCallbacks) == 0)
+                        allCallbacksDone.TrySetResult();
+                }
+                return;
             }
+
+            Console.WriteLine(e.Data);
         };
 
         process.ErrorDataReceived += async (sender, e) =>
@@ -678,28 +700,28 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                     {
                         Console.WriteLine(e.Data);
                         // Handle provider selection protocol
-                        if (e.Data.StartsWith("[Shelly][ALPM_SELECT_PROVIDER]"))
+                        if (e.Data.StartsWith("[ALPM_SELECT_PROVIDER]"))
                         {
                             Console.WriteLine("Provider question received");
-                            await Console.Error.WriteLineAsync($"[Shelly]Select provider for: {e.Data}");
+                            Console.Error.WriteLine($"[Shelly]Select provider for: {e.Data}");
                             awaitingProviderSelection = true;
                             providerOptions.Clear();
-                            providerQuestion = e.Data.Substring("[Shelly][ALPM_SELECT_PROVIDER]".Length);
-                            await Console.Error.WriteLineAsync($"[Shelly]Select provider for: {providerQuestion}");
+                            providerQuestion = e.Data.Substring("[ALPM_SELECT_PROVIDER]".Length);
+                            Console.Error.WriteLine($"[Shelly]Select provider for: {providerQuestion}");
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_PROVIDER_OPTION]"))
+                        else if (e.Data.StartsWith("[ALPM_PROVIDER_OPTION]"))
                         {
-                            await Console.Error.WriteLineAsync($"[Shelly]Provider option received: {e.Data}");
-                            var payload = e.Data.Substring("[Shelly][ALPM_PROVIDER_OPTION]".Length);
+                            Console.Error.WriteLine($"[Shelly]Provider option received: {e.Data}");
+                            var payload = e.Data.Substring("[ALPM_PROVIDER_OPTION]".Length);
                             var option = AlpmMarkerParser.ParseOptionPayload(payload, out var idx);
                             if (idx >= 0)
                                 AlpmMarkerParser.PlaceAt(providerOptions, idx, option);
                             else
                                 providerOptions.Add(option);
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_PROVIDER_END]"))
+                        else if (e.Data.StartsWith("[ALPM_PROVIDER_END]"))
                         {
-                            await Console.Error.WriteLineAsync($"[Shelly]Provider selection received");
+                            Console.Error.WriteLine($"[Shelly]Provider selection received");
                             var args = new QuestionEventArgs(
                                 QuestionType.SelectProvider,
                                 providerQuestion ?? "Select provider",
@@ -721,26 +743,26 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                             providerQuestion = null;
                             providerOptions.Clear();
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_SELECT_OPTDEPS]"))
+                        else if (e.Data.StartsWith("[ALPM_SELECT_OPTDEPS]"))
                         {
                             Console.WriteLine("Optional dependency selection received");
                             awaitingOptDepsSelection = true;
                             optDepsOptions.Clear();
-                            optDepsQuestion = e.Data.Substring("[Shelly][ALPM_SELECT_OPTDEPS]".Length);
-                            await Console.Error.WriteLineAsync($"[Shelly]Select optional deps for: {optDepsQuestion}");
+                            optDepsQuestion = e.Data.Substring("[ALPM_SELECT_OPTDEPS]".Length);
+                            Console.Error.WriteLine($"[Shelly]Select optional deps for: {optDepsQuestion}");
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_OPTDEPS_OPTION]"))
+                        else if (e.Data.StartsWith("[ALPM_OPTDEPS_OPTION]"))
                         {
-                            var payload = e.Data.Substring("[Shelly][ALPM_OPTDEPS_OPTION]".Length);
+                            var payload = e.Data.Substring("[ALPM_OPTDEPS_OPTION]".Length);
                             var option = AlpmMarkerParser.ParseOptionPayload(payload, out var idx);
                             if (idx >= 0)
                                 AlpmMarkerParser.PlaceAt(optDepsOptions, idx, option);
                             else
                                 optDepsOptions.Add(option);
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_OPTDEPS_END]"))
+                        else if (e.Data.StartsWith("[ALPM_OPTDEPS_END]"))
                         {
-                            await Console.Error.WriteLineAsync("[Shelly]Optional deps selection end");
+                            Console.Error.WriteLine("[Shelly]Optional deps selection end");
                             var args = new QuestionEventArgs(
                                 QuestionType.SelectOptionalDeps,
                                 optDepsQuestion ?? "Select optional dependencies",
@@ -758,11 +780,11 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                             optDepsQuestion = null;
                             optDepsOptions.Clear();
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_QUESTION_CONFLICT]"))
+                        else if (e.Data.StartsWith("[ALPM_QUESTION_CONFLICT]"))
                         {
                             Console.WriteLine("Conflict question found");
-                            var questionText = e.Data.Substring("[Shelly][ALPM_QUESTION_CONFLICT]".Length);
-                            await Console.Error.WriteLineAsync($"[Shelly]Question received: {questionText}");
+                            var questionText = e.Data.Substring("[ALPM_QUESTION_CONFLICT]".Length);
+                            Console.Error.WriteLine($"[Shelly]Question received: {questionText}");
 
                             var args = new QuestionEventArgs(
                                 QuestionType.ConflictPkg,
@@ -777,11 +799,11 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                                 await SafeWriteAsync(args.Response == 1 ? "y" : "n");
                             }
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_QUESTION_REMOVEPKG]"))
+                        else if (e.Data.StartsWith("[ALPM_QUESTION_REMOVEPKG]"))
                         {
                             Console.WriteLine("Found Remove Package Question");
-                            var questionText = e.Data.Substring("[Shelly][ALPM_QUESTION_REMOVEPKG]".Length);
-                            await Console.Error.WriteLineAsync($"[Shelly]Question received: {questionText}");
+                            var questionText = e.Data.Substring("[ALPM_QUESTION_REMOVEPKG]".Length);
+                            Console.Error.WriteLine($"[Shelly]Question received: {questionText}");
 
                             var args = new QuestionEventArgs(
                                 QuestionType.RemovePkgs,
@@ -796,11 +818,11 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                                 await SafeWriteAsync(args.Response == 1 ? "y" : "n");
                             }
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_QUESTION_CORRUPTEDPKG]"))
+                        else if (e.Data.StartsWith("[ALPM_QUESTION_CORRUPTEDPKG]"))
                         {
                             Console.WriteLine("Corrupted package question found");
-                            var questionText = e.Data.Substring("[Shelly][ALPM_QUESTION_CORRUPTEDPKG]".Length);
-                            await Console.Error.WriteLineAsync($"[Shelly]Question received: {questionText}");
+                            var questionText = e.Data.Substring("[ALPM_QUESTION_CORRUPTEDPKG]".Length);
+                            Console.Error.WriteLine($"[Shelly]Question received: {questionText}");
 
                             var args = new QuestionEventArgs(
                                 QuestionType.CorruptedPkg,
@@ -815,11 +837,11 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                                 await SafeWriteAsync(args.Response == 1 ? "y" : "n");
                             }
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_QUESTION_IMPORTKEY]"))
+                        else if (e.Data.StartsWith("[ALPM_QUESTION_IMPORTKEY]"))
                         {
                             Console.WriteLine("Inmport key question found");
-                            var questionText = e.Data.Substring("[Shelly][ALPM_QUESTION_IMPORTKEY]".Length);
-                            await Console.Error.WriteLineAsync($"[Shelly]Question received: {questionText}");
+                            var questionText = e.Data.Substring("[ALPM_QUESTION_IMPORTKEY]".Length);
+                            Console.Error.WriteLine($"[Shelly]Question received: {questionText}");
 
                             var args = new QuestionEventArgs(
                                 QuestionType.ImportKey,
@@ -834,11 +856,11 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                                 await SafeWriteAsync(args.Response == 1 ? "y" : "n");
                             }
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_QUESTION_REPLACEPKG]"))
+                        else if (e.Data.StartsWith("[ALPM_QUESTION_REPLACEPKG]"))
                         {
                             Console.WriteLine("Replace Question Found");
-                            var questionText = e.Data.Substring("[Shelly][ALPM_QUESTION_REPLACEPKG]".Length);
-                            await Console.Error.WriteLineAsync($"[Shelly]Question received: {questionText}");
+                            var questionText = e.Data.Substring("[ALPM_QUESTION_REPLACEPKG]".Length);
+                            Console.Error.WriteLine($"[Shelly]Question received: {questionText}");
                             var args = new QuestionEventArgs(QuestionType.ReplacePkg, questionText);
                             _alpmEventService.RaiseQuestion(args);
                             await args.WaitForResponseAsync();
@@ -848,28 +870,28 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                                 await SafeWriteAsync(args.Response == 1 ? "y" : "n");
                             }
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_SCRIPTLET]"))
+                        else if (e.Data.StartsWith("[ALPM_SCRIPTLET]"))
                         {
-                            var line = e.Data.Substring("[Shelly][ALPM_SCRIPTLET]".Length);
+                            var line = e.Data.Substring("[ALPM_SCRIPTLET]".Length);
                             if (!string.IsNullOrEmpty(line))
                             {
                                 _lockoutService.ParseLog($"[SCRIPTLET] {line}");
                             }
                         }
-                        else if (e.Data.StartsWith("[Shelly][ALPM_HOOK]"))
+                        else if (e.Data.StartsWith("[ALPM_HOOK]"))
                         {
-                            var line = e.Data.Substring("[Shelly][ALPM_HOOK]".Length);
+                            var line = e.Data.Substring("[ALPM_HOOK]".Length);
                             if (!string.IsNullOrEmpty(line))
                             {
                                 _lockoutService.ParseLog($"[HOOK] {line}");
                             }
                         }
                         // Check for generic ALPM question (yes/no)
-                        else if (e.Data.StartsWith("[Shelly][ALPM_QUESTION]"))
+                        else if (e.Data.StartsWith("[ALPM_QUESTION]"))
                         {
                             Console.WriteLine("Generic question found");
-                            var questionText = e.Data.Substring("[Shelly][ALPM_QUESTION]".Length);
-                            await Console.Error.WriteLineAsync($"[Shelly]Question received: {questionText}");
+                            var questionText = e.Data.Substring("[ALPM_QUESTION]".Length);
+                            Console.Error.WriteLine($"[Shelly]Question received: {questionText}");
 
                             var args = new QuestionEventArgs(
                                 QuestionType.InstallIgnorePkg,

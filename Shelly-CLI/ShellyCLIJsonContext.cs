@@ -41,6 +41,8 @@ namespace Shelly_CLI;
 [JsonSerializable(typeof(FlatpakPackageDto))]
 [JsonSerializable(typeof(List<FlatpakRemoteDto>))]
 [JsonSerializable(typeof(FlatpakRemoteDto))]
+[JsonSerializable(typeof(List<FlatpakInstanceDto>))]
+[JsonSerializable(typeof(FlatpakInstanceDto))]
 [JsonSerializable(typeof(List<PacfileRecord>))]
 [JsonSerializable(typeof(PacfileRecord))]
 [JsonSerializable(typeof(PackageBuild))]

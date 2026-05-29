@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,40 +19,12 @@ using Shelly.Utilities;
 
 namespace PackageManager.Aur;
 
-public class PackageProgressEventArgs : EventArgs
-{
-    public required string PackageName { get; init; }
-    public int CurrentIndex { get; init; }
-    public int TotalCount { get; init; }
-    public PackageProgressStatus Status { get; init; }
-    public string? Message { get; init; }
-}
-
 public class PkgbuildDiffRequestEventArgs : EventArgs
 {
     public required string PackageName { get; init; }
     public required string OldPkgbuild { get; init; }
     public required string NewPkgbuild { get; init; }
     public bool ProceedWithUpdate { get; set; } = true;
-}
-
-public class BuildOutputEventArgs : EventArgs
-{
-    public required string PackageName { get; init; }
-    public required string Line { get; init; }
-    public bool IsError { get; init; }
-    public int? Percent { get; init; }
-    public string? ProgressMessage { get; init; }
-}
-
-public enum PackageProgressStatus
-{
-    Downloading,
-    Building,
-    Installing,
-    CleaningUp,
-    Completed,
-    Failed
 }
 
 /// <summary>
@@ -81,18 +54,51 @@ public sealed class AurPackageManager(string? configPath = null)
     private string _chrootPath;
     private readonly VcsInfoStore _vcsInfoStore = new();
 
-    public event EventHandler<PackageProgressEventArgs>? PackageProgress;
     public event EventHandler<PkgbuildDiffRequestEventArgs>? PkgbuildDiffRequest;
     public event EventHandler<AlpmQuestionEventArgs>? Question;
     public event EventHandler<AlpmProgressEventArgs>? Progress;
-    public event EventHandler<BuildOutputEventArgs>? BuildOutput;
-    public event EventHandler<AlpmPackageOperationEventArgs>? PackageOperation;
     public event EventHandler<AlpmScriptletEventArgs>? ScriptletInfo;
     public event EventHandler<AlpmHookEventArgs>? HookRun;
     public event EventHandler<AlpmReplacesEventArgs>? Replaces;
     public event EventHandler<AlpmPacnewEventArgs>? PacnewInfo;
     public event EventHandler<AlpmPacsaveEventArgs>? PacsaveInfo;
     public event EventHandler<AlpmErrorEventArgs>? ErrorEvent;
+
+    public event EventHandler<InformationalEventArgs>? InformationalEvent;
+
+    // Helpers replacing the legacy PackageProgress / BuildOutput public events.
+    // PackageProgress -> InformationalEvent (discrete labeled stage with queue counter).
+    private void RaisePkgProgress(AlpmEventType eventType, string packageName, int currentIndex, int totalCount,
+        string? message = null)
+    {
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(
+            eventType,
+            message ?? string.Empty,
+            packageName,
+            currentIndex,
+            totalCount));
+    }
+
+    // BuildOutput raw line -> InformationalEvent (AurBuildOutput/AurBuildError) with the line as Message.
+    private void RaiseBuildLine(string packageName, string line, bool isError)
+    {
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(
+            isError ? AlpmEventType.AurBuildError : AlpmEventType.AurBuildOutput,
+            line,
+            packageName));
+    }
+
+    // BuildOutput tick with a percent -> Progress (continuous %), carrying makepkg's free-text label.
+    private void RaiseBuildProgress(string packageName, int percent, string? progressMessage)
+    {
+        Progress?.Invoke(this, new AlpmProgressEventArgs(
+            AlpmProgressType.MakepkgBuild,
+            packageName,
+            percent,
+            null,
+            null,
+            progressMessage));
+    }
 
     public async Task Initialize(bool root = false, bool useTempPath = false, bool useChroot = false,
         string chrootPath = "/var/lib/shelly/chroot", string tempPath = "", bool showHiddenPackages = false,
@@ -102,13 +108,13 @@ public sealed class AurPackageManager(string? configPath = null)
         _alpm.Initialize(root, useTempPath: useTempPath, tempPath: tempPath, showHiddenPackages: showHiddenPackages);
         _alpm.Question += (_, args) => Question?.Invoke(this, args);
         _alpm.Progress += (_, args) => Progress?.Invoke(this, args);
-        _alpm.PackageOperation += (_, args) => PackageOperation?.Invoke(this, args);
         _alpm.ScriptletInfo += (_, args) => ScriptletInfo?.Invoke(this, args);
         _alpm.HookRun += (_, args) => HookRun?.Invoke(this, args);
         _alpm.Replaces += (_, args) => Replaces?.Invoke(this, args);
         _alpm.PacnewInfo += (_, args) => PacnewInfo?.Invoke(this, args);
         _alpm.PacsaveInfo += (_, args) => PacsaveInfo?.Invoke(this, args);
         _alpm.ErrorEvent += (_, args) => ErrorEvent?.Invoke(this, args);
+        _alpm.InformationalEvent += (_, args) => InformationalEvent?.Invoke(this, args);
         _aurSearchManager = new AurSearchManager(_httpClient);
         _useChroot = useChroot;
         _chrootPath = chrootPath;
@@ -206,7 +212,10 @@ public sealed class AurPackageManager(string? configPath = null)
             }
             catch (Exception ex)
             {
-                await Console.Error.WriteLineAsync($"Error checking version for {installedPkg.Name}: {ex.Message}");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                    $"Error checking version for {installedPkg.Name}: {ex.Message}"));
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                    ex.StackTrace ?? "No stack trace available"));
                 return null;
             }
             finally
@@ -261,7 +270,8 @@ public sealed class AurPackageManager(string? configPath = null)
 
         if (packagesToUpdate.Count > 0)
         {
-            Console.WriteLine("Updating the following packages:");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                $"Updating {packagesToUpdate.Count} packages: {string.Join(", ", packagesToUpdate)}"));
             await InstallPackages(packagesToUpdate);
         }
     }
@@ -272,7 +282,9 @@ public sealed class AurPackageManager(string? configPath = null)
         {
             // Resolve pkgname -> pkgbase: split AUR packages live under their pkgbase repo
             var pkgbase = await _aurSearchManager.GetPackageBaseAsync(packageName);
-            await Console.Error.WriteLineAsync($"pkgbase {pkgbase}");
+            InformationalEvent?.Invoke(this,
+                new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Fetching PKGBUILD for {packageName} ({pkgbase})"));
             var url = $"https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h={pkgbase}";
             var response = await _httpClient.GetAsync(url);
             if (response.IsSuccessStatusCode)
@@ -290,27 +302,13 @@ public sealed class AurPackageManager(string? configPath = null)
 
     public async Task InstallDependenciesOnly(string packageName, bool includeMakeDeps = false)
     {
-        PackageProgress?.Invoke(this, new PackageProgressEventArgs
-        {
-            PackageName = packageName,
-            CurrentIndex = 1,
-            TotalCount = 1,
-            Status = PackageProgressStatus.Downloading,
-            Message = "Downloading PKGBUILD to analyze dependencies"
-        });
+        RaisePkgProgress(AlpmEventType.AurDownloadStart, packageName, 1, 1, "Downloading PKGBUILD to analyze dependencies");
 
         var success = await DownloadPackage(packageName);
 
         if (!success)
         {
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = 1,
-                TotalCount = 1,
-                Status = PackageProgressStatus.Failed,
-                Message = "Failed to download package"
-            });
+            RaisePkgProgress(AlpmEventType.AurPackageFailed, packageName, 1, 1, "Failed to download package");
             return;
         }
 
@@ -331,25 +329,11 @@ public sealed class AurPackageManager(string? configPath = null)
 
         if (depsToInstall.Count == 0)
         {
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = 1,
-                TotalCount = 1,
-                Status = PackageProgressStatus.Completed,
-                Message = "All dependencies are already installed"
-            });
+            RaisePkgProgress(AlpmEventType.AurPackageCompleted, packageName, 1, 1, "All dependencies are already installed");
             return;
         }
 
-        PackageProgress?.Invoke(this, new PackageProgressEventArgs
-        {
-            PackageName = packageName,
-            CurrentIndex = 1,
-            TotalCount = 1,
-            Status = PackageProgressStatus.Installing,
-            Message = $"Installing dependencies: {string.Join(", ", depsToInstall)}"
-        });
+        RaisePkgProgress(AlpmEventType.AurInstallStart, packageName, 1, 1, $"Installing dependencies: {string.Join(", ", depsToInstall)}");
 
         var alpmPackages = new List<string>();
         var aurPackages = new List<ParsedDependency>();
@@ -379,14 +363,7 @@ public sealed class AurPackageManager(string? configPath = null)
         }
 
 
-        PackageProgress?.Invoke(this, new PackageProgressEventArgs
-        {
-            PackageName = packageName,
-            CurrentIndex = 1,
-            TotalCount = 1,
-            Status = PackageProgressStatus.Completed,
-            Message = "Dependencies installed successfully"
-        });
+        RaisePkgProgress(AlpmEventType.AurPackageCompleted, packageName, 1, 1, "Dependencies installed successfully");
     }
 
     /// <summary>
@@ -398,6 +375,11 @@ public sealed class AurPackageManager(string? configPath = null)
 
     public async Task InstallPackages(List<string> packageNames)
     {
+        // Ensure sync DBs are current before resolving dependencies, so that
+        // real repo packages aren't misrouted to the AUR resolver due to a
+        // stale sync DB on the alpm handle. See issue #880 follow-up.
+        _alpm.Refresh();
+
         // Per-call map of selected optional dependencies (by top-level package).
         var selectedOptDepsByPkg = new Dictionary<string, List<string>>();
 
@@ -406,13 +388,7 @@ public sealed class AurPackageManager(string? configPath = null)
         {
             var packageName = packageNames[i];
 
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = i + 1,
-                TotalCount = totalCount,
-                Status = PackageProgressStatus.Downloading
-            });
+            RaisePkgProgress(AlpmEventType.AurDownloadStart, packageName, i + 1, totalCount);
             var newPkgbuild = await FetchPkgbuildAsync(packageName);
             var args = new PkgbuildDiffRequestEventArgs
             {
@@ -432,14 +408,7 @@ public sealed class AurPackageManager(string? configPath = null)
 
             if (!success)
             {
-                PackageProgress?.Invoke(this, new PackageProgressEventArgs
-                {
-                    PackageName = packageName,
-                    CurrentIndex = i + 1,
-                    TotalCount = totalCount,
-                    Status = PackageProgressStatus.Failed,
-                    Message = "Failed to download package"
-                });
+                RaisePkgProgress(AlpmEventType.AurPackageFailed, packageName, i + 1, totalCount, "Failed to download package");
                 continue;
             }
 
@@ -447,14 +416,7 @@ public sealed class AurPackageManager(string? configPath = null)
             var user = Environment.GetEnvironmentVariable("SUDO_USER") ?? Environment.UserName;
             var pkgbase = await _aurSearchManager.GetPackageBaseAsync(packageName);
             var tempPath = XdgPaths.ShellyCache(pkgbase);
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = i + 1,
-                TotalCount = totalCount,
-                Status = PackageProgressStatus.Building,
-                Message = "Building package with makepkg"
-            });
+            RaisePkgProgress(AlpmEventType.AurBuildStart, packageName, i + 1, totalCount, "Building package with makepkg");
             var pkgbuildInfo = PkgbuildParser.Parse(Path.Combine(tempPath, "PKGBUILD"));
 
             // Prompt the user for optional dependencies declared in the PKGBUILD. The selected
@@ -517,7 +479,8 @@ public sealed class AurPackageManager(string? configPath = null)
                 .ToList();
 
             var (allRepoPackages, orderedAurPackages) = CollectAllDependencies(pkgbuildInfo);
-            await Console.Error.WriteLineAsync($"dependency count {allRepoPackages.Count + orderedAurPackages.Count}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                $"Collected {allRepoPackages.Count + orderedAurPackages.Count} dependencies for {packageName}"));
             InstallCollectedDependencies(allRepoPackages, orderedAurPackages, AlpmTransFlag.AllDeps);
 
 
@@ -608,14 +571,8 @@ public sealed class AurPackageManager(string? configPath = null)
                     }
                 }
 
-                BuildOutput?.Invoke(this, new BuildOutputEventArgs
-                {
-                    PackageName = packageName,
-                    Line = e.Data,
-                    IsError = false,
-                    Percent = percent,
-                    ProgressMessage = progressMessage
-                });
+                RaiseBuildLine(packageName, e.Data, false);
+                if (percent.HasValue) RaiseBuildProgress(packageName, percent!.Value, progressMessage);
             };
 
             buildProcess.ErrorDataReceived += (_, e) =>
@@ -625,12 +582,7 @@ public sealed class AurPackageManager(string? configPath = null)
                     return;
                 }
 
-                BuildOutput?.Invoke(this, new BuildOutputEventArgs
-                {
-                    PackageName = packageName,
-                    Line = e.Data,
-                    IsError = true
-                });
+                RaiseBuildLine(packageName, e.Data, true);
             };
 
             buildProcess.Start();
@@ -640,39 +592,19 @@ public sealed class AurPackageManager(string? configPath = null)
 
             if (buildProcess.ExitCode != 0)
             {
-                PackageProgress?.Invoke(this, new PackageProgressEventArgs
-                {
-                    PackageName = packageName,
-                    CurrentIndex = i + 1,
-                    TotalCount = totalCount,
-                    Status = PackageProgressStatus.Failed,
-                    Message = "Failed to build package with makepkg"
-                });
+                RaisePkgProgress(AlpmEventType.AurPackageFailed, packageName, i + 1, totalCount, "Failed to build package with makepkg");
                 continue;
             }
 
             var pkgFile = SelectBuiltPackageFile(tempPath, packageName);
             if (pkgFile is null)
             {
-                PackageProgress?.Invoke(this, new PackageProgressEventArgs
-                {
-                    PackageName = packageName,
-                    CurrentIndex = i + 1,
-                    TotalCount = totalCount,
-                    Status = PackageProgressStatus.Failed,
-                    Message = $"No package file matching '{packageName}' produced by makepkg"
-                });
+                RaisePkgProgress(AlpmEventType.AurPackageFailed, packageName, i + 1, totalCount, $"No package file matching '{packageName}' produced by makepkg");
                 continue;
             }
 
             // Install using _alpm
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = i + 1,
-                TotalCount = totalCount,
-                Status = PackageProgressStatus.Installing
-            });
+            RaisePkgProgress(AlpmEventType.AurInstallStart, packageName, i + 1, totalCount);
 
             try
             {
@@ -684,14 +616,7 @@ public sealed class AurPackageManager(string? configPath = null)
             }
             catch (Exception ex)
             {
-                PackageProgress?.Invoke(this, new PackageProgressEventArgs
-                {
-                    PackageName = packageName,
-                    CurrentIndex = i + 1,
-                    TotalCount = totalCount,
-                    Status = PackageProgressStatus.Failed,
-                    Message = $"Failed to install package: {ex.Message}"
-                });
+                RaisePkgProgress(AlpmEventType.AurPackageFailed, packageName, i + 1, totalCount, $"Failed to install package: {ex.Message}");
                 continue;
             }
 
@@ -707,35 +632,17 @@ public sealed class AurPackageManager(string? configPath = null)
                 }
                 catch (Exception ex)
                 {
-                    BuildOutput?.Invoke(this, new BuildOutputEventArgs
-                    {
-                        PackageName = packageName,
-                        Line = $"[Shelly] Warning: failed to install some optional dependencies: {ex.Message}",
-                        IsError = true
-                    });
+                    RaiseBuildLine(packageName, $"[Shelly] Warning: failed to install some optional dependencies: {ex.Message}", true);
                 }
             }
 
             // Remove build-only dependencies (makedepends/checkdepends) that were installed for this build
             if (buildOnlyDeps.Count > 0)
             {
-                PackageProgress?.Invoke(this, new PackageProgressEventArgs
-                {
-                    PackageName = packageName,
-                    CurrentIndex = i + 1,
-                    TotalCount = totalCount,
-                    Status = PackageProgressStatus.CleaningUp,
-                    Message =
-                        $"Removing {buildOnlyDeps.Count} build-only dependencies: {string.Join(", ", buildOnlyDeps)}"
-                });
+                RaisePkgProgress(AlpmEventType.AurCleanupStart, packageName, i + 1, totalCount, $"Removing {buildOnlyDeps.Count} build-only dependencies: {string.Join(", ", buildOnlyDeps)}");
                 foreach (var dep in buildOnlyDeps)
                 {
-                    BuildOutput?.Invoke(this, new BuildOutputEventArgs
-                    {
-                        PackageName = packageName,
-                        Line = $"[Shelly] Removing build-only dependency: {dep}",
-                        IsError = false
-                    });
+                    RaiseBuildLine(packageName, $"[Shelly] Removing build-only dependency: {dep}", false);
                 }
 
                 try
@@ -745,14 +652,7 @@ public sealed class AurPackageManager(string? configPath = null)
                 }
                 catch (Exception ex)
                 {
-                    PackageProgress?.Invoke(this, new PackageProgressEventArgs
-                    {
-                        PackageName = packageName,
-                        CurrentIndex = i + 1,
-                        TotalCount = totalCount,
-                        Status = PackageProgressStatus.CleaningUp,
-                        Message = $"Warning: Failed to remove some build dependencies: {ex.Message}"
-                    });
+                    RaisePkgProgress(AlpmEventType.AurCleanupStart, packageName, i + 1, totalCount, $"Warning: Failed to remove some build dependencies: {ex.Message}");
                 }
             }
 
@@ -760,20 +660,9 @@ public sealed class AurPackageManager(string? configPath = null)
             // isn't blocked by root-owned fakeroot-staged trees inside the cache dir.
             // Best-effort; failures are logged but never fail the install.
             await CleanBuildArtifactsAsync(user, tempPath);
-            BuildOutput?.Invoke(this, new BuildOutputEventArgs
-            {
-                PackageName = packageName,
-                Line = "[Shelly] Cleaned build artifacts (src/, pkg/)",
-                IsError = false
-            });
+            RaiseBuildLine(packageName, "[Shelly] Cleaned build artifacts (src/, pkg/)", false);
 
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = i + 1,
-                TotalCount = totalCount,
-                Status = PackageProgressStatus.Completed
-            });
+            RaisePkgProgress(AlpmEventType.AurPackageCompleted, packageName, i + 1, totalCount);
         }
     }
 
@@ -845,12 +734,7 @@ public sealed class AurPackageManager(string? configPath = null)
 
         if (repoMatches.Count > 0)
         {
-            BuildOutput?.Invoke(this, new BuildOutputEventArgs
-            {
-                PackageName = parentPkg,
-                Line = $"[Shelly] Installing optional dependencies from repo: {string.Join(", ", repoMatches)}",
-                IsError = false
-            });
+            RaiseBuildLine(parentPkg, $"[Shelly] Installing optional dependencies from repo: {string.Join(", ", repoMatches)}", false);
             try
             {
                 await _alpm.InstallPackages(repoMatches);
@@ -859,12 +743,7 @@ public sealed class AurPackageManager(string? configPath = null)
             }
             catch (Exception ex)
             {
-                BuildOutput?.Invoke(this, new BuildOutputEventArgs
-                {
-                    PackageName = parentPkg,
-                    Line = $"[Shelly] Warning: failed to install repo optional dependencies: {ex.Message}",
-                    IsError = true
-                });
+                RaiseBuildLine(parentPkg, $"[Shelly] Warning: failed to install repo optional dependencies: {ex.Message}", true);
             }
         }
 
@@ -901,6 +780,7 @@ public sealed class AurPackageManager(string? configPath = null)
                             var isInstalled = _alpm.IsPackageInstalled(provider);
                             availableProviders.Add(new ProviderOption(provider, "No Description", isInstalled));
                         }
+
                         var qArgs = new AlpmQuestionEventArgs(
                             AlpmQuestionType.SelectProvider,
                             $"Multiple AUR providers for '{name}'",
@@ -909,7 +789,8 @@ public sealed class AurPackageManager(string? configPath = null)
                         _alpm.RaiseQuestion(qArgs);
                         qArgs.WaitForResponse();
                         var idx = qArgs.Response;
-                        chosen = idx.ProviderOptions?.Where(x => x is { IsInstalled: true, IsSelected: true }).Select(x => x.Name).FirstOrDefault() ?? null;
+                        chosen = idx.ProviderOptions?.Where(x => x is { IsInstalled: true, IsSelected: true })
+                            .Select(x => x.Name).FirstOrDefault() ?? null;
                         if (chosen is null)
                         {
                             ErrorEvent?.Invoke(this, new AlpmErrorEventArgs(
@@ -918,14 +799,9 @@ public sealed class AurPackageManager(string? configPath = null)
                         }
                     }
 
-                    BuildOutput?.Invoke(this, new BuildOutputEventArgs
-                    {
-                        PackageName = parentPkg,
-                        Line = string.Equals(chosen, name, StringComparison.Ordinal)
+                    RaiseBuildLine(parentPkg, string.Equals(chosen, name, StringComparison.Ordinal)
                             ? $"[Shelly] Attempting AUR install for optional dependency: {chosen}"
-                            : $"[Shelly] Resolved AUR optdep '{name}' → '{chosen}'; attempting install",
-                        IsError = false
-                    });
+                            : $"[Shelly] Resolved AUR optdep '{name}' → '{chosen}'; attempting install", false);
                     try
                     {
                         await InstallPackages(new List<string> { chosen });
@@ -1016,40 +892,20 @@ public sealed class AurPackageManager(string? configPath = null)
 
     public async Task InstallPackageVersion(string packageName, string commit)
     {
-        PackageProgress?.Invoke(this, new PackageProgressEventArgs
-        {
-            PackageName = packageName,
-            CurrentIndex = 1,
-            TotalCount = 1,
-            Status = PackageProgressStatus.Downloading
-        });
+        RaisePkgProgress(AlpmEventType.AurDownloadStart, packageName, 1, 1);
 
         var success = await DownloadPackageAtCommit(packageName, commit);
 
         if (!success)
         {
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = 1,
-                TotalCount = 1,
-                Status = PackageProgressStatus.Failed,
-                Message = "Failed to download package at specified commit"
-            });
+            RaisePkgProgress(AlpmEventType.AurPackageFailed, packageName, 1, 1, "Failed to download package at specified commit");
             throw new Exception($"Failed to download package {packageName} at commit {commit}");
         }
 
         var pkgbase = await _aurSearchManager.GetPackageBaseAsync(packageName);
         var tempPath = XdgPaths.ShellyCache(pkgbase);
 
-        PackageProgress?.Invoke(this, new PackageProgressEventArgs
-        {
-            PackageName = packageName,
-            CurrentIndex = 1,
-            TotalCount = 1,
-            Status = PackageProgressStatus.Building,
-            Message = "Building package with makepkg"
-        });
+        RaisePkgProgress(AlpmEventType.AurBuildStart, packageName, 1, 1, "Building package with makepkg");
 
         var pkgbuildInfo = PkgbuildParser.Parse(Path.Combine(tempPath, "PKGBUILD"));
 
@@ -1092,14 +948,8 @@ public sealed class AurPackageManager(string? configPath = null)
                 }
             }
 
-            BuildOutput?.Invoke(this, new BuildOutputEventArgs
-            {
-                PackageName = packageName,
-                Line = e.Data,
-                IsError = false,
-                Percent = percent,
-                ProgressMessage = progressMessage
-            });
+            RaiseBuildLine(packageName, e.Data, false);
+                if (percent.HasValue) RaiseBuildProgress(packageName, percent!.Value, progressMessage);
         };
 
         buildProcess.ErrorDataReceived += (_, e) =>
@@ -1109,12 +959,7 @@ public sealed class AurPackageManager(string? configPath = null)
                 return;
             }
 
-            BuildOutput?.Invoke(this, new BuildOutputEventArgs
-            {
-                PackageName = packageName,
-                Line = e.Data,
-                IsError = true
-            });
+            RaiseBuildLine(packageName, e.Data, true);
         };
         buildProcess.Start();
         buildProcess.BeginOutputReadLine();
@@ -1124,38 +969,18 @@ public sealed class AurPackageManager(string? configPath = null)
 
         if (buildProcess.ExitCode != 0)
         {
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = 1,
-                TotalCount = 1,
-                Status = PackageProgressStatus.Failed,
-                Message = "Failed to build package with makepkg"
-            });
+            RaisePkgProgress(AlpmEventType.AurPackageFailed, packageName, 1, 1, "Failed to build package with makepkg");
             throw new Exception($"Failed to build package {packageName}");
         }
 
         var pkgFile = SelectBuiltPackageFile(tempPath, packageName);
         if (pkgFile is null)
         {
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = 1,
-                TotalCount = 1,
-                Status = PackageProgressStatus.Failed,
-                Message = $"No package file matching '{packageName}' produced by makepkg"
-            });
+            RaisePkgProgress(AlpmEventType.AurPackageFailed, packageName, 1, 1, $"No package file matching '{packageName}' produced by makepkg");
             throw new Exception($"No package file matching '{packageName}' produced by makepkg");
         }
 
-        PackageProgress?.Invoke(this, new PackageProgressEventArgs
-        {
-            PackageName = packageName,
-            CurrentIndex = 1,
-            TotalCount = 1,
-            Status = PackageProgressStatus.Installing
-        });
+        RaisePkgProgress(AlpmEventType.AurInstallStart, packageName, 1, 1);
 
         _ = _alpm.InstallLocalPackage(pkgFile).Result;
         _alpm.Refresh();
@@ -1163,22 +988,10 @@ public sealed class AurPackageManager(string? configPath = null)
         // Remove build-only dependencies (makedepends/checkdepends) that were installed for this build
         if (buildOnlyDeps.Count > 0)
         {
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = 1,
-                TotalCount = 1,
-                Status = PackageProgressStatus.CleaningUp,
-                Message = $"Removing {buildOnlyDeps.Count} build-only dependencies: {string.Join(", ", buildOnlyDeps)}"
-            });
+            RaisePkgProgress(AlpmEventType.AurCleanupStart, packageName, 1, 1, $"Removing {buildOnlyDeps.Count} build-only dependencies: {string.Join(", ", buildOnlyDeps)}");
             foreach (var dep in buildOnlyDeps)
             {
-                BuildOutput?.Invoke(this, new BuildOutputEventArgs
-                {
-                    PackageName = packageName,
-                    Line = $"[Shelly] Removing build-only dependency: {dep}",
-                    IsError = false
-                });
+                RaiseBuildLine(packageName, $"[Shelly] Removing build-only dependency: {dep}", false);
             }
 
             try
@@ -1188,24 +1001,11 @@ public sealed class AurPackageManager(string? configPath = null)
             }
             catch (Exception ex)
             {
-                PackageProgress?.Invoke(this, new PackageProgressEventArgs
-                {
-                    PackageName = packageName,
-                    CurrentIndex = 1,
-                    TotalCount = 1,
-                    Status = PackageProgressStatus.CleaningUp,
-                    Message = $"Warning: Failed to remove some build dependencies: {ex.Message}"
-                });
+                RaisePkgProgress(AlpmEventType.AurCleanupStart, packageName, 1, 1, $"Warning: Failed to remove some build dependencies: {ex.Message}");
             }
         }
 
-        PackageProgress?.Invoke(this, new PackageProgressEventArgs
-        {
-            PackageName = packageName,
-            CurrentIndex = 1,
-            TotalCount = 1,
-            Status = PackageProgressStatus.Completed
-        });
+        RaisePkgProgress(AlpmEventType.AurPackageCompleted, packageName, 1, 1);
     }
 
     private static async Task<(int ExitCode, string StdOut, string StdErr)> RunProcessAsync(
@@ -1237,7 +1037,7 @@ public sealed class AurPackageManager(string? configPath = null)
     /// <see cref="RemoveCacheDirAsync"/> because <c>pkg/</c> commonly contains
     /// fakeroot-staged root-owned files. Never throws; cleanup failure is logged only.
     /// </summary>
-    private static async Task CleanBuildArtifactsAsync(string user, string tempPath)
+    private async Task CleanBuildArtifactsAsync(string user, string tempPath)
     {
         if (!Directory.Exists(tempPath)) return;
 
@@ -1253,13 +1053,13 @@ public sealed class AurPackageManager(string? configPath = null)
             var (rc2, _, rerr2) = await RunProcessAsync("rm", $"-rf {path}");
             if (rc2 != 0)
             {
-                await Console.Error.WriteLineAsync(
-                    $"[Shelly] could not clean {path}: {rerr2.Trim()} / {rerr.Trim()}");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                    $"Failed to clean up {path}: {rerr2.Trim()} / {rerr.Trim()}"));
             }
         }
     }
 
-    private static async Task<bool> RemoveCacheDirAsync(string user, string tempPath)
+    private async Task<bool> RemoveCacheDirAsync(string user, string tempPath)
     {
         if (!Directory.Exists(tempPath))
         {
@@ -1273,14 +1073,10 @@ public sealed class AurPackageManager(string? configPath = null)
         }
 
         var (rc2, _, rerr2) = await RunProcessAsync("rm", $"-rf {tempPath}");
-        if (rc2 != 0)
-        {
-            await Console.Error.WriteLineAsync(
-                $"[Shelly] could not clean cache dir {tempPath}: {rerr2.Trim()} / {rerr.Trim()}");
-            return false;
-        }
-
-        return true;
+        if (rc2 == 0) return true;
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+            $"Failed to remove cache dir {tempPath}: {rerr2.Trim()} / {rerr.Trim()}"));
+        return false;
     }
 
     private async Task<bool> DownloadPackageAtCommit(string packageName, string commit)
@@ -1301,8 +1097,9 @@ public sealed class AurPackageManager(string? configPath = null)
                 "sudo", $"-u {user} git clone {expectedRemote} {tempPath}");
             if (cc != 0)
             {
-                await Console.Error.WriteLineAsync(
-                    $"[Shelly] git clone failed for {pkgbase}: {cerr.Trim()}");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Failed to clone package {packageName} with pkgbase {pkgbase} from AUR: {cerr.Trim()}"));
+
                 return false;
             }
 
@@ -1310,8 +1107,8 @@ public sealed class AurPackageManager(string? configPath = null)
                 "sudo", $"-u {user} git checkout {commit}", tempPath);
             if (xc != 0)
             {
-                await Console.Error.WriteLineAsync(
-                    $"[Shelly] git checkout {commit} failed for {pkgbase}: {xerr.Trim()}");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Failed to checkout package {packageName} with pkgbase {pkgbase} at commit {commit}: {xerr.Trim()}"));
                 return false;
             }
 
@@ -1320,8 +1117,10 @@ public sealed class AurPackageManager(string? configPath = null)
         }
         catch (Exception ex)
         {
-            await Console.Error.WriteLineAsync(
-                $"[Shelly] DownloadPackageAtCommit failed for {packageName}: {ex.Message}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Failed to download package {packageName} at commit {commit}: {ex.Message}"));
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                ex.StackTrace ?? "No stack trace available"));
             return false;
         }
     }
@@ -1334,8 +1133,8 @@ public sealed class AurPackageManager(string? configPath = null)
             var pkgbase = await _aurSearchManager.GetPackageBaseAsync(packageName);
             var tempPath = XdgPaths.ShellyCache(pkgbase);
             var expectedRemote = $"https://aur.archlinux.org/{pkgbase}.git";
-            await Console.Error.WriteLineAsync($"Downloading {pkgbase} from AUR");
-
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                $"Downloading package {packageName} with pkgbase {pkgbase} from AUR: {expectedRemote}"));
             var hasGit = Directory.Exists(Path.Combine(tempPath, ".git"));
             var remoteOk = false;
             if (hasGit)
@@ -1353,8 +1152,9 @@ public sealed class AurPackageManager(string? configPath = null)
                     "sudo", $"-u {user} git -C {tempPath} pull --ff-only");
                 if (pc != 0)
                 {
-                    await Console.Error.WriteLineAsync(
-                        $"[Shelly] git pull failed for {pkgbase} (likely divergent history). Attempting fresh clone...");
+                    InformationalEvent?.Invoke(this,
+                        new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                            $"Git pull failed for {pkgbase} (likely divergent history). Attempting fresh clone..."));
                     needsClone = true;
                 }
             }
@@ -1378,8 +1178,8 @@ public sealed class AurPackageManager(string? configPath = null)
                     "sudo", $"-u {user} git clone {expectedRemote} {tempPath}");
                 if (cc != 0)
                 {
-                    await Console.Error.WriteLineAsync(
-                        $"[Shelly] git clone failed for {pkgbase}: {cerr.Trim()}");
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                        $"Failed to clone package {packageName} with pkgbase {pkgbase} from AUR: {cerr.Trim()}"));
                     return false;
                 }
             }
@@ -1389,8 +1189,10 @@ public sealed class AurPackageManager(string? configPath = null)
         }
         catch (Exception ex)
         {
-            await Console.Error.WriteLineAsync(
-                $"[Shelly] DownloadPackage failed for {packageName}: {ex.Message}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                $"Failed to download package {packageName} from AUR: {ex.Message}"));
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                ex.StackTrace ?? "No stack trace available"));
             return false;
         }
     }
@@ -1429,7 +1231,10 @@ public sealed class AurPackageManager(string? configPath = null)
         catch (Exception ex)
         {
             // Log but don't fail initialization if cache import fails
-            await Console.Error.WriteLineAsync($"Warning: Failed to import AUR helper caches: {ex.Message}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Failed to import foreign AUR package data: {ex.Message}"));
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                ex.StackTrace ?? "No stack trace available"));
         }
     }
 
@@ -1523,7 +1328,10 @@ public sealed class AurPackageManager(string? configPath = null)
         }
         catch (Exception ex)
         {
-            await Console.Error.WriteLineAsync($"Warning: Failed to import from {sourceCachePath}: {ex.Message}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Failed to import foreign AUR package data from {sourceCachePath}: {ex.Message}"));
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                ex.StackTrace ?? "No stack trace available"));
         }
     }
 
@@ -1537,11 +1345,13 @@ public sealed class AurPackageManager(string? configPath = null)
             .ToList();
         var depsToInstall = allDeps.Where(x => !_alpm.IsDependencySatisfiedByInstalled(x.ToString())).ToList();
         var satisfiedDeps = allDeps.Where(x => _alpm.IsDependencySatisfiedByInstalled(x.ToString())).ToList();
-        Console.Error.WriteLine(
-            $"[DEBUG] Total deps: {allDeps.Count}, Satisfied: {satisfiedDeps.Count}, To install: {depsToInstall.Count}");
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+            $"Total dependencies: {allDeps.Count}, satisfied: {satisfiedDeps.Count}, to install: {depsToInstall.Count}"));
+
         foreach (var dep in satisfiedDeps)
         {
-            Console.Error.WriteLine($"[DEBUG] Already satisfied: {dep}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                $"Dependency satisfied (skipping install): {dep}"));
         }
 
         var alpmPackages = new List<string>();
@@ -1549,15 +1359,19 @@ public sealed class AurPackageManager(string? configPath = null)
 
         foreach (var dep in depsToInstall)
         {
-            var repoName = _alpm.FindSatisfierInSyncDbs(dep.ToString());
-            if (repoName != null)
+            var match = _alpm.FindSatisfierInSyncDbsEx(dep.ToString());
+            if (match is { } m)
             {
-                Console.Error.WriteLine($"[DEBUG] Need: {dep} -> repo:{repoName}");
-                alpmPackages.Add(repoName);
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    m.ViaProvides
+                        ? $"Need: {dep} from {m.RealName} (matched via provides=)"
+                        : $"Need: {dep} from {m.RealName}"));
+                alpmPackages.Add(m.RealName);
             }
             else
             {
-                Console.Error.WriteLine($"[DEBUG] Need: {dep} -> AUR");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Need: {dep} from AUR (no repo satisfier)"));
                 aurPackages.Add(dep);
             }
         }
@@ -1586,12 +1400,14 @@ public sealed class AurPackageManager(string? configPath = null)
     {
         var (repoPackages, aurPackages) = ResolveDependencies(pkgbuildInfo);
 
-        Console.Error.WriteLine($"[DEBUG] {pkgbuildInfo.PkgName}: repo={repoPackages.Count}, aur={aurPackages.Count}");
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+            $"{pkgbuildInfo.PkgName}: repo={repoPackages.Count}, aur={aurPackages.Count}"));
 
         allRepoPackages.AddRange(repoPackages);
 
-        foreach (var aurDep in aurPackages)
+        foreach (var originalAurDep in aurPackages)
         {
+            var aurDep = originalAurDep;
             if (!visited.Add(aurDep.Name))
             {
                 continue;
@@ -1600,8 +1416,63 @@ public sealed class AurPackageManager(string? configPath = null)
             var success = DownloadPackage(aurDep.Name).Result;
             if (!success)
             {
-                Console.Error.WriteLine($"[Shelly] Failed to download {aurDep.Name}");
-                continue;
+                // The literal dep name doesn't exist as an AUR package; try to
+                // resolve it through `provides=` to honor virtual/renamed deps
+                // (e.g. `python-trayer` → `python-trayer-git`). See issue #880.
+                var providers = _aurSearchManager.FindProvidersAsync(aurDep.Name).GetAwaiter().GetResult();
+                string? chosenProvider = null;
+                if (providers.Count == 1)
+                {
+                    chosenProvider = providers[0];
+                }
+                else if (providers.Count > 1)
+                {
+                    List<ProviderOption> availableProviders = [];
+                    foreach (var provider in providers)
+                    {
+                        var isInstalled = _alpm.IsPackageInstalled(provider);
+                        availableProviders.Add(new ProviderOption(provider, "No Description", isInstalled));
+                    }
+
+                    var qArgs = new AlpmQuestionEventArgs(
+                        AlpmQuestionType.SelectProvider,
+                        $"Multiple AUR providers for '{aurDep.Name}'",
+                        availableProviders,
+                        aurDep.Name);
+                    _alpm.RaiseQuestion(qArgs);
+                    qArgs.WaitForResponse();
+                    chosenProvider = qArgs.Response.ProviderOptions?
+                        .Where(x => x.IsSelected)
+                        .Select(x => x.Name)
+                        .FirstOrDefault() ?? providers[0];
+                }
+
+                if (chosenProvider == null || string.Equals(chosenProvider, aurDep.Name, StringComparison.Ordinal))
+                {
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                        $"Failed to download {aurDep.Name} from AUR"));
+                    continue;
+                }
+
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Resolved virtual AUR dep '{aurDep.Name}' via provider '{chosenProvider}'"));
+
+                if (!visited.Add(chosenProvider))
+                {
+                    continue;
+                }
+
+                success = DownloadPackage(chosenProvider).Result;
+                if (!success)
+                {
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                        $"Failed to download provider {chosenProvider} from AUR"));
+                    continue;
+                }
+
+                // Remap the dep to the real provider package so downstream build/install
+                // operates on the actual AUR package name.
+                aurDep = new ParsedDependency(chosenProvider, aurDep.Operator, aurDep.Version);
             }
 
             var tempPath = XdgPaths.ShellyCache(aurDep.Name);
@@ -1612,9 +1483,8 @@ public sealed class AurPackageManager(string? configPath = null)
                 var aurVersion = depPkgbuildInfo.GetFullVersion();
                 if (!aurDep.IsSatisifiedBy(aurVersion))
                 {
-                    Console.Error.WriteLine(
-                        $"[Shelly] AUR package {aurDep.Name} version {aurVersion} " +
-                        $"does not satisfy {aurDep}. Skipping.");
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                        $"AUR dependency {aurDep.Name} is not satisfied by {aurVersion} Skipping..."));
                     continue;
                 }
             }
@@ -1637,14 +1507,7 @@ public sealed class AurPackageManager(string? configPath = null)
         {
             var pkgbase = _aurSearchManager.GetPackageBaseAsync(packageName).GetAwaiter().GetResult();
             var tempPath = XdgPaths.ShellyCache(pkgbase);
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = 1,
-                TotalCount = 1,
-                Status = PackageProgressStatus.Building,
-                Message = "Building package with makepkg"
-            });
+            RaisePkgProgress(AlpmEventType.AurBuildStart, packageName, 1, 1, "Building package with makepkg");
 
             if (_useChroot)
             {
@@ -1671,14 +1534,8 @@ public sealed class AurPackageManager(string? configPath = null)
                     }
                 }
 
-                BuildOutput?.Invoke(this, new BuildOutputEventArgs
-                {
-                    PackageName = packageName,
-                    Line = e.Data,
-                    IsError = false,
-                    Percent = percent,
-                    ProgressMessage = progressMessage
-                });
+                RaiseBuildLine(packageName, e.Data, false);
+                if (percent.HasValue) RaiseBuildProgress(packageName, percent!.Value, progressMessage);
             };
 
             buildProcess.ErrorDataReceived += (_, e) =>
@@ -1688,12 +1545,7 @@ public sealed class AurPackageManager(string? configPath = null)
                     return;
                 }
 
-                BuildOutput?.Invoke(this, new BuildOutputEventArgs
-                {
-                    PackageName = packageName,
-                    Line = e.Data,
-                    IsError = true
-                });
+                RaiseBuildLine(packageName, e.Data, true);
             };
 
             buildProcess.Start();
@@ -1702,15 +1554,16 @@ public sealed class AurPackageManager(string? configPath = null)
             buildProcess.WaitForExit();
             if (buildProcess.ExitCode != 0)
             {
-                Console.Error.WriteLine(
-                    $"[Shelly] Failed to build AUR dependency: {packageName} (exit code {buildProcess.ExitCode})");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Failed to build {packageName} with makepkg: {buildProcess.StandardError.ReadToEnd()}"));
                 return;
             }
 
             var pkgFile = SelectBuiltPackageFile(tempPath, packageName);
             if (pkgFile is null)
             {
-                Console.Error.WriteLine($"[Shelly] No package file matching '{packageName}' produced by makepkg");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"No package file found for {packageName} in {tempPath} produced by makepkg"));
                 return;
             }
 
@@ -1728,8 +1581,8 @@ public sealed class AurPackageManager(string? configPath = null)
         List<ParsedDependency> orderedAurPackages,
         AlpmTransFlag flags = AlpmTransFlag.None)
     {
-        Console.Error.WriteLine(
-            $"[Shelly] Installing collected dependencies: {allRepoPackages.Count} repo, {orderedAurPackages.Count} AUR");
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+            $"Installing collected dependencies: {allRepoPackages.Count} repo packages, {orderedAurPackages.Count} AUR packages"));
         if (allRepoPackages.Count > 0)
         {
             _alpm.Refresh();
@@ -1748,7 +1601,8 @@ public sealed class AurPackageManager(string? configPath = null)
         var packageName = package.Name;
         if (!_currentlyInstallingAurDeps.Add(packageName))
         {
-            Console.Error.WriteLine($"[Shelly] Skipping {packageName} - circular dependency detected");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Skipping {packageName} - circular dependency detected"));
             return;
         }
 
@@ -1757,48 +1611,29 @@ public sealed class AurPackageManager(string? configPath = null)
             var success = DownloadPackage(packageName).Result;
             if (!success)
             {
-                PackageProgress?.Invoke(this, new PackageProgressEventArgs
-                {
-                    PackageName = packageName,
-                    CurrentIndex = 1,
-                    TotalCount = 1,
-                    Status = PackageProgressStatus.Failed,
-                    Message = "Failed to download package"
-                });
+                RaisePkgProgress(AlpmEventType.AurPackageFailed, packageName, 1, 1, "Failed to download package");
                 return;
             }
 
             var pkgbase = _aurSearchManager.GetPackageBaseAsync(packageName).GetAwaiter().GetResult();
             var tempPath = XdgPaths.ShellyCache(pkgbase);
-            PackageProgress?.Invoke(this, new PackageProgressEventArgs
-            {
-                PackageName = packageName,
-                CurrentIndex = 1,
-                TotalCount = 1,
-                Status = PackageProgressStatus.Building,
-                Message = "Building package with makepkg"
-            });
+            RaisePkgProgress(AlpmEventType.AurBuildStart, packageName, 1, 1, "Building package with makepkg");
             var pkgbuildInfo = PkgbuildParser.Parse(Path.Combine(tempPath, "PKGBUILD"));
             if (package.Operator != null)
             {
                 var aurVersion = pkgbuildInfo.GetFullVersion();
                 if (!package.IsSatisifiedBy(aurVersion))
                 {
-                    Console.Error.WriteLine(
-                        $"[Shelly] AUR package {packageName} version {aurVersion} " +
-                        $"does not satisfy {package}. Skipping build.");
-                    PackageProgress?.Invoke(this, new PackageProgressEventArgs
-                    {
-                        PackageName = packageName,
-                        CurrentIndex = 1,
-                        TotalCount = 1,
-                        Status = PackageProgressStatus.Failed,
-                        Message = $"Version {aurVersion} does not satisfy {package}"
-                    });
+                    InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                        $"AUR dependency {packageName} is not satisfied by {aurVersion} Skipping..."));
+                    RaisePkgProgress(AlpmEventType.AurPackageFailed, packageName, 1, 1, $"Version {aurVersion} does not satisfy {package}");
                     return;
                 }
             }
 
+            // Refresh sync DBs before resolving recursive AUR dep tree, otherwise
+            // a stale local sync DB can cause real repo deps to be misrouted to AUR.
+            _alpm.Refresh();
             var (allRepoPackages, orderedAurPackages) = CollectAllDependencies(pkgbuildInfo);
             InstallCollectedDependencies(allRepoPackages, orderedAurPackages, AlpmTransFlag.AllDeps);
 
@@ -1827,14 +1662,8 @@ public sealed class AurPackageManager(string? configPath = null)
                     }
                 }
 
-                BuildOutput?.Invoke(this, new BuildOutputEventArgs
-                {
-                    PackageName = packageName,
-                    Line = e.Data,
-                    IsError = false,
-                    Percent = percent,
-                    ProgressMessage = progressMessage
-                });
+                RaiseBuildLine(packageName, e.Data, false);
+                if (percent.HasValue) RaiseBuildProgress(packageName, percent!.Value, progressMessage);
             };
 
             buildProcess.ErrorDataReceived += (_, e) =>
@@ -1844,12 +1673,7 @@ public sealed class AurPackageManager(string? configPath = null)
                     return;
                 }
 
-                BuildOutput?.Invoke(this, new BuildOutputEventArgs
-                {
-                    PackageName = packageName,
-                    Line = e.Data,
-                    IsError = true
-                });
+                RaiseBuildLine(packageName, e.Data, true);
             };
 
             buildProcess.Start();
@@ -1858,15 +1682,16 @@ public sealed class AurPackageManager(string? configPath = null)
             buildProcess.WaitForExit();
             if (buildProcess.ExitCode != 0)
             {
-                Console.Error.WriteLine(
-                    $"[Shelly] Failed to build AUR dependency: {packageName} (exit code {buildProcess.ExitCode})");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"Failed to build {packageName} with makepkg exit code: {buildProcess.ExitCode}"));
                 return;
             }
 
             var pkgFile = SelectBuiltPackageFile(tempPath, packageName);
             if (pkgFile is null)
             {
-                Console.Error.WriteLine($"[Shelly] No package file matching '{packageName}' produced by makepkg");
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                    $"No package file found for {packageName} in {tempPath} produced by makepkg"));
                 return;
             }
 
@@ -1942,7 +1767,11 @@ public sealed class AurPackageManager(string? configPath = null)
     private System.Diagnostics.Process CreateBuildProcess(string tempPath,
         string? makepkgArgs = null)
     {
-        makepkgArgs ??= "-f -c --noconfirm --skippgpcheck" + (_noCheck ? " --nocheck" : "");
+        // Use `-s --needed` as defense-in-depth: if Shelly's resolver ever misses a repo dep,
+        // makepkg itself will install it via pacman instead of aborting with
+        // "could not resolve all dependencies". `--needed` makes this a no-op when Shelly
+        // already installed everything. See issue #880 follow-up.
+        makepkgArgs ??= "-f -c -s --noconfirm --needed --skippgpcheck" + (_noCheck ? " --nocheck" : "");
         if (_useChroot)
         {
             return new System.Diagnostics.Process
@@ -2050,7 +1879,7 @@ public sealed class AurPackageManager(string? configPath = null)
     /// <summary>
     /// Runs git ls-remote to get the current commit SHA for a given URL and branch.
     /// </summary>
-    private static async Task<string?> GetRemoteCommitSha(string url, string branch, int timeoutSeconds = 15)
+    private async Task<string?> GetRemoteCommitSha(string url, string branch, int timeoutSeconds = 15)
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         try
@@ -2085,7 +1914,8 @@ public sealed class AurPackageManager(string? configPath = null)
         }
         catch (OperationCanceledException)
         {
-            await Console.Error.WriteLineAsync($"Timeout checking git remote: {url}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.DebugOutput,
+                $"Timeout checking git remove {url}"));
             return null;
         }
         catch
@@ -2124,7 +1954,8 @@ public sealed class AurPackageManager(string? configPath = null)
         }
         catch (Exception ex)
         {
-            await Console.Error.WriteLineAsync($"Warning: Failed to update VCS store for {packageName}: {ex.Message}");
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                $"Failed to update VCS info store for {packageName}: {ex.Message}"));
         }
     }
 

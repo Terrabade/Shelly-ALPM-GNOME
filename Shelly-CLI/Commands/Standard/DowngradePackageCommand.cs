@@ -184,14 +184,8 @@ public partial class DowngradePackageCommand : AsyncCommand<DowngradePackageComm
         }
 
         AnsiConsole.MarkupLine("[yellow]Installing package...[/]");
-
-        var cfg = ConfigManager.ReadConfig();
-        var useSinglePane = settings.SinglePane
-                            || string.Equals(cfg.OutputMode, "singlepane", StringComparison.OrdinalIgnoreCase)
-                            || Console.IsOutputRedirected;
-        var isSuccess = useSinglePane
-            ? await StandardSinglePaneOutput.Output(manager, m => m.InstallLocalPackage(filePath), settings.NoConfirm)
-            : await SplitOutput.Output(manager, m => m.InstallLocalPackage(filePath), settings.NoConfirm);
+        
+        var isSuccess = await StandardSinglePaneOutput.Output(manager, m => m.InstallLocalPackage(filePath), settings.NoConfirm);
 
         if (selection.Location == Location.Remote && File.Exists(filePath)) File.Delete(filePath);
 

@@ -1,6 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using PackageManager.Wire;
 using Shelly_CLI.Utility;
+using Shelly.Utilities.Eventing;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -23,7 +25,8 @@ public class VersionCommand : Command
     private static int HandleUiModeVersion()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(4) ?? "unknown";
-        Console.WriteLine($"shelly version {version}");
+        JsonPackFrame.WriteToStdout<Event>(new AlpmInformationalEvent(
+            AlpmEvents.InformationalOutput, $"shelly version {version}"));
         return 0;
     }
 }
