@@ -8,6 +8,7 @@ internal sealed class EventRouter
 {
     private readonly IAlpmEventService? _alpmEventService;
     private readonly ILockoutService? _lockoutService;
+    private readonly Dictionary<string, (ProgressType type, int percent)> _lastProgress = new();
 
     public EventRouter(IAlpmEventService? alpmEventService = null, ILockoutService? lockoutService = null)
     {
@@ -38,6 +39,12 @@ internal sealed class EventRouter
                 Log($"[REPLACE] {e.Repository}/{e.PackageName} replaces {string.Join(", ", e.Replaces)}");
                 break;
             case AlpmPackageProgressEvent e:
+                var key = e.PackageName ?? string.Empty;
+                if (_lastProgress.TryGetValue(key, out var prev)
+                    && prev.type == e.ProgressType
+                    && prev.percent == e.Percent)
+                    break;
+                _lastProgress[key] = (e.ProgressType, e.Percent);
                 var label = string.IsNullOrEmpty(e.Message)
                     ? $"{e.PackageName}: {e.Percent}% - {e.ProgressType}"
                     : $"{e.PackageName}: {e.Percent}% - {e.Message}";
