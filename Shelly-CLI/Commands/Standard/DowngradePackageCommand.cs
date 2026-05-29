@@ -4,9 +4,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using PackageManager.Alpm;
-using PackageManager.Wire;
-using Shelly_CLI.Configuration;
 using Shelly_CLI.ConsoleLayouts;
+using Shelly_CLI.Utility;
 using Shelly.Utilities;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -34,13 +33,7 @@ public partial class DowngradePackageCommand : AsyncCommand<DowngradePackageComm
     {
         if (Program.IsUiMode) return await HandleUiModeDowngradeAsync(settings);
 
-        if (settings is { UseNewest: true, UseOldest: true })
-        {
-            AnsiConsole.MarkupLine("[red]Error: Cannot use both --latest and --oldest.[/]");
-            return 1;
-        }
-
-        if (!string.IsNullOrWhiteSpace(settings.Target) && (settings.UseNewest || settings.UseOldest))
+        if (!string.IsNullOrWhiteSpace(settings.Target) && (settings.UseOldest))
         {
             AnsiConsole.MarkupLine("[red]Error: Cannot combine --target with --latest or --oldest.[/]");
             return 1;
@@ -184,8 +177,9 @@ public partial class DowngradePackageCommand : AsyncCommand<DowngradePackageComm
         }
 
         AnsiConsole.MarkupLine("[yellow]Installing package...[/]");
-        
-        var isSuccess = await StandardSinglePaneOutput.Output(manager, m => m.InstallLocalPackage(filePath), settings.NoConfirm);
+
+        var isSuccess =
+            await StandardSinglePaneOutput.Output(manager, m => m.InstallLocalPackage(filePath), settings.NoConfirm);
 
         if (selection.Location == Location.Remote && File.Exists(filePath)) File.Delete(filePath);
 
@@ -230,7 +224,7 @@ public partial class DowngradePackageCommand : AsyncCommand<DowngradePackageComm
     private static PackageInfo SelectPackageVersion(DowngradePackageCommandSettings settings,
         List<PackageInfo> packageInfos)
     {
-        var isAutoSelect = settings.NoConfirm || settings.UseNewest || settings.UseOldest;
+        var isAutoSelect = settings.NoConfirm || settings.UseOldest;
         var preSelectedPackage = settings.UseOldest ? packageInfos[^1] : packageInfos[0];
 
         return isAutoSelect
@@ -395,7 +389,7 @@ public partial class DowngradePackageCommand : AsyncCommand<DowngradePackageComm
     {
         if (settings.Packages.Length != 1)
         {
-            await Console.Error.WriteLineAsync("UI mode downgrade requires exactly one package.");
+            UiFrames.Error("UI mode downgrade requires exactly one package.");
             return 1;
         }
 
@@ -407,7 +401,7 @@ public partial class DowngradePackageCommand : AsyncCommand<DowngradePackageComm
             var package = manager.GetInstalledPackage(settings.Packages[0]);
             if (package == null)
             {
-                await Console.Error.WriteLineAsync($"Package '{settings.Packages[0]}' is not installed.");
+                UiFrames.Error($"Package '{settings.Packages[0]}' is not installed.");
                 return 1;
             }
 
@@ -418,7 +412,7 @@ public partial class DowngradePackageCommand : AsyncCommand<DowngradePackageComm
             }
             catch (Exception ex)
             {
-                await Console.Error.WriteLineAsync($"Failed to fetch remote downgrade options: {ex.Message}");
+                UiFrames.Error($"Failed to fetch package version options: {ex.Message}");
                 packages = [];
             }
 
@@ -430,7 +424,7 @@ public partial class DowngradePackageCommand : AsyncCommand<DowngradePackageComm
                 .Select(p => new DowngradeOptionDto(p.Name, p.Filename, p.Location.ToString(), p.IsInstalled))
                 .ToList();
 
-            JsonPackFrame.WriteToStdout(options);
+            UiFrames.Frame(options);
             return 0;
         }
 
@@ -442,7 +436,7 @@ public partial class DowngradePackageCommand : AsyncCommand<DowngradePackageComm
             var package = manager.GetInstalledPackage(settings.Packages[0]);
             if (package == null)
             {
-                await Console.Error.WriteLineAsync($"Package '{settings.Packages[0]}' is not installed.");
+                UiFrames.Error($"Package '{settings.Packages[0]}' is not installed.");
                 return 1;
             }
 
@@ -453,7 +447,7 @@ public partial class DowngradePackageCommand : AsyncCommand<DowngradePackageComm
             }
             catch (Exception ex)
             {
-                await Console.Error.WriteLineAsync($"Failed to resolve downgrade target: {ex.Message}");
+                UiFrames.Error($"Failed to resolve downgrade target: {ex.Message}");
                 return 1;
             }
 
@@ -469,30 +463,43 @@ public partial class DowngradePackageCommand : AsyncCommand<DowngradePackageComm
             }
             catch (Exception ex)
             {
-                await Console.Error.WriteLineAsync($"Failed to download package: {ex.Message}");
+                UiFrames.Error($"Failed to download package: {ex.Message}");
                 return 1;
             }
 
-            var isSuccess = await StandardSinglePaneOutput.Output(manager, m => m.InstallLocalPackage(filePath), true);
+            UiFrames.TxStart($"Installing {selection.Name} {selection.Filename}...");
 
-            if (selection.Location == Location.Remote && File.Exists(filePath))
-                File.Delete(filePath);
+            var isSuccess = await UiModeOutput.Run(manager,
+                m => m.InstallLocalPackage(Path.GetFullPath(filePath)));
 
             if (!isSuccess)
             {
-                await Console.Error.WriteLineAsync("Downgrade failed.");
+                UiFrames.TxFailed("Downgrade failed.");
                 return 1;
             }
+
+            if (selection.Location == Location.Remote && File.Exists(filePath))
+                try
+                {
+                    File.Delete(filePath);
+                }
+                catch (Exception e)
+                {
+                    UiFrames.Error($"Failed to remove downloaded tmp package: {e.Message}");
+                }
 
             if (settings.AddIgnore)
                 try
                 {
+                    UiFrames.Info($"Adding {selection.Name} to IgnorePkg list.");
                     manager.IgnorePackage(selection.Name);
                 }
                 catch (Exception ex)
                 {
-                    await Console.Error.WriteLineAsync($"Failed to add package to IgnorePkg: {ex.Message}");
+                    UiFrames.Error($"Failed to add package to IgnorePkg list: {ex.Message}");
                 }
+
+            UiFrames.TxDone("Package downgraded successfully!");
 
             return 0;
         }

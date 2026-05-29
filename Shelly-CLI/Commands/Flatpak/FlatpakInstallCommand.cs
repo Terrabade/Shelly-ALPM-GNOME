@@ -32,7 +32,7 @@ public class FlatpakInstallCommand : Command<FlatpakPackageSettings>
         var manager = new FlatpakManager();
         manager.FlatpakEvent += (sender, args) => UiFrames.Info(args.Message);
         manager.InstallApp(settings.Packages, settings.Remote, settings.IsUser);
-        UiFrames.Done(true, "Flatpak install complete.", "Flatpak install failed.");
+        UiFrames.TxFinish(true, "Flatpak install complete.", "Flatpak install failed.");
         return 0;
     }
 }

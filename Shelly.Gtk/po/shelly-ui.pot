@@ -1285,3 +1285,30 @@ msgstr ""
 
 msgid "Unable to load package data. You may have a db.lck."
 msgstr ""
+
+msgid "Downgrade Selected"
+msgstr ""
+
+msgid "Downgrade selected packages one by one"
+msgstr ""
+
+msgid "No downgrade options found for {0}"
+msgstr ""
+
+msgid "Downgrading {0}..."
+msgstr ""
+
+msgid "Downgraded {0} Package(s)"
+msgstr ""
+
+msgid "Downgrade: {0}"
+msgstr ""
+
+msgid "Select version:"
+msgstr ""
+
+msgid "Add to IgnorePkg list"
+msgstr ""
+
+msgid "Downgrade"
+msgstr ""

@@ -32,7 +32,7 @@ public class FlatpakKillCommand : Command<FlatpakPackageSettings>
         var manager = new FlatpakManager();
         manager.FlatpakEvent += (sender, args) => UiFrames.Info(args.Message);
         manager.KillApp(settings.Packages);
-        UiFrames.Done(true, "Flatpak app killed.", "Failed to kill flatpak app.");
+        UiFrames.TxFinish(true, "Flatpak app killed.", "Failed to kill flatpak app.");
         return 0;
     }
 }

@@ -53,7 +53,7 @@ public class KeyringPopulateCommand : Command<KeyringSettings>
         }
 
         var result = PacmanKeyRunner.Run(args);
-        UiFrames.Done(result == 0, "Keyring populated successfully!", "Failed to populate keyring.");
+        UiFrames.TxFinish(result == 0, "Keyring populated successfully!", "Failed to populate keyring.");
         return result;
     }
 }

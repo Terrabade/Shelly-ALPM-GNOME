@@ -1,8 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using PackageManager.Alpm;
-using PackageManager.Wire;
-using Shelly.Utilities.Eventing;
+using Shelly_CLI.Utility;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -19,10 +18,10 @@ public class IgnoreListCommand : Command<IgnoreListSettings>
 
         if (Program.IsUiMode)
         {
-            JsonPackFrame.WriteToStdout(ignoredPackages);
-            JsonPackFrame.WriteToStdout<Event>(new AlpmInformationalEvent(
-                AlpmEvents.InformationalOutput,
-                ignoredPackages.Count == 0 ? "IgnorePkg list is empty." : $"Total: {ignoredPackages.Count} ignored packages"));
+            UiFrames.Frame(ignoredPackages);
+            UiFrames.Info(ignoredPackages.Count == 0
+                ? "IgnorePkg list is empty."
+                : $"Total: {ignoredPackages.Count} ignored packages");
             return 0;
         }
 

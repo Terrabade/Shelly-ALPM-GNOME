@@ -59,7 +59,7 @@ public class AppImageInstallCommand : AsyncCommand<AppImageSettings>
             }
 
             if (Program.IsUiMode)
-                UiFrames.Done(result == 0, "Successfully installed appimage.", "Failed to install appimage.");
+                UiFrames.TxFinish(result == 0, "Successfully installed appimage.", "Failed to install appimage.");
             else
                 AnsiConsole.MarkupLine(result == 0
                     ? "[green]Successfully installed appimage.[/]"
