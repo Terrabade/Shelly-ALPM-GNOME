@@ -1800,13 +1800,11 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
 
     public bool IsDependencySatisfiedByInstalled(string dependency)
     {
-        Console.WriteLine($"IsDependencySatisfiedByInstalled {dependency}");
         if (_handle == IntPtr.Zero) Initialize();
         var localDbPtr = GetLocalDb(_handle);
         var pkgCache = DbGetPkgCache(localDbPtr);
         var pkgPtr = PkgFindSatisfier(pkgCache, dependency);
         var result = pkgPtr != IntPtr.Zero;
-        Console.WriteLine($"IsDependencySatisfiedByInstalled {dependency} {result}");
         return result;
     }
 
