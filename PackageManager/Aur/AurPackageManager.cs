@@ -230,50 +230,9 @@ public sealed class AurPackageManager(string? configPath = null)
 
     public async Task UpdatePackages(List<string> packageNames)
     {
-        var packagesToUpdate = new List<string>();
-
-        foreach (var packageName in packageNames)
-        {
-            // Check if there's an existing PKGBUILD (cached from previous install)
-            var tempPath = XdgPaths.ShellyCache(packageName);
-            var cachedPkgbuildPath = Path.Combine(tempPath, "PKGBUILD");
-            string? oldPkgbuild = null;
-
-            if (File.Exists(cachedPkgbuildPath))
-            {
-                oldPkgbuild = await File.ReadAllTextAsync(cachedPkgbuildPath);
-            }
-
-            // Fetch the new PKGBUILD from AUR
-            var newPkgbuild = await FetchPkgbuildAsync(packageName);
-
-            if (oldPkgbuild != null && newPkgbuild != null && PkgbuildDiffRequest != null)
-            {
-                var args = new PkgbuildDiffRequestEventArgs
-                {
-                    PackageName = packageName,
-                    OldPkgbuild = oldPkgbuild,
-                    NewPkgbuild = newPkgbuild,
-                    ProceedWithUpdate = true
-                };
-
-                PkgbuildDiffRequest.Invoke(this, args);
-
-                if (!args.ProceedWithUpdate)
-                {
-                    continue;
-                }
-            }
-
-            packagesToUpdate.Add(packageName);
-        }
-
-        if (packagesToUpdate.Count > 0)
-        {
-            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
-                $"Updating {packagesToUpdate.Count} packages: {string.Join(", ", packagesToUpdate)}"));
-            await InstallPackages(packagesToUpdate);
-        }
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+            $"Updating {packageNames.Count} packages: {string.Join(", ", packageNames)}"));
+        await InstallPackages(packageNames);
     }
 
     public async Task<string?> FetchPkgbuildAsync(string packageName)
@@ -389,23 +348,11 @@ public sealed class AurPackageManager(string? configPath = null)
             var packageName = packageNames[i];
 
             RaisePkgProgress(AlpmEventType.AurDownloadStart, packageName, i + 1, totalCount);
-            var newPkgbuild = await FetchPkgbuildAsync(packageName);
-            var args = new PkgbuildDiffRequestEventArgs
-            {
-                PackageName = packageName,
-                OldPkgbuild = string.Empty,
-                NewPkgbuild = newPkgbuild ?? string.Empty,
-                ProceedWithUpdate = true
-            };
-            PkgbuildDiffRequest?.Invoke(this, args);
 
-            if (!args.ProceedWithUpdate)
-            {
-                continue;
-            }
+            var proceed = await ShouldProceedWithPkgbuildAsync(packageName);
+            if (!proceed) continue;
 
             var success = await DownloadPackage(packageName);
-
             if (!success)
             {
                 RaisePkgProgress(AlpmEventType.AurPackageFailed, packageName, i + 1, totalCount, "Failed to download package");
@@ -433,7 +380,7 @@ public sealed class AurPackageManager(string? configPath = null)
                    
                     if (!Regex.IsMatch(name, @"^[a-zA-Z0-9@._+][a-zA-Z0-9@._+\-]*$"))
                     {
-                        System.Console.Error.WriteLine(
+                        await Console.Error.WriteLineAsync(
                             $"[Shelly] Ignoring malformed optdepend token from PKGBUILD: '{pkg}' (parsed name='{name}')");
                         continue;
                     }
@@ -579,7 +526,7 @@ public sealed class AurPackageManager(string? configPath = null)
                 }
 
                 RaiseBuildLine(packageName, e.Data, false);
-                if (percent.HasValue) RaiseBuildProgress(packageName, percent!.Value, progressMessage);
+                if (percent.HasValue) RaiseBuildProgress(packageName, percent.Value, progressMessage);
             };
 
             buildProcess.ErrorDataReceived += (_, e) =>
@@ -956,7 +903,7 @@ public sealed class AurPackageManager(string? configPath = null)
             }
 
             RaiseBuildLine(packageName, e.Data, false);
-                if (percent.HasValue) RaiseBuildProgress(packageName, percent!.Value, progressMessage);
+                if (percent.HasValue) RaiseBuildProgress(packageName, percent.Value, progressMessage);
         };
 
         buildProcess.ErrorDataReceived += (_, e) =>
@@ -1542,7 +1489,7 @@ public sealed class AurPackageManager(string? configPath = null)
                 }
 
                 RaiseBuildLine(packageName, e.Data, false);
-                if (percent.HasValue) RaiseBuildProgress(packageName, percent!.Value, progressMessage);
+                if (percent.HasValue) RaiseBuildProgress(packageName, percent.Value, progressMessage);
             };
 
             buildProcess.ErrorDataReceived += (_, e) =>
@@ -1670,7 +1617,7 @@ public sealed class AurPackageManager(string? configPath = null)
                 }
 
                 RaiseBuildLine(packageName, e.Data, false);
-                if (percent.HasValue) RaiseBuildProgress(packageName, percent!.Value, progressMessage);
+                if (percent.HasValue) RaiseBuildProgress(packageName, percent.Value, progressMessage);
             };
 
             buildProcess.ErrorDataReceived += (_, e) =>
@@ -1971,5 +1918,39 @@ public sealed class AurPackageManager(string? configPath = null)
     private static bool IsVcsPackage(string packageName)
     {
         return VcsSuffixes.Any(suffix => packageName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<string?> ReadCachedPkgbuildAsync(string packageName)
+    {
+        var pkgbase = await _aurSearchManager.GetPackageBaseAsync(packageName);
+        var cachedPkgbuildPath = Path.Combine(XdgPaths.ShellyCache(pkgbase), "PKGBUILD");
+
+        return File.Exists(cachedPkgbuildPath)
+            ? await File.ReadAllTextAsync(cachedPkgbuildPath)
+            : null;
+    }
+
+    private bool RequestPkgbuildApproval(string packageName, string? oldPkgbuild, string? newPkgbuild)
+    {
+        if (PkgbuildDiffRequest is null) return true;
+
+        var args = new PkgbuildDiffRequestEventArgs
+        {
+            PackageName = packageName,
+            OldPkgbuild = oldPkgbuild ?? string.Empty,
+            NewPkgbuild = newPkgbuild ?? string.Empty,
+            ProceedWithUpdate = true
+        };
+
+        PkgbuildDiffRequest.Invoke(this, args);
+        return args.ProceedWithUpdate;
+    }
+
+    private async Task<bool> ShouldProceedWithPkgbuildAsync(string packageName)
+    {
+        var oldPkgbuild = await ReadCachedPkgbuildAsync(packageName);
+        var newPkgbuild = await FetchPkgbuildAsync(packageName);
+
+        return RequestPkgbuildApproval(packageName, oldPkgbuild, newPkgbuild);
     }
 }

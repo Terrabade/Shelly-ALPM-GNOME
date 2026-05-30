@@ -3,14 +3,13 @@ using PackageManager.Aur;
 using Shelly_CLI.Configuration;
 using Shelly_CLI.Utility;
 using Spectre.Console;
-using LineKey = Shelly_CLI.ConsoleLayouts.BottomBarRegion.LineKey;
 
 namespace Shelly_CLI.ConsoleLayouts;
 
 /// <summary>
-/// pacman/makepkg-style single-stream renderer for AUR install/upgrade flows.
-/// Top-to-bottom log, in-place progress bars pinned to the bottom line(s),
-/// section banners ("::", "==&gt;"), no Live panels.
+///     pacman/makepkg-style single-stream renderer for AUR install/upgrade flows.
+///     Top-to-bottom log, in-place progress bars pinned to the bottom line(s),
+///     section banners ("::", "==&gt;"), no Live panels.
 /// </summary>
 public static class AurSinglePaneOutput
 {
@@ -31,13 +30,13 @@ public static class AurSinglePaneOutput
             // Discrete labeled stages (formerly PackageProgress)
             var stage = args.EventType switch
             {
-                AlpmEventType.AurDownloadStart   => ("downloading", "yellow", false),
-                AlpmEventType.AurBuildStart      => ("building",    "blue",   false),
-                AlpmEventType.AurInstallStart    => ("installing",  "cyan",   false),
-                AlpmEventType.AurCleanupStart    => ("cleaning",    "magenta",false),
-                AlpmEventType.AurPackageCompleted => ("completed",  "green",  true),
-                AlpmEventType.AurPackageFailed   => ("failed",      "red",    true),
-                _ => (null!, null!, false)
+                AlpmEventType.AurDownloadStart => ("downloading", "yellow", false),
+                AlpmEventType.AurBuildStart => ("building", "blue", false),
+                AlpmEventType.AurInstallStart => ("installing", "cyan", false),
+                AlpmEventType.AurCleanupStart => ("cleaning", "magenta", false),
+                AlpmEventType.AurPackageCompleted => ("completed", "green", true),
+                AlpmEventType.AurPackageFailed => ("failed", "red", true),
+                _ => (null, null, false)
             };
 
             if (stage.Item1 != null)
@@ -58,25 +57,22 @@ public static class AurSinglePaneOutput
                 }
                 else
                 {
-                    region.WriteEvent(new LineKey("progress", pkg, stage.Item1), line);
+                    region.WriteEvent(new BottomBarRegion.LineKey("progress", pkg, stage.Item1), line);
                     if (args.EventType == AlpmEventType.AurBuildStart)
-                    {
                         region.WriteLine($"[bold]==>[/] Making package: [bold]{pkg.EscapeMarkup()}[/]");
-                    }
                 }
+
                 return;
             }
 
             // Raw makepkg log lines (formerly BuildOutput w/o percent)
-            if (args.EventType == AlpmEventType.AurBuildOutput || args.EventType == AlpmEventType.AurBuildError)
+            if (args.EventType is AlpmEventType.AurBuildOutput or AlpmEventType.AurBuildError)
             {
                 var pkg = args.PackageName ?? "";
                 region.FinalizeStickiesWhere(k => k.Source == "build" && k.Package == pkg);
                 var line = args.Message;
                 if (args.EventType == AlpmEventType.AurBuildError)
-                {
                     region.WriteLine($"[red]{line.EscapeMarkup()}[/]");
-                }
                 else if (line.StartsWith("error:", StringComparison.OrdinalIgnoreCase))
                     region.WriteLine($"[red]{line.EscapeMarkup()}[/]");
                 else if (line.StartsWith("warning:", StringComparison.OrdinalIgnoreCase))
@@ -102,7 +98,7 @@ public static class AurSinglePaneOutput
                 var msgPart = (e.Message ?? "").EscapeMarkup();
                 var rendered = $"[bold]{name.EscapeMarkup()}[/] [yellow]{bar} {pct,3}%[/] {msgPart}";
                 var action = string.IsNullOrEmpty(e.Message) ? "build" : e.Message!;
-                var key = new LineKey("build", name, action);
+                var key = new BottomBarRegion.LineKey("build", name, action);
                 region.WriteEvent(key, rendered);
                 if (pct >= 100) region.FinalizeSticky(key);
                 return;
@@ -110,11 +106,10 @@ public static class AurSinglePaneOutput
 
             region.UpdateBar(name, e.Current ?? 0, e.HowMany ?? 0, pct, e.ProgressType.ToString());
         };
-        
 
         manager.ScriptletInfo += (_, e) =>
         {
-            var line = e.Line ?? string.Empty;
+            var line = e.Line;
             region.WriteLine(string.IsNullOrEmpty(line)
                 ? "[dim]Running scriptlet...[/]"
                 : $"[dim]Scriptlet: {line.EscapeMarkup()}[/]");
@@ -122,7 +117,7 @@ public static class AurSinglePaneOutput
 
         manager.HookRun += (_, e) =>
         {
-            var line = e.Description ?? string.Empty;
+            var line = e.Description;
             region.WriteLine(string.IsNullOrEmpty(line)
                 ? "[dim]Running hook...[/]"
                 : $"[dim]Hook: {line.EscapeMarkup()}[/]");
@@ -164,14 +159,14 @@ public static class AurSinglePaneOutput
         {
             if (noConfirm)
             {
-                QuestionHandler.HandleQuestion(e, uiMode: false, noConfirm: true);
+                QuestionHandler.HandleQuestion(e, false, true);
                 return;
             }
 
             region.SuspendForPrompt();
             try
             {
-                QuestionHandler.HandleQuestion(e, uiMode: false, noConfirm: false);
+                QuestionHandler.HandleQuestion(e);
             }
             finally
             {
@@ -184,9 +179,9 @@ public static class AurSinglePaneOutput
             region.SuspendForPrompt();
             try
             {
-                QuestionHandler.HandleQuestion(args, uiMode: false, noConfirm: noConfirm);
+                QuestionHandler.HandleQuestion(args, false, noConfirm);
                 if (!args.ProceedWithUpdate)
-                    region.WriteLine($"[yellow] Cancelled because of pkgbuild diff.[/]");
+                    region.WriteLine("[yellow] Cancelled because of pkgbuild diff.[/]");
             }
             finally
             {
