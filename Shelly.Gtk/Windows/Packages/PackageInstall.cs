@@ -6,6 +6,7 @@ using Shelly.Gtk.Helpers;
 using static Shelly.Gtk.Helpers.PackageColumnViewSorter;
 using Shelly.Gtk.Services;
 using Shelly.Gtk.Services.Icons;
+using Shelly.Gtk.Services.PackageTraversal;
 using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
 using Shelly.Gtk.UiModels.PackageManagerObjects.GObjects;
@@ -92,6 +93,10 @@ public sealed class PackageInstall(
         _groupDropDown = (DropDown)builder.GetObject("grouping_selection")!;
         _upgradeCheck = (CheckButton)builder.GetObject("upgrade_check")!;
         _showHiddenCheck = (CheckButton)builder.GetObject("show_hidden_check")!;
+
+        var config = configService.LoadConfig();
+        _upgradeCheck.Active = config.PackageInstallUpgrade;
+        _showHiddenCheck.Active = config.PackageInstallShowHidden;
 
         _loadingOverlay = (Box)builder.GetObject("loading_overlay")!;
         _loadingSpinner = (Spinner)builder.GetObject("loading_spinner")!;
@@ -205,7 +210,19 @@ public sealed class PackageInstall(
         _overlay.AddController(shortcutController);
 
         localInstallButton.OnClicked += (_, _) => { _ = InstallLocalPackage(); };
-        _showHiddenCheck.OnToggled += (_, _) => { Reload(); };
+        _upgradeCheck.OnToggled += (_, _) =>
+        {
+            var updatedConfig = configService.LoadConfig();
+            updatedConfig.PackageInstallUpgrade = _upgradeCheck.Active;
+            configService.SaveConfig(updatedConfig);
+        };
+        _showHiddenCheck.OnToggled += (_, _) =>
+        {
+            var updatedConfig = configService.LoadConfig();
+            updatedConfig.PackageInstallShowHidden = _showHiddenCheck.Active;
+            configService.SaveConfig(updatedConfig);
+            Reload();
+        };
 
         _groupDropDown.OnNotify += (_, args) =>
         {
@@ -347,6 +364,12 @@ public sealed class PackageInstall(
         if (pkg.OptDepends.Count > 0)
         {
             AddChipList(T("Optional Deps"), pkg.OptDepends, true);
+        }
+
+        var names = PackageTraversalService.FetchInverseFullDependencyPackageInformation(pkg.Name, _packageData);
+        if (names.Count > 0)
+        {
+            AddChipList(T("Required By"), names);
         }
 
         if (pkg.Licenses.Count > 0)
@@ -775,7 +798,7 @@ public sealed class PackageInstall(
                     }
                 }
                 return false;
-                
+
             });
         }
         catch (OperationCanceledException)

@@ -1247,3 +1247,30 @@ msgstr "Tepsi servisinin otomatik başlamasına izin ver."
 
 msgid "Unable to load package data. You may have a db.lck."
 msgstr "Paket verileri yüklenemedi. db.lck dosyanız olabilir."
+
+msgid "Downgrade Selected"
+msgstr "Seçilenleri Eski Sürüme Düşür"
+
+msgid "Downgrade selected packages one by one"
+msgstr "Seçilen paketleri tek tek eski sürüme düşür"
+
+msgid "No downgrade options found for {0}"
+msgstr "{0} için eski sürüme düşürme seçeneği bulunamadı"
+
+msgid "Downgrading {0}..."
+msgstr "{0} eski sürüme düşürülüyor..."
+
+msgid "Downgraded {0} Package(s)"
+msgstr "{0} paket eski sürüme düşürüldü"
+
+msgid "Downgrade: {0}"
+msgstr "Eski sürüme düşür: {0}"
+
+msgid "Select version:"
+msgstr "Sürüm seç:"
+
+msgid "Add to IgnorePkg list"
+msgstr "IgnorePkg listesine ekle"
+
+msgid "Downgrade"
+msgstr "Eski Sürüme Düşür"
