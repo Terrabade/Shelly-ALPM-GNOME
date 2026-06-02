@@ -165,7 +165,7 @@ sealed class Program
 
         application.OnCommandLine += (_, _) =>
         {
-            application.Activate();
+            application.Register(null);
             return 0;
         };
 
@@ -174,7 +174,7 @@ sealed class Program
         application.AddAction(quitAction);
         application.SetAccelsForAction("app.quit", ["<Ctrl>Q"]);
 
-        application.OnActivate += (_, _) =>
+        application.OnStartup += (_, _) =>
         {
             if (serviceProvider!.GetService<IConfigService>()!.LoadConfig().TrayEnabled)
                 TrayStartService.Start();
@@ -444,7 +444,7 @@ sealed class Program
             }
 
             var initialPageEnum = initialConfig.DefaultPageDropDown;
-        
+
             if (initialPageEnum == ShellyTabs.Recommend && !initialConfig.RecommendedEnabled)
                 initialPageEnum = ShellyTabs.Packages;
             if (initialPageEnum == ShellyTabs.Aur && !initialConfig.AurEnabled) initialPageEnum = ShellyTabs.Packages;
