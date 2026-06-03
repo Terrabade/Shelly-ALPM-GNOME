@@ -28,6 +28,10 @@ public class AppImageSettings : CommandSettings
     [CommandOption("-t|--type")]
     [Description("Set the update type (None, StaticUrl, GitHub, GitLab, Codeberg, Forgejo)")]
     public UpdateType UpdateType { get; set; } = UpdateType.None;
+
+    [CommandOption("-p|--prerelease")]
+    [Description("Allow pre-releases")]
+    public bool AllowPrerelease { get; set; }
 }
 
 public class AppImageRemoveSettings : CommandSettings
@@ -54,6 +58,10 @@ public class AppImageConfigUpdatesSettings : CommandSettings
     [CommandOption("-t|--type")]
     [Description("Set the update type (None, StaticUrl, GitHub, GitLab, Codeberg, Forgejo)")]
     public UpdateType UpdateType { get; set; } = UpdateType.StaticUrl;
+
+    [CommandOption("-p|--prerelease")]
+    [Description("Allow pre-releases")]
+    public bool AllowPrerelease { get; set; }
 }
 
 public class AppImageSearchSettings : AppImageDefaultSettings

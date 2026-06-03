@@ -1,4 +1,5 @@
 using PackageManager.AppImage;
+using PackageManager.AppImage.AppImageV2;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -57,12 +58,12 @@ public class AppImageConfigUpdates : AsyncCommand<AppImageConfigUpdatesSettings>
         targetAppImage = targetAppImage.Replace(".AppImage", "");
         targetAppImage = targetAppImage.Replace("/opt/shelly/", "");
 
-        var manager = new AppImageManager();
+        var manager = new AppImageManagerV2();
         manager.ErrorEvent += (_, args) => { AnsiConsole.MarkupLine($"[red]{args.Error.EscapeMarkup()}[/]"); };
 
         manager.MessageEvent += (_, args) => { AnsiConsole.MarkupLine($"[blue]{args.Message.EscapeMarkup()}[/]"); };
 
-        var success = await manager.AppImageConfigureUpdates(settings.UpdateUrl, targetAppImage, settings.UpdateType);
+        var success = await manager.AppImageConfigureUpdates(settings.UpdateUrl, targetAppImage, settings.UpdateType, settings.AllowPrerelease);
 
         if (success)
         {

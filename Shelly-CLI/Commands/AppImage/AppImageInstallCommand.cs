@@ -1,4 +1,5 @@
 using PackageManager.AppImage;
+using PackageManager.AppImage.AppImageV2;
 using Shelly_CLI.Utility;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -28,11 +29,10 @@ public class AppImageInstallCommand : AsyncCommand<AppImageSettings>
 
             return 1;
         }
-
-        RootElevator.EnsureRootExectuion();
+        
         if (await AppImageManager.IsAppImage(settings.PackageLocation))
         {
-            var manager = new AppImageManager();
+            var manager = new AppImageManagerV2();
             if (Program.IsUiMode)
             {
                 manager.ErrorEvent += (_, args) => UiFrames.Error(args.Error);
@@ -45,7 +45,7 @@ public class AppImageInstallCommand : AsyncCommand<AppImageSettings>
                 manager.MessageEvent += (_, args) => AnsiConsole.MarkupLine($"[blue]{args.Message.EscapeMarkup()}[/]");
             }
 
-            var result = await manager.InstallAppImage(settings.PackageLocation, settings.UpdateUrl);
+            var result = await manager.InstallAppImage(settings.PackageLocation);
 
             if (settings.UpdateUrl is { Length: > 0 } && settings.UpdateType != UpdateType.None)
             {
@@ -54,7 +54,7 @@ public class AppImageInstallCommand : AsyncCommand<AppImageSettings>
                 var appImage = appImages.FirstOrDefault(a => a.Name == appName);
                 if (appImage != null)
                 {
-                    await manager.AppImageConfigureUpdates(settings.UpdateUrl, appImage.Name, settings.UpdateType);
+                    await manager.AppImageConfigureUpdates(settings.UpdateUrl, appImage.Name, settings.UpdateType, settings.AllowPrerelease);
                 }
             }
 

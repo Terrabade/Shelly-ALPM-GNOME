@@ -1,4 +1,5 @@
 using PackageManager.AppImage;
+using PackageManager.AppImage.AppImageV2;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -8,7 +9,7 @@ public class AppImageUpdateCommand : AsyncCommand<AppImageUpdateSettings>
 {
     public override async Task<int> ExecuteAsync(CommandContext context, AppImageUpdateSettings settings)
     {
-        var manager = new AppImageManager();
+        var manager = new AppImageManagerV2();
         manager.ErrorEvent += (_, args) => { AnsiConsole.MarkupLine($"[red]{args.Error.EscapeMarkup()}[/]"); };
 
         manager.MessageEvent += (_, args) => { AnsiConsole.MarkupLine($"[blue]{args.Message.EscapeMarkup()}[/]"); };
@@ -54,9 +55,9 @@ public class AppImageUpdateCommand : AsyncCommand<AppImageUpdateSettings>
         return exitCode;
     }
 
-    private async Task<int> PerformUpdate(AppImageManager manager, AppImageUpdateDto update)
+    private static async Task<int> PerformUpdate(AppImageManagerV2 managerV2, AppImageUpdateDto update)
     {
         AnsiConsole.MarkupLine($"[blue]Updating {update.Name} to {update.Version}...[/]");
-        return await manager.RunUpdate(update);
+        return await managerV2.RunUpdate(update);
     }
 }

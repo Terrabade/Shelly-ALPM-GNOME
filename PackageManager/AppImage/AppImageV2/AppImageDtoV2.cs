@@ -17,6 +17,8 @@ public partial record AppImageDtoV2
     public string? RepoOwner { get; set; }
     public string? RepoName { get; set; }
     public UpdateType UpdateType { get; set; } = UpdateType.StaticUrl;
+    
+    public bool AllowPrerelease { get; set; } = false;
 }
 
 
