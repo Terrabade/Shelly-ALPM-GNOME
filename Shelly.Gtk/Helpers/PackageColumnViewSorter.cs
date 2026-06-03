@@ -1,5 +1,4 @@
 using Gtk;
-using Gio;
 using Shelly.Gtk.Enums;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
 using Shelly.Gtk.UiModels.PackageManagerObjects.GObjects;
@@ -35,6 +34,12 @@ public static class PackageColumnViewSorter
                     (a, b) => Compare(
                         packageData[a.Index].Version,
                         packageData[b.Index].Version
+                    ),
+
+                PackageSortColumn.Size =>
+                    (a, b) => Compare(
+                        packageData[a.Index].InstalledSize,
+                        packageData[b.Index].InstalledSize
                     ),
 
                 _ => (_, _) => 0
@@ -94,6 +99,12 @@ public static class PackageColumnViewSorter
                         a.Package?.Repository,
                         b.Package?.Repository
                     ),
+                
+                PackageSortColumn.Size =>
+                    (a, b) => Compare(
+                        a.Package?.SizeDifference,
+                        b.Package?.SizeDifference
+                    ),
 
                 _ => (_, _) => 0
             };
@@ -143,7 +154,12 @@ public static class PackageColumnViewSorter
         items.Sort(comparison);
         SpliceReplace(listStore, items);
     }
-    
+
+    private static int Compare(long? a, long? b)
+    {
+        return Nullable.Compare(a, b);
+    }
+
     private static int Compare(
         string? a,
         string? b)
