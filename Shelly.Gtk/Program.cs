@@ -288,6 +288,8 @@ sealed class Program
 
                 foreach (var w in windows)
                     w.Dispose();
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
             }
 
             void LoadPackagesPage()
