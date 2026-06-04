@@ -5,6 +5,7 @@ using PackageManager.Utilities;
 using PackageManager.Wire;
 using Shelly_CLI.Commands.Standard.Models;
 using Shelly.Utilities;
+using Shelly.Utilities.Eventing;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -43,7 +44,10 @@ public class ArchNews : AsyncCommand<ArchNewsSettings>
             }
             catch (Exception e)
             {
-                Console.WriteLine(e);
+                if (Program.IsUiMode)
+                    JsonPackFrame.WriteToStdout<Event>(new AlpmErrorEvent(EventLevel.Error, e.Message));
+                else
+                    AnsiConsole.MarkupLine($"[red]{e.Message.EscapeMarkup()}[/]");
             }
         }
         else

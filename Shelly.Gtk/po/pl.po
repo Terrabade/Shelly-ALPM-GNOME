@@ -3,7 +3,7 @@ msgstr ""
 "Project-Id-Version: shelly-ui 2.2.4.1\n"
 "Report-Msgid-Bugs-To: csnyder@seafoamlabs.org\n"
 "POT-Creation-Date: 2026-05-14 18:41-0400\n"
-"PO-Revision-Date: 2026-05-21 20:04+0000\n"
+"PO-Revision-Date: 2026-05-29 18:55+0000\n"
 "Last-Translator: juliazero <juliazero2@gmail.com>\n"
 "Language-Team: Polish\n"
 "Language: pl\n"
@@ -385,10 +385,10 @@ msgid "All Applications"
 msgstr "Wszystkie aplikacje"
 
 msgid "Recommended"
-msgstr "Rekomendowane"
+msgstr "Polecane"
 
 msgid "Most Wanted"
-msgstr "Najczęściej poszukiwane"
+msgstr "Najbardziej poszukiwane"
 
 msgid "Recently Added"
 msgstr "Ostatnio dodane"
@@ -496,7 +496,7 @@ msgid "Failed to remove package {0}: {1}"
 msgstr "Nie udało się usunąć pakietu {0}: {1}"
 
 msgid "Removed Package(s)"
-msgstr "Usunięte pakiety"
+msgstr "Usunięto pakiet(y)"
 
 msgid "Permission Changes"
 msgstr "Zmiany uprawnień"
@@ -799,6 +799,15 @@ msgstr "Instalowanie pakietu..."
 msgid "Package installed successfully"
 msgstr "Pakiet został pomyślnie zainstalowany"
 
+msgid "Remove "
+msgstr "Usuń "
+
+msgid "Removing package..."
+msgstr "Usuwanie pakietu..."
+
+msgid "Package removed successfully"
+msgstr "Pakiet został usunięty"
+
 msgid "Reboot required after flatpak installation."
 msgstr "Po instalacji Flatpak wymagane jest ponowne uruchomienie."
 
@@ -960,6 +969,12 @@ msgstr "Zakres"
 msgid "Remove Selected"
 msgstr "Usuń wybrane"
 
+msgid "Flatpak Repair"
+msgstr "Naprawa Flatpak"
+
+msgid "Repairs Flatpak Installation (Experimental)"
+msgstr "Naprawa instalacji Flatpak (eksperymentalne)"
+
 msgid "Update All"
 msgstr "Aktualizuj wszystko"
 
@@ -970,7 +985,7 @@ msgid "Install Local Packages"
 msgstr "Zainstaluj pakiety lokalne"
 
 msgid "Install Local"
-msgstr "Zainstaluj lokalnie"
+msgstr "Zainstaluj lokalne pakiety"
 
 msgid "Perform Upgrade"
 msgstr "Wykonaj aktualizację"
@@ -1000,7 +1015,7 @@ msgid "Remove Local Packages"
 msgstr "Usuń lokalne pakiety"
 
 msgid "Remove Local"
-msgstr "Usuń lokalne"
+msgstr "Usuń lokalne pakiety"
 
 msgid "Remove Configs"
 msgstr "Usuń konfiguracje"
@@ -1162,7 +1177,7 @@ msgid "Install a new AppImage from a file"
 msgstr "Zainstaluj nowy pakiet AppImage z pliku"
 
 msgid "Install AppImage"
-msgstr "Instaluj AppImage"
+msgstr "Zainstaluj AppImage"
 
 msgid "Description goes here..."
 msgstr "Opis znajduje się tutaj..."
@@ -1219,7 +1234,7 @@ msgid "Settings"
 msgstr "Ustawienia"
 
 msgid "About"
-msgstr "O aplikacji"
+msgstr "O programie"
 
 msgid "Toggle Sidebar"
 msgstr "Przełącz pasek boczny"
@@ -1316,3 +1331,33 @@ msgstr "Autostart ikony zasobnika"
 
 msgid "Allow the tray service to autostart."
 msgstr "Zezwól na automatyczne uruchamianie usługi zasobnika."
+
+msgid "Unable to load package data. You may have a db.lck."
+msgstr "Nie można załadować danych pakietu. Możliwe, że masz plik db.lck."
+
+msgid "Downgrade Selected"
+msgstr "Obniż wybrane"
+
+msgid "Downgrade selected packages one by one"
+msgstr "Obniżaj wybrane pakiety jeden po drugim"
+
+msgid "No downgrade options found for {0}"
+msgstr "Nie znaleziono opcji obniżenia wersji dla {0}"
+
+msgid "Downgrading {0}..."
+msgstr "Obniżanie wersji {0}..."
+
+msgid "Downgraded {0} Package(s)"
+msgstr "Obniżono wersję dla {0} pakiet(ów)"
+
+msgid "Downgrade: {0}"
+msgstr "Obniżanie wersji: {0}"
+
+msgid "Select version:"
+msgstr "Wybierz wersję:"
+
+msgid "Add to IgnorePkg list"
+msgstr "Dodaj do listy IgnorePkg"
+
+msgid "Downgrade"
+msgstr "Obniż wersję"

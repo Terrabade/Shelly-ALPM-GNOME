@@ -52,10 +52,9 @@ public sealed class BottomBarRegion : IDisposable
 
         var noColor = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"));
         var caps = AnsiConsole.Profile.Capabilities;
-        Console.WriteLine(!Equals(Console.OutputEncoding, System.Text.Encoding.UTF8));
         var supportsColor = caps.Ansi && caps.ColorSystem != ColorSystem.NoColors;
         _asciiOnly = !supportsColor || noColor || Console.IsOutputRedirected;
-                     //|| !Equals(Console.OutputEncoding, System.Text.Encoding.UTF8);
+                     // TODO: Needed? || !Equals(Console.OutputEncoding, System.Text.Encoding.UTF8);
 
         if (_animate && ProgressBarRenderer.NeedsFrameTicker(_style))
         {

@@ -51,6 +51,14 @@ build() {
       msgfmt "$po_file" -o "shelly-ui-${lang}.mo"
     fi
   done
+  
+  # Compile tray service translations
+    for po_file in Shelly-Notifications/po/*.po; do
+      if [ -f "$po_file" ]; then
+        lang=$(basename "$po_file" .po)
+        msgfmt "$po_file" -o "shelly-notifications-${lang}.mo"
+      fi
+    done
 }
 
 package() {
@@ -130,6 +138,14 @@ EOF
       install -Dm644 "$mo_file" "$pkgdir/usr/share/locale/$lang/LC_MESSAGES/shelly-ui.mo"
     fi
   done
+  
+  # Install tray service translations
+    for mo_file in shelly-notifications-*.mo; do
+      if [ -f "$mo_file" ]; then
+        lang=$(echo "$mo_file" | sed 's/shelly-notifications-\(.*\)\.mo/\1/')
+        install -Dm644 "$mo_file" "$pkgdir/usr/share/locale/$lang/LC_MESSAGES/shelly-notifications.mo"
+      fi
+    done
 
   # Install Flatpak integration script
   cat <<'SCRIPT' | install -Dm755 /dev/stdin "$pkgdir/usr/bin/shelly-flatpak-integrate"
