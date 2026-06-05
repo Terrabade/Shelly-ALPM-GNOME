@@ -15,7 +15,7 @@ public static class PackageBuildDiffDialog
         var baseFrame = Frame.New(null);
         baseFrame.SetHalign(Align.Center);
         baseFrame.SetValign(Align.Center);
-        baseFrame.SetSizeRequest(1000, 700);
+        baseFrame.SetSizeRequest(900, 700);
         baseFrame.SetMarginTop(20);
         baseFrame.SetMarginBottom(20);
         baseFrame.SetMarginStart(20);
@@ -187,7 +187,7 @@ public static class PackageBuildDiffDialog
         textView.SetEditable(false);
         textView.SetCursorVisible(false);
         textView.SetMonospace(true);
-        textView.SetWrapMode(WrapMode.None);
+        textView.SetWrapMode(WrapMode.WordChar);
         textView.SetVexpand(true);
         textView.SetHexpand(true);
 

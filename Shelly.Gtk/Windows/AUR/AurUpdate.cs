@@ -389,7 +389,9 @@ public class AurUpdate(
             try
             {
                 lockoutService.Show(T("Installing..."));
-
+                
+                // Commenting this block out because the event system already handles this.
+                /*
                 var packageBuilds = await privilegedOperationService.GetAurPackageBuild(selectedPackages);
 
                 if (packageBuilds.Count != 0)
@@ -407,7 +409,7 @@ public class AurUpdate(
                             return;
                         }
                     }
-                }
+                } */
 
                 var result =
                     await privilegedOperationService.UpdateAurPackagesAsync(selectedPackages,
