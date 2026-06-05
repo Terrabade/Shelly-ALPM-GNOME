@@ -32,7 +32,7 @@ public static class PackageBuildDiffDialog
 
         baseFrame.SetChild(rootBox);
 
-        var titleLabel = Label.New($"PKGBUILD Diff - {e.PackageName}");
+        var titleLabel = Label.New(T($"PKGBUILD Diff - {e.PackageName}"));
         titleLabel.AddCssClass("title-4");
         titleLabel.SetHalign(Align.Start);
 
@@ -44,21 +44,9 @@ public static class PackageBuildDiffDialog
         descriptionLabel.SetXalign(0);
 
         rootBox.Append(descriptionLabel);
-
-        var diffBox = Box.New(Orientation.Horizontal, 12);
-        diffBox.SetVexpand(true);
-        diffBox.SetHexpand(true);
-
-        diffBox.Append(CreatePkgbuildPanel(
-            T("Previous PKGBUILD"),
-            e.OldPkgbuild));
-
-        diffBox.Append(CreatePkgbuildPanel(
-            T("New PKGBUILD"),
-            e.NewPkgbuild));
-
-        rootBox.Append(diffBox);
-
+        
+        rootBox.Append(CreatePkgbuildDiffPanel(e.DiffLines!));
+        
         var buttonBox = Box.New(Orientation.Horizontal, 8);
         buttonBox.SetHalign(Align.End);
 
@@ -87,28 +75,119 @@ public static class PackageBuildDiffDialog
         parentOverlay.AddOverlay(baseFrame);
     }
 
-    private static Widget CreatePkgbuildPanel(
-        string title,
-        string content)
+    private static Widget CreatePkgbuildDiffPanel(
+        IReadOnlyList<string>? diffLines)
     {
-        var panelBox = Box.New(Orientation.Vertical, 6);
-        panelBox.SetHexpand(true);
-        panelBox.SetVexpand(true);
-
-        var titleLabel = Label.New(title);
-        titleLabel.SetXalign(0);
-        titleLabel.AddCssClass("heading");
-
-        panelBox.Append(titleLabel);
-
         var buffer = TextBuffer.New(null);
-        buffer.SetText(content, -1);
 
+        var tagTable = buffer.GetTagTable();
+
+        var addedTag = TextTag.New("added");
+        addedTag.Foreground = "#4CAF50";
+        var removedTag = TextTag.New("removed");
+        removedTag.Foreground = "#E57373";        
+        var headerTag = TextTag.New("header");
+        headerTag.Foreground = "#64B5F6";
+        var fileTag = TextTag.New("file");
+        fileTag.Weight = 700;
+        
+        tagTable.Add(addedTag);
+        tagTable.Add(removedTag);
+        tagTable.Add(headerTag);
+        tagTable.Add(fileTag);
+        
+        bool inAddedBlock = false;
+        bool inRemovedBlock = false;
+        
+        if (diffLines != null)
+        {
+            foreach (var line in diffLines)
+            {
+                buffer.GetEndIter(out var start);
+
+                var startOffset = start.GetOffset();
+                
+                buffer.Insert(
+                    start,
+                    line + Environment.NewLine,
+                    -1);
+                
+                buffer.GetIterAtOffset(
+                    out var tagStart,
+                    startOffset);
+                
+                buffer.GetEndIter(out var tagEnd);
+                
+                if (line.StartsWith("@@"))
+                {
+                    buffer.ApplyTag(
+                        headerTag,
+                        tagStart,
+                        tagEnd);
+
+                    inAddedBlock = false;
+                    inRemovedBlock = false;
+                }
+                else if (line.StartsWith("---") ||
+                         line.StartsWith("+++"))
+                {
+                    buffer.ApplyTag(
+                        fileTag,
+                        tagStart,
+                        tagEnd);
+
+                    inAddedBlock = false;
+                    inRemovedBlock = false;
+                }
+                else if (line.StartsWith("+"))
+                {
+                    inAddedBlock = line.Contains('(');
+                    inRemovedBlock = false;
+
+                    buffer.ApplyTag(
+                        addedTag,
+                        tagStart,
+                        tagEnd);
+                }
+                else if (line.StartsWith("-"))
+                {
+                    inRemovedBlock = line.Contains('(');
+                    inAddedBlock = false;
+
+                    buffer.ApplyTag(
+                        removedTag,
+                        tagStart,
+                        tagEnd);
+                }
+                else if (inAddedBlock)
+                {
+                    buffer.ApplyTag(
+                        addedTag,
+                        tagStart,
+                        tagEnd);
+
+                    if (line.Contains(')'))
+                        inAddedBlock = false;
+                }
+                else if (inRemovedBlock)
+                {
+                    buffer.ApplyTag(
+                        removedTag,
+                        tagStart,
+                        tagEnd);
+
+                    if (line.Contains(')'))
+                        inRemovedBlock = false;
+                }
+            }
+        }
+
+        
         var textView = TextView.NewWithBuffer(buffer);
         textView.SetEditable(false);
         textView.SetCursorVisible(false);
         textView.SetMonospace(true);
-        textView.SetWrapMode(WrapMode.WordChar);
+        textView.SetWrapMode(WrapMode.None);
         textView.SetVexpand(true);
         textView.SetHexpand(true);
 
@@ -120,9 +199,7 @@ public static class PackageBuildDiffDialog
         scroll.SetChild(textView);
         scroll.SetVexpand(true);
         scroll.SetHexpand(true);
-
-        panelBox.Append(scroll);
-
-        return panelBox;
+        
+        return scroll;
     }
 }

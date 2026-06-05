@@ -119,12 +119,12 @@ public static class PackageBuilderDiffGenerator
             else if (ni < newLines.Length &&
                      (oi >= oldLines.Length || lcs[oi, ni + 1] >= lcs[oi + 1, ni]))
             {
-                result.Add($"[Addition+] {newLines[ni].TrimEnd('\r')}");
+                result.Add($"+{newLines[ni].TrimEnd('\r')}");
                 ni++;
             }
             else
             {
-                result.Add($"[Removal-] {oldLines[oi].TrimEnd('\r')}");
+                result.Add($"-{oldLines[oi].TrimEnd('\r')}");
                 oi++;
             }
         }

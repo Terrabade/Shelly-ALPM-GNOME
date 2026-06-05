@@ -681,8 +681,9 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                 {
                     await QuestionRouter.TryDispatchAsync(b64,SafeWriteAsync, async dto => {
                         var args = new PackageBuildDiffEventArgs(dto.PackageName,
-                            dto.OldPkgbuild, 
-                            dto.NewPkgbuild);
+                            dto.OldPkgbuild,
+                            dto.NewPkgbuild,
+                            dto.DiffLines!);
                         _genericQuestionService.RaisePackageBuildDiff(args);    
                         return await args.ResponseTask;    
                     });  

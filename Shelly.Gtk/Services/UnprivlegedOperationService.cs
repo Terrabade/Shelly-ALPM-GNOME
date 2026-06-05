@@ -468,10 +468,12 @@ public class UnprivilegedOperationService(
                             await stdinWriter.WriteLineAsync(value);
                             await stdinWriter.FlushAsync();
                         }
-                    }, async dto => {
+                    }, async dto =>
+                    {
                         var args = new PackageBuildDiffEventArgs(dto.PackageName,
-                            dto.OldPkgbuild, 
-                            dto.NewPkgbuild);
+                            dto.OldPkgbuild,
+                            dto.NewPkgbuild,
+                            dto.DiffLines!);
                         genericQuestionService.RaisePackageBuildDiff(args);     
                         return await args.ResponseTask; 
                     }
