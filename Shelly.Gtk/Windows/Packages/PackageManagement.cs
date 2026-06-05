@@ -532,14 +532,12 @@ public sealed class PackageManagement(
             expander.Hexpand = false;
 
             var flowBox = FlowBox.New();
-            flowBox.MarginStart = 0;
-            flowBox.MarginTop = 0;
-            flowBox.MarginBottom = 0;
-            flowBox.MarginEnd = 0;
+            flowBox.MarginTop = 8;
+            flowBox.MarginBottom = 2;
             flowBox.SelectionMode = SelectionMode.None;
             flowBox.ColumnSpacing = 6;
             flowBox.RowSpacing = 6;
-            flowBox.Halign = Align.Start;
+            flowBox.Halign = Align.Fill;
             flowBox.Valign = Align.Start;
             flowBox.MaxChildrenPerLine = isOptional ? 1u : 10u;
             flowBox.MinChildrenPerLine = 1;

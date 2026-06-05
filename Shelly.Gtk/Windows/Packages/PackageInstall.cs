@@ -440,9 +440,11 @@ public sealed class PackageInstall(
 
             var flowBox = FlowBox.New();
             flowBox.SelectionMode = SelectionMode.None;
+            flowBox.MarginTop = 8;
+            flowBox.MarginBottom = 2;
             flowBox.ColumnSpacing = 6;
             flowBox.RowSpacing = 6;
-            flowBox.Halign = Align.Start;
+            flowBox.Halign = Align.Fill;
             flowBox.Valign = Align.Start;
             flowBox.MaxChildrenPerLine = isOptional ? 1u : 10u;
             flowBox.MinChildrenPerLine = 1;
