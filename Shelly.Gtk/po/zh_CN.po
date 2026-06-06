@@ -3,7 +3,7 @@ msgstr ""
 "Project-Id-Version: shelly-ui 2.2.4.1\n"
 "Report-Msgid-Bugs-To: csnyder@seafoamlabs.org\n"
 "POT-Creation-Date: 2026-05-14 18:41-0400\n"
-"PO-Revision-Date: 2026-05-16 18:00+0800\n"
+"PO-Revision-Date: 2026-06-6 18:00+0800\n"
 "Last-Translator: DeepSeek AI\n"
 "Language-Team: China (Simplified)\n"
 "Language: zh_CN.UTF-8\n"
@@ -108,7 +108,7 @@ msgid "Version"
 msgstr "版本"
 
 msgid "Votes"
-msgstr "投票"
+msgstr "推荐票"
 
 msgid "Popularity"
 msgstr "流行度"
@@ -186,7 +186,7 @@ msgid "Shelly is an Arch Linux package manager"
 msgstr "Shelly 是一个 Arch Linux 软件包管理器"
 
 msgid "Seafoam Labs Website"
-msgstr "Seafoam Labs 网站"
+msgstr "Seafoam Labs 官网"
 
 msgid "Project Leads"
 msgstr "项目负责人"
@@ -210,10 +210,10 @@ msgid "Yes"
 msgstr "是"
 
 msgid "Install Ignored Package?"
-msgstr "安装被忽略的软件包？"
+msgstr "是否安装被忽略的软件包？"
 
 msgid "Replace Package?"
-msgstr "替换软件包？"
+msgstr "是否替换软件包？"
 
 msgid "Package Conflict Detected"
 msgstr "检测到软件包冲突"
@@ -222,7 +222,7 @@ msgid "Corrupted Package Found"
 msgstr "发现损坏的软件包"
 
 msgid "Import PGP Key?"
-msgstr "导入 PGP 密钥？"
+msgstr "确认导入 PGP 密钥？"
 
 msgid "Select Provider"
 msgstr "选择提供者"
@@ -237,7 +237,7 @@ msgid "Arch Linux News"
 msgstr "Arch Linux 新闻"
 
 msgid "No news available"
-msgstr "无可用新闻"
+msgstr "无最近新闻"
 
 msgid "package"
 msgstr "个软件包"
@@ -253,7 +253,7 @@ msgid ""
 "the logs and attach them to your report so the team can check whether the "
 "issue came from the PKGBUILD or from Shelly."
 msgstr ""
-"Shelly 无法完成构建或安装所选的 AUR {0}。请导出日志并附在您的报告中，"
+"Shelly 无法完成构建或安装所选的 AUR {0}。请导出日志并附在您的反馈中，"
 "以便团队检查问题是源自 PKGBUILD 还是 Shelly。"
 
 msgid "Packages"
@@ -305,13 +305,13 @@ msgid "Cancel"
 msgstr "取消"
 
 msgid "Authentication Required"
-msgstr "需要认证"
+msgstr "需要授权"
 
 msgid "Password needed to execute: {0}."
 msgstr "执行需要密码：{0}。"
 
 msgid "Authenticate"
-msgstr "认证"
+msgstr "授权"
 
 msgid "Incorrect password. Try again."
 msgstr "密码错误。请重试。"
@@ -333,7 +333,7 @@ msgid ""
 "logs and attach them to your report so the team can check whether the issue "
 "came from the PKGBUILD or from Shelly."
 msgstr ""
-"Shelly 无法完成构建或安装所选的 {0}。请导出日志并附在您的报告中，"
+"Shelly 无法完成构建或安装所选的 {0}。请导出日志并附在您的反馈中，"
 "以便团队检查问题是源自 PKGBUILD 还是 Shelly。"
 
 msgid "Cache Cleaner"
@@ -455,7 +455,7 @@ msgid "Installed Flatpak"
 msgstr "已安装 Flatpak"
 
 msgid "Install Package?"
-msgstr "安装软件包？"
+msgstr "确认安装软件包？"
 
 msgid "Installing {0}..."
 msgstr "正在安装 {0}..."
@@ -856,13 +856,13 @@ msgid "Show packages in the IgnorePkg list from pacman.conf"
 msgstr "显示 pacman.conf 中 IgnorePkg 列表内的软件包"
 
 msgid "Remove Aur Package(s)"
-msgstr "移除 AUR 软件包"
+msgstr "卸载 AUR 软件包"
 
 msgid ""
 "Run the --check function during package build (installs checkdepends)\n"
 "                        "
 msgstr ""
-"在软件包构建期间运行 --check 功能（安装 checkdepends）\n"
+"在软件包构建期间运行 --check 功能（同时安装 checkdepends 中列出的依赖）\n"
 "                        "
 
 msgid "Update Aur Package(s)"
@@ -1013,7 +1013,7 @@ msgid "Enable Tray Icon"
 msgstr "启用托盘图标"
 
 msgid "Use weekly schedule"
-msgstr "使用每周计划"
+msgstr "启动每周更新计划"
 
 msgid "Tray Check Interval (Hours)"
 msgstr "托盘检查间隔（小时）"
@@ -1079,6 +1079,9 @@ msgstr "使用侧边栏导航"
 msgid "Advanced"
 msgstr "高级"
 
+msgid "Remove Cache on Uninstall"
+msgstr "删除卸载缓存"
+
 msgid "No Confirm"
 msgstr "无需确认"
 
@@ -1108,7 +1111,7 @@ msgid ""
 "they were accidentally created by root."
 msgstr ""
 "恢复 Shelly 配置和缓存文件夹的正确用户所有权"
-"（如果曾被 root 意外创建）。"
+"（如果曾被 root 用户意外创建）。"
 
 msgid "Purify Packages"
 msgstr "清理软件包"
@@ -1275,3 +1278,18 @@ msgstr "移除可选依赖"
 
 msgid "Also remove orphaned optional dependencies installed with these packages."
 msgstr "同时移除与这些软件包一起安装的孤立可选依赖。"
+
+msgid "Add Tray To Auto Start"
+msgstr "添加到开机自启动"
+
+msgid "Systemd startup service added."
+msgstr "已添加 systemd 启动服务"
+
+msgid "Systemd startup service removed."
+msgstr "已删除 systemd 启动服务"
+
+msgid "Tray Icon Autostart"
+msgstr "托盘图标自启动"
+
+msgid "Allow the tray service to autostart."
+msgstr "允许托盘服务自启动"
