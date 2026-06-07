@@ -47,6 +47,12 @@ public class AppImageManagerV2
         if (!Directory.Exists(_installDirectory))
             Directory.CreateDirectory(_installDirectory);
 
+        var existingAppImages = await GetAppImagesFromLocalDb();
+        if (existingAppImages.Any(a => string.Equals(a.Name, appName, StringComparison.OrdinalIgnoreCase)) || File.Exists(destAppImagePath))
+        {
+            LogWarning($"AppImage {appName} already exists. Overwriting...");
+        }
+
         LogMessage($"Installing AppImage {appName}...");
         File.Copy(filePath, destAppImagePath, true);
         XdgPaths.FixOwnershipIfRoot(destAppImagePath);
@@ -58,7 +64,7 @@ public class AppImageManagerV2
             LogError("Failed to extract metadata during installation.");
             return 1;
         }
-
+        
         await AddAppImageToLocalDb(appImageDto);
 
         return 0;

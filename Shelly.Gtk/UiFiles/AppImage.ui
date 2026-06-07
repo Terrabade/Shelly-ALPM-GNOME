@@ -332,6 +332,12 @@
                                                         <property name="placeholder-text" translatable="yes">e.g. owner/repo or https://...</property>
                                                     </object>
                                                 </child>
+                                                <child>
+                                                    <object class="GtkCheckButton" id="AllowPrereleaseCheckButton">
+                                                        <property name="label" translatable="yes">Allow Prerelease</property>
+                                                        <property name="valign">center</property>
+                                                    </object>
+                                                </child>
                                             </object>
                                         </child>
                                     </object>

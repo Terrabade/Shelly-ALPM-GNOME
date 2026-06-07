@@ -33,6 +33,8 @@ public sealed class AppImage(
     private Box _dropZone = null!;
     private DropTarget _fileDropTarget = null!;
     private Entry _installPathEntry = null!;
+    private Entry _launchFlagsEntry = null!;
+    private CheckButton _allowPrereleaseCheckButton = null!;
     private Box _listPage = null!;
     private ScrolledWindow _appImageListWindow = null!;
     private SearchEntry _searchEntry = null!;
@@ -58,7 +60,9 @@ public sealed class AppImage(
         _searchEntry = (SearchEntry)builder.GetObject("AppImageSearchEntry")!;
         _updateTypeDropDown = (DropDown)builder.GetObject("UpdateTypeDropDown")!;
         _updateUrlEntry = (Entry)builder.GetObject("UpdateUrlEntry")!;
+        _allowPrereleaseCheckButton = (CheckButton)builder.GetObject("AllowPrereleaseCheckButton")!;
         _installPathEntry = (Entry)builder.GetObject("InstallPathEntry")!;
+        _launchFlagsEntry = (Entry)builder.GetObject("LaunchFlagsEntry")!;
         _detailTitleLabel = (Label)builder.GetObject("DetailTitleLabel")!;
         _detailVersionLabel = (Label)builder.GetObject("DetailVersionLabel")!;
         _detailDescriptionLabel = (Label)builder.GetObject("DetailDescriptionLabel")!;
@@ -290,7 +294,7 @@ public sealed class AppImage(
             lockoutService.Show(T("Running updates..."));
 
             genericQuestionService.RaiseToastMessage(new ToastMessageEventArgs(T("Updating AppImages...")));
-            var result = await privilegedOperationService.AppImageUpgradeAsync();
+            var result = await unprivilegedOperationService.AppImageUpgradeAsync();
 
             if (result.Success)
             {
@@ -346,7 +350,9 @@ public sealed class AppImage(
 
         _updateTypeDropDown.Selected = (uint)app.UpdateType;
         _updateUrlEntry.SetText(app.UpdateURl);
-        _installPathEntry.SetText($"/opt/shelly/{app.Name}");
+        _allowPrereleaseCheckButton.Active = app.AllowPrerelease;
+        _installPathEntry.SetText(app.Path ?? "");
+        _launchFlagsEntry.SetText(app.CommandLineArgs ?? "");
 
         _listPage.SetVisible(false);
         _detailPage.SetVisible(true);
@@ -360,15 +366,17 @@ public sealed class AppImage(
 
             var updateType = (AppImageUpdateType)_updateTypeDropDown.Selected;
             var updateUrl = _updateUrlEntry.GetText();
+            var allowPrerelease = _allowPrereleaseCheckButton.Active;
 
             var result =
-                await privilegedOperationService.AppImageConfigureUpdatesAsync(updateUrl, _selectedApp.Name,
-                    updateType);
+                await unprivilegedOperationService.AppImageConfigureUpdatesAsync(updateUrl, _selectedApp.Name,
+                    updateType, allowPrerelease);
 
             if (result.Success)
             {
                 _selectedApp.UpdateType = updateType;
                 _selectedApp.UpdateURl = updateUrl;
+                _selectedApp.AllowPrerelease = allowPrerelease;
                 genericQuestionService.RaiseToastMessage(
                     new ToastMessageEventArgs(T("Configuration saved for {0}", _selectedApp.Name)));
                 ShowListPage();
@@ -395,7 +403,7 @@ public sealed class AppImage(
             lockoutService.Show(string.Format(T("Syncing {0}..."), _selectedApp.Name));
 
             var result =
-                await privilegedOperationService.AppImageSyncApp(_selectedApp.Name);
+                await unprivilegedOperationService.AppImageSyncApp(_selectedApp.Name);
 
             if (result.Success)
             {
@@ -426,7 +434,7 @@ public sealed class AppImage(
             lockoutService.Show(T("Syncing all AppImages ..."));
 
             var result =
-                await privilegedOperationService.AppImageSyncAll();
+                await unprivilegedOperationService.AppImageSyncAll();
 
             if (result.Success)
             {
@@ -458,7 +466,7 @@ public sealed class AppImage(
 
             lockoutService.Show(string.Format(T("Removing {0}..."), _selectedApp.Name));
 
-            var result = await privilegedOperationService.AppImageRemoveAsync(_selectedApp.Name);
+            var result = await unprivilegedOperationService.AppImageRemoveAsync(_selectedApp.Name);
 
             if (result.Success)
             {
@@ -524,7 +532,7 @@ public sealed class AppImage(
         {
             lockoutService.Show(T("Installing AppImage..."));
 
-            var result = await privilegedOperationService.AppImageInstallAsync(filePath);
+            var result = await unprivilegedOperationService.AppImageInstallAsync(filePath);
 
             if (result.Success)
             {

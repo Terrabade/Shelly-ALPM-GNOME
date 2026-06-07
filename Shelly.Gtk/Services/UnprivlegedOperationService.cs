@@ -451,10 +451,10 @@ public class UnprivilegedOperationService(
     }
 
     public async Task<UnprivilegedOperationResult> AppImageConfigureUpdatesAsync(string url, string name,
-        AppImageUpdateType updateType)
+        AppImageUpdateType updateType, bool allowPrerelease)
     {
         return await ExecuteUnprivilegedCommandAsync("Set AppImage's Update Config", "appimage", "configure-updates",
-            $"\"{name}\"", "-u", url, "-t", updateType.ToString().ToLowerInvariant());
+            $"\"{name}\"", "-u", url, "-t", updateType.ToString().ToLowerInvariant(), allowPrerelease ? "-p" : "");
     }
 
     public async Task<UnprivilegedOperationResult> AppImageSyncApp(string name)
