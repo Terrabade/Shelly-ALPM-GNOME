@@ -42,6 +42,8 @@ public sealed class AppImage(
     private DirtySubscription? _sub;
     private DropDown _updateTypeDropDown = null!;
     private Entry _updateUrlEntry = null!;
+    private Box _migrationOverlay = null!;
+    private Button _startMigrationButton = null!;
 
     public string[] ListensTo => [DirtyScopes.AppImage, DirtyScopes.Config];
 
@@ -61,6 +63,8 @@ public sealed class AppImage(
         _updateTypeDropDown = (DropDown)builder.GetObject("UpdateTypeDropDown")!;
         _updateUrlEntry = (Entry)builder.GetObject("UpdateUrlEntry")!;
         _allowPrereleaseCheckButton = (CheckButton)builder.GetObject("AllowPrereleaseCheckButton")!;
+        _migrationOverlay = (Box)builder.GetObject("MigrationOverlay")!;
+        _startMigrationButton = (Button)builder.GetObject("StartMigrationButton")!;
         _installPathEntry = (Entry)builder.GetObject("InstallPathEntry")!;
         _launchFlagsEntry = (Entry)builder.GetObject("LaunchFlagsEntry")!;
         _detailTitleLabel = (Label)builder.GetObject("DetailTitleLabel")!;
@@ -81,8 +85,9 @@ public sealed class AppImage(
         var installButton = (Button)builder.GetObject("InstallAppImageButton")!;
         var upgradeAllButton = (Button)builder.GetObject("UpgradeAllButton")!;
 
-        var mainBox = Box.NewWithProperties([]);
-        mainBox.Append(_listPage);
+        var overlay = (Overlay)builder.GetObject("AppImageOverlay")!;
+        var mainBox = (Box)builder.GetObject("AppImagePageMain")!;
+        
         _detailPage.SetVisible(false);
         mainBox.Append(_detailPage);
 
@@ -119,11 +124,12 @@ public sealed class AppImage(
         upgradeAllButton.OnClicked += (_, _) => UpgradeAll();
         syncButton.OnClicked += (_, _) => SyncAppImage();
         syncAllButton.OnClicked += (_, _) => SyncAllAppImages();
+        _startMigrationButton.OnClicked += (_, _) => StartMigration();
 
         _ = LoadDataAsync();
         _sub = DirtySubscription.Attach(dirtyService, this);
 
-        return mainBox;
+        return overlay;
     }
 
     public void Dispose()
@@ -135,6 +141,25 @@ public sealed class AppImage(
 
     private async Task LoadDataAsync()
     {
+        //var needsMigration = await unprivilegedOperationService.AppImageNeedsMigrationAsync();
+        /*
+        if (needsMigration)
+        {
+            Functions.IdleAdd(0, () =>
+            {
+                _migrationOverlay.SetVisible(true);
+                return false;
+            });
+            return;
+        }
+        */
+
+        Functions.IdleAdd(0, () =>
+        {
+            _migrationOverlay.SetVisible(false);
+            return false;
+        });
+
         var appImages = await unprivilegedOperationService.GetInstallAppImagesAsync();
 
         Functions.IdleAdd(0, () =>
@@ -524,6 +549,34 @@ public sealed class AppImage(
         _ = InstallAppImageFromPathAsync(filePath);
 
         return true;
+    }
+
+    private async void StartMigration()
+    {
+        try
+        {
+            lockoutService.Show(T("Migrating AppImages to V2..."));
+            /*var result = await unprivilegedOperationService.AppImageMigrateAsync();
+
+            if (result.Success)
+            {
+                genericQuestionService.RaiseToastMessage(new ToastMessageEventArgs(T("Migration successful!")));
+                await LoadDataAsync();
+            }
+            else
+            {
+                genericQuestionService.RaiseToastMessage(
+                    new ToastMessageEventArgs(T("Migration failed: {0}", result.Error)));
+            }*/
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Migration failed: {ex.Message}");
+        }
+        finally
+        {
+            lockoutService.Hide();
+        }
     }
 
     private async Task InstallAppImageFromPathAsync(string filePath)
