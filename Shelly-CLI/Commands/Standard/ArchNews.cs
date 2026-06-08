@@ -1,9 +1,10 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Xml.Linq;
-using PackageManager.Utilities;
 using PackageManager.Wire;
 using Shelly_CLI.Commands.Standard.Models;
+using Shelly_CLI.Utility;
 using Shelly.Utilities;
 using Shelly.Utilities.Eventing;
 using Spectre.Console;
@@ -26,11 +27,8 @@ public class ArchNews : AsyncCommand<ArchNewsSettings>
             {
                 var feed = await GetRssFeedAsync(ArchlinuxFeed);
                 if (settings.Json)
-                {
                     await OutputFeed(feed);
-                }
                 else
-                {
                     foreach (var item in feed)
                     {
                         AnsiConsole.MarkupLine($"[yellow]\n{item.Title.EscapeMarkup()}[/]");
@@ -38,9 +36,8 @@ public class ArchNews : AsyncCommand<ArchNewsSettings>
                         AnsiConsole.MarkupLine($"[blue]{item.Link.EscapeMarkup()}[/]");
                         AnsiConsole.MarkupLine($"[white]{item.Description.EscapeMarkup()}[/]");
                     }
-                }
 
-                CacheFeed(feed);
+                await CacheFeed(feed);
             }
             catch (Exception e)
             {
@@ -52,15 +49,15 @@ public class ArchNews : AsyncCommand<ArchNewsSettings>
         }
         else
         {
-            var cachedFeed = LoadCachedFeed();
+            var cachedFeed = await LoadCachedFeed();
             var feed = await GetRssFeedAsync(ArchlinuxFeed);
 
-            var newFeed = feed.Except(cachedFeed).ToList();
+            var newFeed = feed.ExceptBy(cachedFeed.Select(model => model.Link), model => model.Link).ToList();
 
             if (settings.Json)
             {
                 await OutputFeed(newFeed);
-                if (newFeed.Count > 0) CacheFeed(feed);
+                if (newFeed.Count > 0) await CacheFeed(feed);
                 return 0;
             }
 
@@ -72,29 +69,29 @@ public class ArchNews : AsyncCommand<ArchNewsSettings>
                 AnsiConsole.MarkupLine($"[white]{item.Description.EscapeMarkup()}[/]");
             }
 
-            if (newFeed.Count > 0) CacheFeed(feed);
+            if (newFeed.Count > 0) await CacheFeed(feed);
             else AnsiConsole.MarkupLine("[green]No new news found[/]");
         }
 
         return 0;
     }
 
-    private static void CacheFeed(List<RssModel> feed)
+    private static async Task CacheFeed(List<RssModel> feed)
     {
         XdgPaths.EnsureDirectory(FeedFolder);
 
         var json = JsonSerializer.Serialize(feed, ShellyCLIJsonContext.Default.ListRssModel);
-        File.WriteAllText(FeedPath, json);
+        await File.WriteAllTextAsync(FeedPath, json);
         XdgPaths.FixOwnershipIfRoot(FeedPath);
     }
 
-    private static List<RssModel> LoadCachedFeed()
+    private static async Task<List<RssModel>> LoadCachedFeed()
     {
         if (!File.Exists(FeedPath)) return [];
 
         try
         {
-            var json = File.ReadAllText(FeedPath);
+            var json = await File.ReadAllTextAsync(FeedPath);
             return JsonSerializer.Deserialize(json, ShellyCLIJsonContext.Default.ListRssModel) ?? [];
         }
         catch
@@ -105,15 +102,15 @@ public class ArchNews : AsyncCommand<ArchNewsSettings>
 
     private static async Task<List<RssModel>> GetRssFeedAsync(string url)
     {
-        using var client = new HttpClient();
-        var xmlString = await client.GetStringAsync(url);
+        var xmlString = await CreateHttpClient().GetStringAsync(url);
 
         var xml = XDocument.Parse(xmlString);
 
         return xml.Descendants("item").Select(item => new RssModel
         {
-            Title = item.Element("title")?.Value ?? "", Link = item.Element("link")?.Value ?? "",
-            Description = Regex.Replace(item.Element("description")?.Value ?? "", "<.*?>", string.Empty),
+            Title = item.Element("title")?.Value ?? "",
+            Link = item.Element("link")?.Value ?? "",
+            Description = HtmlToMarkdown.Convert(item.Element("description")?.Value ?? ""),
             PubDate = item.Element("pubDate")?.Value ?? ""
         }).Reverse().ToList();
     }
@@ -128,9 +125,28 @@ public class ArchNews : AsyncCommand<ArchNewsSettings>
         {
             var json = JsonSerializer.Serialize(feed, ShellyCLIJsonContext.Default.ListRssModel);
             await using var stdout = Console.OpenStandardOutput();
-            await using var writer = new StreamWriter(stdout, System.Text.Encoding.UTF8);
+            await using var writer = new StreamWriter(stdout, Encoding.UTF8);
             await writer.WriteLineAsync(json);
             await writer.FlushAsync();
         }
+    }
+
+    private static HttpClient CreateHttpClient()
+    {
+        return new HttpClient(new SocketsHttpHandler
+        {
+            AutomaticDecompression = DecompressionMethods.All,
+            AllowAutoRedirect = true,
+            MaxAutomaticRedirections = 10,
+            ConnectTimeout = TimeSpan.FromSeconds(30),
+            EnableMultipleHttp2Connections = true,
+            EnableMultipleHttp3Connections = true
+        })
+        {
+            Timeout = TimeSpan.FromMinutes(1),
+            DefaultRequestHeaders = { UserAgent = { Http.UserAgent } },
+            DefaultRequestVersion = HttpVersion.Version11,
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher
+        };
     }
 }

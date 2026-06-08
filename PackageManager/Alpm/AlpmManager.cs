@@ -53,6 +53,12 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
 
     private HashSet<string> _preDownloadedFiles = [];
 
+    private bool? _isCachyOs;
+
+    public bool IsCachyOs =>
+        _isCachyOs ??= DistributionHooks.OsRelease.PrettyName?
+            .Contains("cachyos", StringComparison.OrdinalIgnoreCase) ?? false;
+
     private AlpmFetchCallback _fetchCallback;
     private AlpmEventCallback _eventCallback;
     private AlpmQuestionCallback _questionCallback;
@@ -1588,6 +1594,25 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         if (_handle == IntPtr.Zero) Initialize();
         var syncDbsPtr = GetSyncDbs(_handle);
         Update(_handle, syncDbsPtr, true);
+
+        if (IsCachyOs)
+        {
+            var updateNotice = new DistributionHooks.CachyOS.UpdateNotice();
+            var proceed = await updateNotice.CheckAsync(_config.DbPath, args =>
+            {
+                Question?.Invoke(this, args);
+                args.WaitForResponse();
+                return args.Response.Response == 1;
+            });
+
+            if (!proceed)
+            {
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(
+                    AlpmEventType.InformationalOutput, "Upgrade cancelled by user (update notice)."));
+                return false;
+            }
+        }
+
         try
         {
             _isPackageDownload = true;
@@ -2620,6 +2645,28 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
     public List<string> GetIgnoredPackages()
     {
         return PacmanConfWriter.NormalizePackageNames(_config.IgnorePkg);
+    }
+
+    public List<string> GetAllowedArchitectures()
+    {
+        if (_handle == IntPtr.Zero) Initialize();
+        var architectures = new List<string>();
+        var syncDbsPtr = GetArchitectures(_handle);
+
+        var currentPtr = syncDbsPtr;
+        while (currentPtr != IntPtr.Zero)
+        {
+            var node = Marshal.PtrToStructure<AlpmList>(currentPtr);
+            if (node.Data != IntPtr.Zero)
+            {
+                var arch = Marshal.PtrToStringUTF8(node.Data);
+                if (arch != null) architectures.Add(arch);
+            }
+
+            currentPtr = node.Next;
+        }
+
+        return architectures;
     }
 
     private void HandleErrorMessage(IntPtr dataPtr, AlpmErrno error)

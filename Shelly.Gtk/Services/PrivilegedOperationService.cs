@@ -182,6 +182,12 @@ public class PrivilegedOperationService : IPrivilegedOperationService
     public async Task<OperationResult> UpgradeAllAsync()
     {
         var result = await ExecutePrivilegedWithNoConfirmCheck("Upgrade all", "upgrade", "-a");
+        
+        if(!result.Success)
+        {
+            _ = Task.Run(() => _trayDbus.UpdatesMadeInUiAsync());
+        }
+        
         SendDbusMessage(result);
         return result;
     }

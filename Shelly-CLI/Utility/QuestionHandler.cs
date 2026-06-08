@@ -122,7 +122,8 @@ public static class QuestionHandler
                 var desc = o.Description ?? string.Empty;
                 var installed = o.IsInstalled ? "1" : "0";
                 var selected = o.IsSelected ? "1" : "0";
-                Console.Error.WriteLine($"[ALPM_OPTDEPS_OPTION]{i}\u001F{o.Name}\u001F{desc}\u001F{installed}\u001F{selected}");
+                Console.Error.WriteLine(
+                    $"[ALPM_OPTDEPS_OPTION]{i}\u001F{o.Name}\u001F{desc}\u001F{installed}\u001F{selected}");
             }
 
             Console.Error.WriteLine("[ALPM_OPTDEPS_END]");
@@ -133,6 +134,15 @@ public static class QuestionHandler
                 .Select((o, i) => o with { IsSelected = selectedIndices.Contains(i) && !o.IsInstalled })
                 .ToList();
             question.SetResponse(new QuestionResponse(0, uiSelected));
+            return;
+        }
+
+        if (noConfirm)
+        {
+            var noneSelected = question.ProviderOptions
+                .Select(o => o with { IsSelected = false })
+                .ToList();
+            question.SetResponse(new QuestionResponse(0, noneSelected));
             return;
         }
 
@@ -207,6 +217,12 @@ public static class QuestionHandler
                 // For safety, we could set a default if needed, but the UI shouldn't send empty input
             }
 
+            return;
+        }
+
+        if (noConfirm)
+        {
+            question.SetResponse(new QuestionResponse(0, question.ProviderOptions));
             return;
         }
 

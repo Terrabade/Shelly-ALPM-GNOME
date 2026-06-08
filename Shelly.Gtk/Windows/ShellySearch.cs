@@ -265,7 +265,7 @@ public sealed class ShellySearch(
         {
             if (args.Object is not ColumnViewCell listItem) return;
             if (listItem.GetItem() is MetaPackageGObject { Package: { } pkg } && listItem.GetChild() is Label label)
-                label.SetText(pkg.Description);
+                label.SetText(pkg.Summary);
         };
         descriptionColumn.SetFactory(descriptionFactory);
 
@@ -326,7 +326,7 @@ public sealed class ShellySearch(
             }
 
             models = models
-                .Select(y => new { Package = y, Score = MatchObject(query, y.Name, y.Description) })
+                .Select(y => new { Package = y, Score = MatchObject(query, y.Name, y.Summary) })
                 .Where(x => x.Score >= MatchScore)
                 .OrderByDescending(x => x.Score)
                 .ThenByDescending(x => x.Package.IsInstalled)
@@ -414,7 +414,7 @@ public sealed class ShellySearch(
                 y.Version,
                 y.Description ?? "",
                 PackageType.Aur,
-                y.Url ?? "",
+                y.Description ?? "",
                 "AUR",
                 installedNames.Contains(y.Name),
                 y.LastModified
@@ -433,7 +433,7 @@ public sealed class ShellySearch(
         var allApps = await unprivilegedOperationService.ListAppstreamFlatpak(ct);
         return allApps
             .Where(app => app.Type != "addon")
-            .Select(app => new { Package = app, Score = MatchObject(query, app.Name, app.Description) })
+            .Select(app => new { Package = app, Score = MatchObject(query, app.Name, app.Summary) })
             .Where(x => x.Score >= MatchScore)
             .OrderByDescending(x => x.Score)
             .Select(x => x.Package)
@@ -459,8 +459,8 @@ public sealed class ShellySearch(
     {
         var tier = PackageSearch.Score(name, description, query);
         if (tier == 0) return 0;
-        var fuzz = (int)(StringMatching.PartialRatio(query, name) * 0.5
-                       + StringMatching.PartialRatio(query, description) * 0.5);
+        var fuzz = (int)(StringMatching.PartialRatio(query, name) * 0.7
+                       + StringMatching.PartialRatio(query, description) * 0.3);
         return tier * 1000 + fuzz;
     }
 

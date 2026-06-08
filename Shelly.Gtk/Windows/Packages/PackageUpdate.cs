@@ -105,7 +105,8 @@ public class PackageUpdate(
         SetupColumns(_checkColumn, _nameColumn, _sizeDiffColumn, _oldColumn, _versionColumn);
 
         // Creating sorter
-        _nameColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((a, b) => 0);
+        _nameColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((_, _) => 0);
+        _sizeDiffColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((_, _) => 0);
 
         _columnViewSorter = (ColumnViewSorter)_columnView.GetSorter()!;
 
@@ -212,6 +213,9 @@ public class PackageUpdate(
     {
         if (column == _nameColumn)
             return PackageSortColumn.Name;
+        
+        if (column == _sizeDiffColumn)
+            return PackageSortColumn.Size;
 
         return null;
     }
@@ -397,9 +401,11 @@ public class PackageUpdate(
 
             var flowBox = FlowBox.New();
             flowBox.SelectionMode = SelectionMode.None;
+            flowBox.MarginTop = 8;
+            flowBox.MarginBottom = 2;
             flowBox.ColumnSpacing = 6;
             flowBox.RowSpacing = 6;
-            flowBox.Halign = Align.Start;
+            flowBox.Halign = Align.Fill;
             flowBox.Valign = Align.Start;
             flowBox.MaxChildrenPerLine = isOptional ? 1u : 10u;
             flowBox.MinChildrenPerLine = 1;
