@@ -141,9 +141,7 @@ public sealed class AppImage(
 
     private async Task LoadDataAsync()
     {
-        //var needsMigration = await unprivilegedOperationService.AppImageNeedsMigrationAsync();
-        /*
-        if (needsMigration)
+        if (Directory.EnumerateFiles("/opt/shelly").Any())
         {
             Functions.IdleAdd(0, () =>
             {
@@ -152,7 +150,7 @@ public sealed class AppImage(
             });
             return;
         }
-        */
+        
 
         Functions.IdleAdd(0, () =>
         {
@@ -556,7 +554,7 @@ public sealed class AppImage(
         try
         {
             lockoutService.Show(T("Migrating AppImages to V2..."));
-            /*var result = await unprivilegedOperationService.AppImageMigrateAsync();
+            var result = await privilegedOperationService.MigrateAppImagesAsync();
 
             if (result.Success)
             {
@@ -567,7 +565,7 @@ public sealed class AppImage(
             {
                 genericQuestionService.RaiseToastMessage(
                     new ToastMessageEventArgs(T("Migration failed: {0}", result.Error)));
-            }*/
+            }
         }
         catch (Exception ex)
         {
