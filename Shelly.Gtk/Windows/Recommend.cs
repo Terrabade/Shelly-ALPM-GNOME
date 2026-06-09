@@ -115,19 +115,13 @@ public sealed class Recommend(
 
             var result = JsonSerializer.Deserialize(values, RecommendJsonContext.Default.ListRecommendModel) ?? [];
 
-            if (result.Count < 1)
-            {
-                _noResultsOverlay?.SetVisible(true);
-                return;
-            }
-
-            _noResultsOverlay?.SetVisible(false);
-            _packages.Clear();
+            // Build package list on background thread (no GTK calls)
+            var packages = new List<FlatRecommendModel>();
             foreach (var item in result)
             {
                 if (!Enum.TryParse<RecommendCategory>(item.Name, out var category)) continue;
                 foreach (var pkgName in item.Packages.Where(pkgName => alpmPackages.Any(x => x.Name == pkgName)))
-                    _packages.Add(new FlatRecommendModel
+                    packages.Add(new FlatRecommendModel
                     {
                         Category = category,
                         Package = pkgName,
@@ -138,7 +132,23 @@ public sealed class Recommend(
                     });
             }
 
-            await FlowChartBuilder();
+            // All GTK widget operations must run on the main thread via IdleAdd
+            Functions.IdleAdd(0, () =>
+            {
+                if (ct.IsCancellationRequested) return false;
+
+                if (packages.Count < 1)
+                {
+                    _noResultsOverlay?.SetVisible(true);
+                    return false;
+                }
+
+                _noResultsOverlay?.SetVisible(false);
+                _packages.Clear();
+                _packages.AddRange(packages);
+                FlowChartBuilder();
+                return false;
+            });
         }
         catch (Exception e)
         {
@@ -177,7 +187,6 @@ public sealed class Recommend(
                 flox.SetSelectionMode(SelectionMode.None);
                 flox.SetColumnSpacing(8);
                 flox.SetRowSpacing(8);
-                flox.Homogeneous = true;
                 flox.MinChildrenPerLine = 1;
                 flox.MaxChildrenPerLine = 6;
 
