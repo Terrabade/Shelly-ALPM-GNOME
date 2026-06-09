@@ -1315,3 +1315,12 @@ msgstr ""
 
 msgid "Enable Package Downgrade"
 msgstr ""
+
+msgid "PKGBUILD Diff - {0}"
+msgstr ""
+
+msgid "Review the PKGBUILD changes before continuing."
+msgstr ""
+
+msgid "Accept Changes"
+msgstr ""

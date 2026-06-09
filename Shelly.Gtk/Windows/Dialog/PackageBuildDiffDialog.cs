@@ -32,7 +32,10 @@ public static class PackageBuildDiffDialog
 
         baseFrame.SetChild(rootBox);
 
-        var titleLabel = Label.New(T($"PKGBUILD Diff - {e.PackageName}"));
+        var titleLabel = Label.New(
+            string.Format(
+                T("PKGBUILD Diff - {0}"),
+                e.PackageName));
         titleLabel.AddCssClass("title-4");
         titleLabel.SetHalign(Align.Start);
 

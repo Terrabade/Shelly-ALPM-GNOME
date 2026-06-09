@@ -1342,3 +1342,13 @@ msgstr "Fazer downgrade"
 msgid "Enable Package Downgrade"
 msgstr "Habilitar downgrade de pacotes"
 
+msgid "PKGBUILD Diff - {0}"
+msgstr "Diff PKGBUILD - {0}"
+
+msgid "Review the PKGBUILD changes before continuing."
+msgstr "Revise as mudanças no PKGBUILD antes de continuar"
+
+msgid "Accept Changes"
+msgstr "Aceitar Mudanças"
+
+
