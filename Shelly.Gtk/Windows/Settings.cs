@@ -130,7 +130,7 @@ public class Settings(
         purifyCorruptionButton.OnClicked += async (_, _) => { await PurifyCorruption(); };
 
         var fixPermissionsButton = (Button)builder.GetObject("fix_permissions_button")!;
-        fixPermissionsButton.OnClicked += async (s, e) => { await FixXdgPermissionsAsync(); };
+        fixPermissionsButton.OnClicked += async (_, _) => { await FixXdgPermissionsAsync(); };
 
         var viewPacfilesButton = (Button)builder.GetObject("view_pacfiles_button")!;
         viewPacfilesButton.OnClicked += async (_, _) => { await ViewPacfilesAsync(); };
@@ -356,24 +356,25 @@ public class Settings(
     {
         var sw = (Switch)builder.GetObject(id)!;
         sw.Active = initialValue;
-        sw.OnStateSet += (s, e) =>
+        sw.OnStateSet += (_, e) =>
         {
             if (e.State)
             {
-                const string serviceContent = $"""
-                                               [Unit]
-                                               Description=Shelly Notifications tray service
-                                               After=graphical-session.target
+                const string serviceContent =
+                    """
+                    [Unit]
+                    Description=Shelly Notifications tray service
+                    After=graphical-session.target
 
-                                               [Service]
-                                               Type=simple
-                                               ExecStart=/usr/bin/shelly-notifications
-                                               Restart=on-failure
-                                               RestartSec=5s
+                    [Service]
+                    Type=simple
+                    ExecStart=/usr/bin/shelly-notifications
+                    Restart=on-failure
+                    RestartSec=5s
 
-                                               [Install]
-                                               WantedBy=graphical-session.target
-                                               """;
+                    [Install]
+                    WantedBy=graphical-session.target
+                    """;
                 
                 unprivilegedOperationService.AddSystemdServiceTray(serviceContent, "shelly-notifications");
                 genericQuestionService.RaiseToastMessage(
@@ -395,6 +396,8 @@ public class Settings(
     private void SetupTraySwitch(string id, bool initialValue, Action<bool> updateAction, Builder builder)
     {
         var sw = (Switch)builder.GetObject(id)!;
+        var autoStartBox = (Box)builder.GetObject("tray_auto_switch_box")!;
+        var autoStartSwitch = (Switch)builder.GetObject("tray_auto_switch")!;
         var trayIntervalBox = (Box)builder.GetObject("tray_interval_box")!;
         var symbolicTrayBox = (Box)builder.GetObject("symbolic_tray_box")!;
         var weeklyScheduleSwitchBox = (Box)builder.GetObject("weekly_schedule_switch_box")!;
@@ -403,25 +406,26 @@ public class Settings(
 
         sw.Active = initialValue;
 
-        // Set initial visibility - tray interval is visible only if tray enabled AND weekly schedule disabled
+        // Set initial visibility
         weeklyScheduleSwitchBox.Visible = initialValue;
         symbolicTrayBox.Visible = initialValue;
+        autoStartBox.Visible = initialValue;
+
+        // tray interval is visible only if tray enabled AND weekly schedule disabled
         trayIntervalBox.Visible = initialValue && !weeklyScheduleSwitch.Active;
         weeklyScheduleBox.Visible = initialValue && weeklyScheduleSwitch.Active;
 
         sw.OnStateSet += (_, e) =>
         {
-            if (e.State)
-            {
-                TrayStartService.Start();
-            }
-            else
-            {
-                TrayStartService.End();
-            }
+            if (e.State) TrayStartService.Start();
+            else TrayStartService.End();
 
             weeklyScheduleSwitchBox.Visible = e.State;
             symbolicTrayBox.Visible = e.State;
+
+            autoStartBox.Visible = e.State;
+            if (!e.State) autoStartSwitch.Active = false;
+
             trayIntervalBox.Visible = e.State && !weeklyScheduleSwitch.Active;
             weeklyScheduleBox.Visible = e.State && weeklyScheduleSwitch.Active;
 

@@ -115,7 +115,7 @@ cp "$SCRIPT_DIR/Shelly.Gtk/Assets/shellylogo.png" "$INSTALL_DIR/"
 echo "Creating symlinks in /usr/bin..."
 ln -sf "$INSTALL_DIR/shelly-ui" /usr/bin/shelly-ui
 ln -sf "$INSTALL_DIR/shelly" /usr/bin/shelly
-ln -sf "$INSTALL_DIR/shelly-notifications" /usr/bin/shelly-notifications
+ln -sf "$INSTALL_DIR/Shelly-Notifications" /usr/bin/shelly-notifications
 
 # Install icons to standard location
 echo "Installing icons to standard location..."

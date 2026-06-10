@@ -133,7 +133,7 @@
                                                             </object>
                                                         </child>
                                                         <child>
-                                                        <object class="GtkBox">
+                                                        <object class="GtkBox" id="tray_auto_switch_box">
                                                             <property name="orientation">horizontal</property>
                                                             <property name="spacing">12</property>
                                                             <child>
