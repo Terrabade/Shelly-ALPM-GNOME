@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using PackageManager.AppImage.AppImageV2;
 using Shelly_CLI.Configuration;
 using Shelly_CLI.Utility;
+using Shelly.Utilities;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -12,13 +13,13 @@ public class AppImageUpdateManagerVersion : AsyncCommand
     public override async Task<int> ExecuteAsync(CommandContext context)
     {
         RootElevator.EnsureRootExectuion();
-        
-        var manger = new AppImageManagerV2(ConfigManager.ReadConfig().AppImageInstallPath ?? "");;
+
+        var installPath = ConfigManager.ReadConfig().AppImageInstallPath ?? XdgPaths.BinHome();
+        var manger = new AppImageManagerV2(installPath);
         if (Program.IsUiMode)
         {
             manger.MessageEvent += (_, e) => UiFrames.Info(e.Message);
             manger.ErrorEvent += (_, e) => UiFrames.Error(e.Error);
-            UiFrames.Info("Starting AppImage manager migration...", Shelly.Utilities.Eventing.AlpmEvents.TransactionStart);
         }
         else
         {
@@ -29,7 +30,8 @@ public class AppImageUpdateManagerVersion : AsyncCommand
         var result = await manger.MigrateAppImages();
 
         if (Program.IsUiMode)
-            UiFrames.TxFinish(result, "AppImage manager version updated successfully.", "AppImage manager version updated unsuccessfully.");
+            UiFrames.TxFinish(result, "AppImage manager version updated successfully.",
+                "AppImage manager version updated unsuccessfully.");
         else
             AnsiConsole.MarkupLine(result
                 ? "[green]AppImage manager version updated successfully.[/]"

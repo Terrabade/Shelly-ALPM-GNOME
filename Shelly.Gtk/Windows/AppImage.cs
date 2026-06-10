@@ -42,8 +42,16 @@ public sealed class AppImage(
     private DirtySubscription? _sub;
     private DropDown _updateTypeDropDown = null!;
     private Entry _updateUrlEntry = null!;
+    private Label _updateUrlErrorLabel = null!;
     private Box _migrationOverlay = null!;
     private Button _startMigrationButton = null!;
+    private Button _syncButton = null!;
+    private Button _syncAllButton = null!;
+    private Button _backButton = null!;
+    private Button _saveButton = null!;
+    private Button _removeButton = null!;
+    private Button _installButton = null!;
+    private Button _upgradeAllButton = null!;
 
     public string[] ListensTo => [DirtyScopes.AppImage, DirtyScopes.Config];
 
@@ -62,6 +70,7 @@ public sealed class AppImage(
         _searchEntry = (SearchEntry)builder.GetObject("AppImageSearchEntry")!;
         _updateTypeDropDown = (DropDown)builder.GetObject("UpdateTypeDropDown")!;
         _updateUrlEntry = (Entry)builder.GetObject("UpdateUrlEntry")!;
+        _updateUrlErrorLabel = (Label)builder.GetObject("UpdateUrlErrorLabel")!;
         _allowPrereleaseCheckButton = (CheckButton)builder.GetObject("AllowPrereleaseCheckButton")!;
         _migrationOverlay = (Box)builder.GetObject("MigrationOverlay")!;
         _startMigrationButton = (Button)builder.GetObject("StartMigrationButton")!;
@@ -76,14 +85,14 @@ public sealed class AppImage(
         _appImageListWindow = (ScrolledWindow)builder.GetObject("AppImageListWindow")!;
         _dropZone = (Box)builder.GetObject("DropZone")!;
 
-        var syncButton = (Button)builder.GetObject("SyncButton")!;
-        var syncAllButton = (Button)builder.GetObject("SyncAllButton")!;
+        _syncButton = (Button)builder.GetObject("SyncButton")!;
+        _syncAllButton = (Button)builder.GetObject("SyncAllButton")!;
 
-        var backButton = (Button)builder.GetObject("BackToListButton")!;
-        var saveButton = (Button)builder.GetObject("SaveConfigButton")!;
-        var removeButton = (Button)builder.GetObject("RemoveAppImageButton")!;
-        var installButton = (Button)builder.GetObject("InstallAppImageButton")!;
-        var upgradeAllButton = (Button)builder.GetObject("UpgradeAllButton")!;
+        _backButton = (Button)builder.GetObject("BackToListButton")!;
+        _saveButton = (Button)builder.GetObject("SaveConfigButton")!;
+        _removeButton = (Button)builder.GetObject("RemoveAppImageButton")!;
+        _installButton = (Button)builder.GetObject("InstallAppImageButton")!;
+        _upgradeAllButton = (Button)builder.GetObject("UpgradeAllButton")!;
 
         var overlay = (Overlay)builder.GetObject("AppImageOverlay")!;
         var mainBox = (Box)builder.GetObject("AppImagePageMain")!;
@@ -117,13 +126,13 @@ public sealed class AppImage(
             if (index < _appImages.Count)
                 ShowDetailPage(_appImages[index]);
         };
-        backButton.OnClicked += (_, _) => ShowListPage();
-        saveButton.OnClicked += (_, _) => SaveConfig();
-        removeButton.OnClicked += (_, _) => RemoveAppImage();
-        installButton.OnClicked += (_, _) => InstallAppImage();
-        upgradeAllButton.OnClicked += (_, _) => UpgradeAll();
-        syncButton.OnClicked += (_, _) => SyncAppImage();
-        syncAllButton.OnClicked += (_, _) => SyncAllAppImages();
+        _backButton.OnClicked += (_, _) => ShowListPage();
+        _saveButton.OnClicked += (_, _) => SaveConfig();
+        _removeButton.OnClicked += (_, _) => RemoveAppImage();
+        _installButton.OnClicked += (_, _) => InstallAppImage();
+        _upgradeAllButton.OnClicked += (_, _) => UpgradeAll();
+        _syncButton.OnClicked += (_, _) => SyncAppImage();
+        _syncAllButton.OnClicked += (_, _) => SyncAllAppImages();
         _startMigrationButton.OnClicked += (_, _) => StartMigration();
 
         _ = LoadDataAsync();
@@ -141,20 +150,19 @@ public sealed class AppImage(
 
     private async Task LoadDataAsync()
     {
-        if (Directory.EnumerateFiles("/opt/shelly").Any())
         {
             Functions.IdleAdd(0, () =>
             {
                 _migrationOverlay.SetVisible(true);
+                SetButtonsSensitive(false);
                 return false;
             });
-            return;
         }
         
-
         Functions.IdleAdd(0, () =>
         {
             _migrationOverlay.SetVisible(false);
+            SetButtonsSensitive(true);
             return false;
         });
 
@@ -171,6 +179,65 @@ public sealed class AppImage(
 
             return false;
         });
+    }
+
+    private void SetButtonsSensitive(bool sensitive)
+    {
+        _syncButton.Sensitive = sensitive;
+        _syncAllButton.Sensitive = sensitive;
+        _backButton.Sensitive = sensitive;
+        _saveButton.Sensitive = sensitive;
+        _removeButton.Sensitive = sensitive;
+        _installButton.Sensitive = sensitive;
+        _upgradeAllButton.Sensitive = sensitive;
+    }
+
+    private bool ValidateUpdateConfig()
+    {
+        var updateType = (AppImageUpdateType)_updateTypeDropDown.Selected;
+        var updateUrl = _updateUrlEntry.GetText();
+
+        var isValid = true;
+
+        if (updateType is AppImageUpdateType.GitHub or AppImageUpdateType.GitLab or AppImageUpdateType.Codeberg
+            or AppImageUpdateType.Forgejo)
+        {
+            if (string.IsNullOrWhiteSpace(updateUrl) || updateUrl.Count(c => c == '/') != 1 ||
+                updateUrl.StartsWith('/') || updateUrl.EndsWith('/'))
+            {
+                isValid = false;
+                _updateUrlErrorLabel.SetText(T("Invalid format. Use owner/repo (e.g. seafoam-labs/shelly-alpm)"));
+                _updateUrlErrorLabel.SetVisible(true);
+                _updateUrlEntry.AddCssClass("error");
+            }
+            else
+            {
+                _updateUrlErrorLabel.SetVisible(false);
+                _updateUrlEntry.RemoveCssClass("error");
+            }
+        }
+        else if (updateType == AppImageUpdateType.StaticUrl)
+        {
+            if (string.IsNullOrWhiteSpace(updateUrl) || !updateUrl.StartsWith("http"))
+            {
+                isValid = false;
+                _updateUrlErrorLabel.SetText(T("Invalid URL. Must start with http:// or https://"));
+                _updateUrlErrorLabel.SetVisible(true);
+                _updateUrlEntry.AddCssClass("error");
+            }
+            else
+            {
+                _updateUrlErrorLabel.SetVisible(false);
+                _updateUrlEntry.RemoveCssClass("error");
+            }
+        }
+        else
+        {
+            _updateUrlErrorLabel.SetVisible(false);
+            _updateUrlEntry.RemoveCssClass("error");
+        }
+
+        return isValid;
     }
 
     private static Widget CreateAppRow(AppImageDto app)
@@ -372,7 +439,19 @@ public sealed class AppImage(
                 string.IsNullOrEmpty(app.IconName) ? "application-x-executable-symbolic" : app.IconName;
 
         _updateTypeDropDown.Selected = (uint)app.UpdateType;
-        _updateUrlEntry.SetText(app.UpdateURl);
+        var updateInfo = "";
+        if (!string.IsNullOrEmpty(app.UpdateURl))
+        {
+            updateInfo = app.UpdateURl;
+        }
+
+        if (!string.IsNullOrEmpty(app.RepoOwner) && !string.IsNullOrEmpty(app.RepoName))
+        {
+            updateInfo = app.RepoOwner + "/" + app.RepoName;
+        }
+        _updateUrlEntry.SetText(updateInfo);
+        _updateUrlErrorLabel.SetVisible(false);
+        _updateUrlEntry.RemoveCssClass("error");
         _allowPrereleaseCheckButton.Active = app.AllowPrerelease;
         _installPathEntry.SetText(app.Path ?? "");
         _launchFlagsEntry.SetText(app.CommandLineArgs ?? "");
@@ -386,6 +465,7 @@ public sealed class AppImage(
         try
         {
             if (_selectedApp == null) return;
+            if (!ValidateUpdateConfig()) return;
 
             var updateType = (AppImageUpdateType)_updateTypeDropDown.Selected;
             var updateUrl = _updateUrlEntry.GetText();

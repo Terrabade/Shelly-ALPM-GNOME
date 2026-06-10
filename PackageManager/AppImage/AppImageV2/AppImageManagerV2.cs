@@ -15,7 +15,7 @@ namespace PackageManager.AppImage.AppImageV2;
 
 public class AppImageManagerV2(string installDirectory = "")
 {
-    private readonly string _installDirectory = string.IsNullOrEmpty(installDirectory) ? XdgPaths.DataHome() : installDirectory;
+    private readonly string _installDirectory = string.IsNullOrEmpty(installDirectory) ? XdgPaths.BinHome() : installDirectory;
     
     private static readonly string LocalDbPath =
         XdgPaths.ShellyCache("appimage-local-meta-store", "appimage-metadata-v2.db");
@@ -74,7 +74,7 @@ public class AppImageManagerV2(string installDirectory = "")
         bool allowPrerelease = false)
     {
         LogMessage(
-            $"Configuring updates for {name} {updateInfo}, type: {updateType}, allowPrerelease: {allowPrerelease}...");
+            $"Configuring updates for {name} {updateInfo}, type: {updateType}, allowPrerelease: {allowPrerelease}");
         var appImages = await GetAppImagesFromLocalDb();
         var appImage = appImages.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
         if (appImage == null) return false;
@@ -871,12 +871,15 @@ public class AppImageManagerV2(string installDirectory = "")
         var appImages = await GetAppImagesFromLocalDb();
         var appImage =
             appImages.FirstOrDefault(a => string.Equals(a.Name, update.Name, StringComparison.OrdinalIgnoreCase));
+     
         if (appImage == null)
         {
             LogError($"AppImage '{update.Name}' not found in local database.");
             return 1;
         }
 
+        LogMessage($"Updating {appImage.Name}");
+        
         if (string.IsNullOrEmpty(update.DownloadUrl))
         {
             LogError($"No download URL found for {update.Name}.");

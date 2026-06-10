@@ -18,7 +18,9 @@ namespace Shelly.Gtk.Services;
 public class UnprivilegedOperationService(
     ITrayDbus trayDbus,
     IPackageUpdateNotifier packageUpdateNotifier,
-    IDirtyService dirtyService) : IUnprivilegedOperationService
+    IDirtyService dirtyService,
+    IAlpmEventService alpmEventService,
+    ILockoutService lockoutService) : IUnprivilegedOperationService
 {
     private readonly string _cliPath = CliPathResolver.FindCliPath();
 
@@ -500,7 +502,7 @@ public class UnprivilegedOperationService(
         var errorBuilder = new StringBuilder();
         StreamWriter? stdinWriter = null;
 
-        var eventRouter = new EventRouter();
+        var eventRouter = new EventRouter(alpmEventService, lockoutService);
 
         process.OutputDataReceived += async (sender, e) =>
         {

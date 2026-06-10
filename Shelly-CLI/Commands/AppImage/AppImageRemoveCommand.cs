@@ -22,10 +22,10 @@ public class AppImageRemoveCommand : AsyncCommand<AppImageRemoveSettings>
             return 1;
         }
 
-        var installDir = XdgPaths.BinHome();
+        var installDir = ConfigManager.ReadConfig().AppImageInstallPath ?? XdgPaths.BinHome();
         if (!Directory.Exists(installDir))
         {
-            AnsiConsole.MarkupLine("[yellow]Info: /opt/shelly directory does not exist. No AppImages to remove.[/]");
+            AnsiConsole.MarkupLine($"[yellow]Info: {installDir} directory does not exist. No AppImages to remove.[/]");
             return 0;
         }
 

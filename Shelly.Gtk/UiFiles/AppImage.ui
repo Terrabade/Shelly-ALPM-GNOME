@@ -160,40 +160,36 @@
         <child type="overlay">
             <object class="GtkBox" id="MigrationOverlay">
                 <property name="visible">false</property>
-                <property name="halign">expand</property>
-                <property name="valign">expand</property>
+                <property name="halign">center</property>
+                <property name="valign">center</property>
                 <property name="orientation">vertical</property>
+                <property name="margin-start">24</property>
+                <property name="margin-end">24</property>
+                <property name="margin-top">24</property>
+                <property name="margin-bottom">24</property>
                 <style>
                     <class name="background"/>
                 </style>
                 <child>
-                    <object class="GtkWindowHandle">
+                    <object class="GtkBox">
+                        <property name="orientation">vertical</property>
+                        <property name="width-request">450</property>
+                        <style>
+                            <class name="card"/>
+                        </style>
                         <child>
                             <object class="GtkBox">
                                 <property name="orientation">vertical</property>
                                 <property name="spacing">24</property>
-                                <property name="halign">center</property>
-                                <property name="valign">center</property>
-                                <property name="vexpand">true</property>
-                                <style>
-                                    <class name="card"/>
-                                </style>
-                                <property name="margin-start">40</property>
-                                <property name="margin-end">40</property>
-                                <property name="margin-top">40</property>
-                                <property name="margin-bottom">40</property>
-                                <child>
-                                    <object class="GtkImage">
-                                        <property name="icon-name">system-software-update-symbolic</property>
-                                        <property name="pixel-size">64</property>
-                                        <style>
-                                            <class name="dim-label"/>
-                                        </style>
-                                    </object>
-                                </child>
+                                <property name="margin-start">32</property>
+                                <property name="margin-end">32</property>
+                                <property name="margin-top">32</property>
+                                <property name="margin-bottom">32</property>
                                 <child>
                                     <object class="GtkLabel">
-                                        <property name="label" translatable="yes">AppImage Migration Required</property>
+                                        <property name="label" translatable="yes">AppImage Migration</property>
+                                        <property name="justify">center</property>
+                                        <property name="wrap">true</property>
                                         <style>
                                             <class name="title-1"/>
                                         </style>
@@ -201,11 +197,10 @@
                                 </child>
                                 <child>
                                     <object class="GtkLabel">
-                                        <property name="label" translatable="yes">To continue managing your AppImages with shelly, you must migrate to the new V2 implementation.
-This will move your AppImages and metadata to the new format.</property>
+                                        <property name="label" translatable="yes">To continue managing your AppImages with shelly a confirmation is required to switch to the new v2 implementation.</property>
                                         <property name="justify">center</property>
                                         <property name="wrap">true</property>
-                                        <property name="max-width-chars">50</property>
+                                        <property name="max-width-chars">40</property>
                                         <style>
                                             <class name="body"/>
                                         </style>
@@ -216,15 +211,14 @@ This will move your AppImages and metadata to the new format.</property>
                                         <property name="halign">center</property>
                                         <style>
                                             <class name="suggested-action"/>
-                                            <class name="pill"/>
                                         </style>
                                         <child>
                                             <object class="GtkLabel">
                                                 <property name="label" translatable="yes">Migrate Now</property>
-                                                <property name="margin-start">20</property>
-                                                <property name="margin-end">20</property>
-                                                <property name="margin-top">10</property>
-                                                <property name="margin-bottom">10</property>
+                                                <property name="margin-start">32</property>
+                                                <property name="margin-end">32</property>
+                                                <property name="margin-top">6</property>
+                                                <property name="margin-bottom">6</property>
                                                 <style>
                                                     <class name="bold"/>
                                                 </style>
@@ -407,7 +401,7 @@ This will move your AppImages and metadata to the new format.</property>
                                                                 <property name="valign">center</property>
                                                                 <property name="has-frame">false</property>
                                                                 <property name="tooltip-text" translatable="yes">Get more information about Update URL / Repository Info</property>
-                                                                <property name="uri">https://www.seafoam-labs.org/</property>
+                                                                <property name="uri">https://www.seafoam-labs.org/shelly-alpm/docs/appimage/</property>
                                                                 <child>
                                                                     <object class="GtkImage">
                                                                         <property name="icon-name">dialog-information-symbolic</property>
@@ -420,6 +414,17 @@ This will move your AppImages and metadata to the new format.</property>
                                                 <child>
                                                     <object class="GtkEntry" id="UpdateUrlEntry">
                                                         <property name="placeholder-text" translatable="yes">e.g. owner/repo or https://...</property>
+                                                    </object>
+                                                </child>
+                                                <child>
+                                                    <object class="GtkLabel" id="UpdateUrlErrorLabel">
+                                                        <property name="visible">false</property>
+                                                        <property name="xalign">0</property>
+                                                        <property name="label" translatable="yes">Invalid format. Use owner/repo (e.g. seafoam-labs/shelly-alpm)</property>
+                                                        <style>
+                                                            <class name="error"/>
+                                                            <class name="caption"/>
+                                                        </style>
                                                     </object>
                                                 </child>
                                                 <child>
