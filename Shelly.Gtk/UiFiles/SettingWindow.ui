@@ -573,6 +573,25 @@
                                                             </object>
                                                         </child>
                                                         <child>
+                                                            <object class="GtkBox" id="appimage_install_path_box">
+                                                                <property name="orientation">horizontal</property>
+                                                                <property name="spacing">12</property>
+                                                                <child>
+                                                                    <object class="GtkLabel">
+                                                                        <property name="label" translatable="yes">AppImage Install Path</property>
+                                                                        <property name="halign">start</property>
+                                                                        <property name="hexpand">true</property>
+                                                                    </object>
+                                                                </child>
+                                                                <child>
+                                                                    <object class="GtkButton" id="appimage_install_path_button">
+                                                                        <property name="label" translatable="yes">Select Directory</property>
+                                                                        <property name="halign">end</property>
+                                                                    </object>
+                                                                </child>
+                                                            </object>
+                                                        </child>
+                                                        <child>
                                                             <object class="GtkBox">
                                                                 <property name="orientation">horizontal</property>
                                                                 <property name="spacing">12</property>

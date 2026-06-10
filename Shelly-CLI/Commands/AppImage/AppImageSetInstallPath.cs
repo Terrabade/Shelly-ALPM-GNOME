@@ -11,7 +11,7 @@ public class AppImageSetInstallPath : AsyncCommand<AppImageInstallPathSettings>
         if (Directory.Exists(settings.Path))
         {
             var config = ConfigManager.ReadConfig();
-            config.AppImageInstallPath ??= settings.Path;
+            config.AppImageInstallPath = settings.Path;
             ConfigManager.SaveConfig(config);
             return 0;
         }

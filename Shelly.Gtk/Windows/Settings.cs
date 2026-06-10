@@ -148,6 +148,36 @@ public class Settings(
             trayIconButton.Label = Path.GetFileName(_config.TrayIconPath);
         }
 
+        var appImageInstallPathButton = (Button)builder.GetObject("appimage_install_path_button")!;
+        if (!string.IsNullOrEmpty(_config.AppImageInstallPath))
+        {
+            appImageInstallPathButton.Label = _config.AppImageInstallPath;
+        }
+
+        appImageInstallPathButton.OnClicked += async (_, _) =>
+        {
+            var folderChooser = FileDialog.New();
+            folderChooser.Title = Translations.T("Select AppImage Install Directory");
+            try
+            {
+                var folder = await folderChooser.SelectFolderAsync(null);
+                if (folder != null)
+                {
+                    var path = folder.GetPath();
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        _config.AppImageInstallPath = path;
+                        appImageInstallPathButton.Label = path;
+                        SaveConfig();
+                    }
+                }
+            }
+            catch
+            {
+                // Cancelled
+            }
+        };
+
         trayIconButton.OnClicked += async (_, _) =>
         {
             var results = await SetupFileSelector(trayIconButton);
