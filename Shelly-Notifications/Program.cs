@@ -19,6 +19,12 @@ try
     await connection.ConnectAsync();
 
     const string shellyNotificationsService = "org.shelly.Notifications";
+
+    var dbusServices = await connection.ListServicesAsync();
+    var shellyServices = dbusServices.Any(s => s.StartsWith(shellyNotificationsService, StringComparison.Ordinal));
+    if (shellyServices)
+        throw new InvalidOperationException($"Service {shellyNotificationsService} is already running.");
+
     await connection.RequestNameAsync(shellyNotificationsService);
 
     var trayHandler = new StatusNotifierItemHandler(connection, configReader);
