@@ -679,14 +679,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                 Interlocked.Increment(ref pendingCallbacks);
                 try
                 {
-                    await QuestionRouter.TryDispatchAsync(b64,SafeWriteAsync, async dto => {
-                        var args = new PackageBuildDiffEventArgs(dto.PackageName,
-                            dto.OldPkgbuild,
-                            dto.NewPkgbuild,
-                            dto.DiffLines!);
-                        _genericQuestionService.RaisePackageBuildDiff(args);    
-                        return await args.ResponseTask;    
-                    });  
+                    await QuestionRouter.TryDispatchAsync(b64, SafeWriteAsync, _genericQuestionService);
                 }
                 catch (Exception ex)
                 {

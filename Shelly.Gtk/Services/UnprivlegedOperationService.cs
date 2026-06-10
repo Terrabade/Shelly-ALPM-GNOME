@@ -470,16 +470,7 @@ public class UnprivilegedOperationService(
                             await stdinWriter.WriteLineAsync(value);
                             await stdinWriter.FlushAsync();
                         }
-                    }, async dto =>
-                    {
-                        var args = new PackageBuildDiffEventArgs(dto.PackageName,
-                            dto.OldPkgbuild,
-                            dto.NewPkgbuild,
-                            dto.DiffLines!);
-                        genericQuestionService.RaisePackageBuildDiff(args);     
-                        return await args.ResponseTask; 
-                    }
-                        );
+                    }, genericQuestionService);
                 }
                 catch (Exception ex)
                 {
