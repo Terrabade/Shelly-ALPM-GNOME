@@ -458,28 +458,9 @@ public class AurInstall(
 
                 lockoutService.Show(T("Installing..."));
 
-                var packageBuilds = await privilegedOperationService.GetAurPackageBuild(selectedPackages);
-
-                if (packageBuilds.Count == 0)
-                {
-                    Console.WriteLine(T("No packages found."));
-                    return;
-                }
-
-                foreach (var pkgbuild in packageBuilds)
-                {
-                    if (pkgbuild.PkgBuild == null) continue;
-
-                    var buildArgs =
-                        new PackageBuildEventArgs(T("Displaying Package Build {0}", pkgbuild.Name), pkgbuild.PkgBuild);
-                    genericQuestionService.RaisePackageBuild(buildArgs);
-
-                    if (!await buildArgs.ResponseTask)
-                    {
-                        return;
-                    }
-                }
-
+                // The PKGBUILD review/diff is now surfaced through the unified
+                // wire-based PkgbuildReviewDialog during the operation, so the
+                // legacy pre-operation PKGBUILD prompt is no longer raised here.
                 result = await privilegedOperationService.InstallAurPackagesAsync(selectedPackages,
                     _chrootCheck.GetActive(), _runChecksCheck.GetActive());
                 if (!result.Success)
