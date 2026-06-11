@@ -662,15 +662,6 @@ sealed class Program
                 });
             };
 
-            genericQuestionService.PackageBuildRequested += (_, e) =>
-            {
-                GLib.Functions.IdleAdd(0, () =>
-                {
-                    PackageBuildDialog.ShowPackageBuildDialog(mainOverlay, e);
-                    return false;
-                });
-            };
-
             genericQuestionService.ToastMessageRequested += (_, e) =>
             {
                 GLib.Functions.IdleAdd(0, () =>
@@ -830,24 +821,10 @@ sealed class Program
                     }
 
                     lockoutService.Show("Upgrading all packages...");
-                    var aurUpdates = packagesNeedingUpdate.Aur;
-                    if (aurUpdates.Count != 0)
-                    {
-                        var aurPackageNames = aurUpdates.Select(p => p.Name).ToList();
-                        var packageBuilds = await privilegedOperationService.GetAurPackageBuild(aurPackageNames);
-                        foreach (var pkgbuild in packageBuilds)
-                        {
-                            if (pkgbuild.PkgBuild == null) continue;
-                            var buildArgs = new PackageBuildEventArgs($"Displaying Package Build {pkgbuild.Name}",
-                                pkgbuild.PkgBuild);
-                            genericQuestionService.RaisePackageBuild(buildArgs);
-                            if (!await buildArgs.ResponseTask)
-                            {
-                                return;
-                            }
-                        }
-                    }
 
+                    // The PKGBUILD review/diff is now surfaced through the unified
+                    // wire-based PkgbuildReviewDialog during the operation, so the
+                    // legacy pre-operation PKGBUILD prompt is no longer raised here.
                     var upgradeResult = await privilegedOperationService.UpgradeAllAsync();
                     if (upgradeResult.NeedsReboot)
                     {
