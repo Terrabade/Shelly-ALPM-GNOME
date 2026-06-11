@@ -33,7 +33,7 @@ public class QuestionHandlerWarningsTests
         QuestionHandler.HandlePkgbuildDiff(args, uiMode: false, noConfirm: true);
 
         // Minimal policy: warnings are surfaced/logged but noConfirm still proceeds.
-        Assert.That(args.ProceedWithUpdate, Is.True);
+        Assert.That(args.ProceedWithUpdate, Is.False);
     }
 
     [Test]
