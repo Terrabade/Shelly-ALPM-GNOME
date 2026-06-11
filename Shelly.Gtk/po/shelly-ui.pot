@@ -3,7 +3,7 @@ msgstr ""
 "Project-Id-Version: shelly-ui 2.2.4.1\n"
 "Report-Msgid-Bugs-To: csnyder@seafoamlabs.org\n"
 "POT-Creation-Date: 2026-05-14 18:41-0400\n"
-"PO-Revision-Date: 2026-06-01 05:03+EST\n"
+"PO-Revision-Date: 2026-06-09 15:49+EST\n"
 "Last-Translator: csnyder@seafoamlabs.org\n"
 "Language-Team: csnyder@seafoamlabs.org\n"
 "Language: en\n"
@@ -1314,4 +1314,13 @@ msgid "Downgrade"
 msgstr ""
 
 msgid "Enable Package Downgrade"
+msgstr ""
+
+msgid "PKGBUILD Diff - {0}"
+msgstr ""
+
+msgid "Review the PKGBUILD changes before continuing."
+msgstr ""
+
+msgid "Accept Changes"
 msgstr ""

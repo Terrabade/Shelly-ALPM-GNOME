@@ -94,4 +94,41 @@ public static class PackageBuilderDiffGenerator
         return result;
     }
     
+    public static IEnumerable<string> BuildUnifiedDiffLinesUiMode(string oldText, string newText)
+    {
+        var oldLines = oldText.Split('\n');
+        var newLines = newText.Split('\n');
+
+        var lcs = new int[oldLines.Length + 1, newLines.Length + 1];
+        for (int i = oldLines.Length - 1; i >= 0; i--)
+        for (int j = newLines.Length - 1; j >= 0; j--)
+            lcs[i, j] = oldLines[i].TrimEnd('\r') == newLines[j].TrimEnd('\r')
+                ? lcs[i + 1, j + 1] + 1
+                : Math.Max(lcs[i + 1, j], lcs[i, j + 1]);
+
+        var result = new List<string>();
+        int oi = 0, ni = 0;
+        while (oi < oldLines.Length || ni < newLines.Length)
+        {
+            if (oi < oldLines.Length && ni < newLines.Length &&
+                oldLines[oi].TrimEnd('\r') == newLines[ni].TrimEnd('\r'))
+            {
+                result.Add($"{oldLines[oi].TrimEnd('\r')}");
+                oi++; ni++;
+            }
+            else if (ni < newLines.Length &&
+                     (oi >= oldLines.Length || lcs[oi, ni + 1] >= lcs[oi + 1, ni]))
+            {
+                result.Add($"+{newLines[ni].TrimEnd('\r')}");
+                ni++;
+            }
+            else
+            {
+                result.Add($"-{oldLines[oi].TrimEnd('\r')}");
+                oi++;
+            }
+        }
+        return result;
+    }
+
 }

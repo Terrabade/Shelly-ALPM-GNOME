@@ -19,10 +19,11 @@ public class PrivilegedOperationService : IPrivilegedOperationService
     private readonly ITrayDbus _trayDbus;
     private readonly IPackageUpdateNotifier _packageUpdateNotifier;
     private readonly IDirtyService _dirtyService;
+    private readonly IGenericQuestionService _genericQuestionService;
 
     public PrivilegedOperationService(ICredentialManager credentialManager, IAlpmEventService alpmEventService,
         IConfigService configService, ILockoutService lockoutService, ITrayDbus trayDbus,
-        IPackageUpdateNotifier packageUpdateNotifier, IDirtyService dirtyService)
+        IPackageUpdateNotifier packageUpdateNotifier, IDirtyService dirtyService, IGenericQuestionService genericQuestionService)
     {
         _credentialManager = credentialManager;
         _alpmEventService = alpmEventService;
@@ -32,6 +33,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         _packageUpdateNotifier = packageUpdateNotifier;
         _dirtyService = dirtyService;
         _cliPath = CliPathResolver.FindCliPath();
+        _genericQuestionService = genericQuestionService;
     }
 
     private string[] AppendNoConfirmIfNeeded(params string[] args)
@@ -677,7 +679,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                 Interlocked.Increment(ref pendingCallbacks);
                 try
                 {
-                    await QuestionRouter.TryDispatchAsync(b64, SafeWriteAsync);
+                    await QuestionRouter.TryDispatchAsync(b64, SafeWriteAsync, _genericQuestionService);
                 }
                 catch (Exception ex)
                 {

@@ -17,7 +17,7 @@ public static class QuestionHandler
     public static void HandleQuestion(PkgbuildDiffRequestEventArgs args, bool uiMode = false, bool noConfirm = false)
         => HandlePkgbuildDiff(args, uiMode, noConfirm);
 
-    public static void HandlePkgbuildDiff(PkgbuildDiffRequestEventArgs args, bool uiMode, bool noConfirm)
+    private static void HandlePkgbuildDiff(PkgbuildDiffRequestEventArgs args, bool uiMode, bool noConfirm)
     {
         if (noConfirm)
         {
@@ -36,8 +36,9 @@ public static class QuestionHandler
 
         // UiMode: emit a framed PkgbuildDiffQuestionDto on stdout, block on the matching answer.
         var id = Guid.NewGuid().ToString("N");
+        var diffLines = PackageBuilderDiffGenerator.BuildUnifiedDiffLinesUiMode(args.OldPkgbuild, args.NewPkgbuild).ToList();
         JsonPackFrame.WriteToStdout<QuestionRequest>(new PkgbuildDiffQuestionDto(
-            id, args.PackageName, args.OldPkgbuild, args.NewPkgbuild));
+            id, args.PackageName, args.OldPkgbuild, args.NewPkgbuild, diffLines));
 
         var resp = ReadAnswer<PkgbuildDiffAnswer>(id);
         args.ProceedWithUpdate = resp.ProceedWithUpdate;

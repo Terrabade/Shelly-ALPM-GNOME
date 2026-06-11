@@ -10,7 +10,8 @@ public sealed record PkgbuildDiffQuestionDto(
     string QuestionId,
     string PackageName,
     string OldPkgbuild,
-    string NewPkgbuild) : QuestionRequest(QuestionId);
+    string NewPkgbuild,
+    List<string>? DiffLines = null): QuestionRequest(QuestionId);
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "$kind")]
 [JsonDerivedType(typeof(PkgbuildDiffAnswer), "a.pkgbuilddiff")]
