@@ -3,7 +3,7 @@ msgstr ""
 "Project-Id-Version: shelly-ui 2.2.4.1\n"
 "Report-Msgid-Bugs-To: csnyder@seafoamlabs.org\n"
 "POT-Creation-Date: 2026-05-14 18:41-0400\n"
-"PO-Revision-Date: 2026-06-12 00:52+0200\n"
+"PO-Revision-Date: 2026-06-12 01:17+0200\n"
 "Last-Translator: helge1o1o1@gmail.com\n"
 "Language-Team: Deutschland (Deutsch) helge1o1o1@gmail.com\n"
 "Language: de\n"
@@ -779,13 +779,13 @@ msgid "Package installed successfully"
 msgstr "Paket erfolgreich installiert"
 
 msgid "Remove "
-msgstr ""
+msgstr "Entfernen"
 
 msgid "Removing package..."
-msgstr ""
+msgstr "Paket entfernen..."
 
 msgid "Package removed successfully"
-msgstr ""
+msgstr "Paket erfolgreich entfernt"
 
 msgid "Reboot required after flatpak installation."
 msgstr "Nach Flatpak-Installation Neustart erforderlich."
@@ -903,7 +903,7 @@ msgid "Author"
 msgstr "Autor"
 
 msgid "Version: -"
-msgstr ""
+msgstr "Version: -"
 
 msgid "Size: -"
 msgstr "Größe: -"
@@ -939,7 +939,7 @@ msgid "Remote URL"
 msgstr "Remote-URL"
 
 msgid "e.g., https://flathub.org/repo/flathub.flatpakrepo"
-msgstr ""
+msgstr "z.B., https://flathub.org/repo/flathub.flatpakrepo"
 
 msgid "Scope"
 msgstr "Anwendungsbereich"
@@ -948,10 +948,10 @@ msgid "Remove Selected"
 msgstr "Ausgewählte entfernen"
 
 msgid "Flatpak Repair"
-msgstr ""
+msgstr "Flatpak-Reparatur"
 
 msgid "Repairs Flatpak Installation (Experimental)"
-msgstr ""
+msgstr "Repariert die Flatpak-Installation (experimentell)"
 
 msgid "Update All"
 msgstr "Alle aktualisieren"
@@ -1373,3 +1373,4 @@ msgstr "Trotzdem installieren"
 
 msgid "{0} used in {1}"
 msgstr "{0} verwendet in {1}"
+
