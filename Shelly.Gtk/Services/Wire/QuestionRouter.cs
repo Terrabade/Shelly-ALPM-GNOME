@@ -1,9 +1,8 @@
-using Gtk.Internal;
+using Gtk;
 using Shelly.Gtk.Helpers;
-using Shelly.Gtk.UiModels;
-using Shelly.Utilities.Eventing;
-using Shelly.Gtk.Services;
 using Shelly.Gtk.Windows.Dialog;
+using Shelly.Utilities.Eventing;
+
 
 namespace Shelly.Gtk.Services.Wire;
 
@@ -18,8 +17,9 @@ internal static class QuestionRouter
         
         QuestionResponseDto resp = req switch
         {
-            PkgbuildDiffQuestionDto d => new PkgbuildDiffAnswer(d.QuestionId, 
-                await ShowPkgbuildDialogAsync(d, genericQuestionService)),
+            PkgbuildDiffQuestionDto d => new PkgbuildDiffAnswer(
+                d.QuestionId,
+                await PromptPkgbuildDiffAsync(d)),
             _ => throw new InvalidOperationException($"Unhandled QuestionRequest {req.GetType()}")
         };
         
@@ -27,16 +27,27 @@ internal static class QuestionRouter
         await writeFrame(frame);
         return true;
     }
-    private static Task<bool> ShowPkgbuildDialogAsync(
-        PkgbuildDiffQuestionDto dto,
-        IGenericQuestionService genericQuestionService)
+
+    private static Task<bool> PromptPkgbuildDiffAsync(PkgbuildDiffQuestionDto d)
     {
-        var args = new PackageBuildDiffEventArgs(
-            dto.PackageName,
-            dto.DiffLines!); 
+        // No findings → preserve the previous auto-approve behavior.
+        // Guard against a null list (absent on the wire / fresh install).
+        var warnings = d.Warnings ?? [];
+        if (warnings.Count == 0)
+            return Task.FromResult(true);
 
-        genericQuestionService.RaisePackageBuildDiff(args);
+        // GTK widgets must only be touched from the main thread; marshal there
+        // and bridge the dialog result back to this background wire thread.
+        var tcs = new TaskCompletionSource<bool>();
 
-        return args.ResponseTask;
+        GLib.Functions.IdleAdd(0, () =>
+        {
+            var parent = (Gio.Application.GetDefault() as Application)?.GetActiveWindow();
+            _ = PkgbuildWarningDialog.ShowAsync(parent, d.PackageName, warnings)
+                .ContinueWith(t => tcs.TrySetResult(t.IsCompletedSuccessfully && t.Result));
+            return false;
+        });
+
+        return tcs.Task;
     }
 }

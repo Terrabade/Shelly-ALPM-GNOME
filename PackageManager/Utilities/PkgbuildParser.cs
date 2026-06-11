@@ -15,13 +15,16 @@ public static class PkgbuildParser
     public static PkgbuildInfo Parse(string pkgbuildPath)
     {
         var pkgbuildContent = File.ReadAllText(pkgbuildPath);
-        return ParseContent(pkgbuildContent);
+        return ParseContent(pkgbuildContent, Path.GetDirectoryName(pkgbuildPath));
     }
     
-    public static PkgbuildInfo ParseContent(string pkgbuildContent)
+    public static PkgbuildInfo ParseContent(string pkgbuildContent, string? baseDir = null)
     {
         var vars = BuildVariableDictionary(pkgbuildContent);
         ScanPrepareForLiteralAssignments(pkgbuildContent, vars);
+
+        var rawInstall = ResolveOrParse(pkgbuildContent, vars, "install");
+        var installFile = rawInstall is null ? null : ResolveString(rawInstall, vars);
 
         return new PkgbuildInfo
         {
@@ -45,7 +48,51 @@ public static class PkgbuildParser
             Sha256Sums = ParseArray(pkgbuildContent, "sha256sums"),
             Sha512Sums = ParseArray(pkgbuildContent, "sha512sums"),
             Md5Sums = ParseArray(pkgbuildContent, "md5sums"),
+
+            InstallFile = installFile,
+            PostInstall = ResolvePostInstall(installFile, baseDir)
+                          ?? ExtractFunctionBody(pkgbuildContent, "post_install")
         };
+    }
+
+    private static string? ResolvePostInstall(string? installFile, string? baseDir)
+    {
+        if (string.IsNullOrWhiteSpace(installFile))
+            return null;
+
+        var path = baseDir is null ? installFile : Path.Combine(baseDir, installFile);
+        if (!File.Exists(path))
+        {
+            System.Console.Error.WriteLine(
+                $"[Shelly] Warning: install file not found: {path}");
+            return null;
+        }
+
+        var installContent = File.ReadAllText(path);
+        return ExtractFunctionBody(installContent, "post_install");
+    }
+
+    private static string? ExtractFunctionBody(string content, string functionName)
+    {
+        var headerMatch = Regex.Match(
+            content,
+            $@"^\s*(?:function\s+)?{Regex.Escape(functionName)}\s*\(\s*\)\s*\{{",
+            RegexOptions.Multiline);
+        if (!headerMatch.Success)
+            return null;
+
+        var start = headerMatch.Index + headerMatch.Length;
+        var depth = 1;
+        var i = start;
+        while (i < content.Length && depth > 0)
+        {
+            var c = content[i];
+            if (c == '{') depth++;
+            else if (c == '}') depth--;
+            i++;
+        }
+
+        return content.Substring(start, System.Math.Max(0, i - start - 1)).Trim();
     }
 
 
@@ -421,6 +468,10 @@ public class PkgbuildInfo
     public List<string> Sha512Sums { get; set; } = new();
     public List<string> Md5Sums { get; set; } = new();
     public Dictionary<string, string> Variables { get; set; } = new();
+    
+    public string? InstallFile { get; set; }
+    
+    public string? PostInstall { get; set; }
 
     public List<ParsedDependency> ParsedDepends
     {
