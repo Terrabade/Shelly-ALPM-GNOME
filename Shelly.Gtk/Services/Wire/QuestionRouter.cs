@@ -2,6 +2,7 @@ using Gtk;
 using Shelly.Gtk.Helpers;
 using Shelly.Gtk.Windows.Dialog;
 using Shelly.Utilities.Eventing;
+using Shelly.Utilities.Models;
 
 
 namespace Shelly.Gtk.Services.Wire;
@@ -30,11 +31,11 @@ internal static class QuestionRouter
 
     private static Task<bool> PromptPkgbuildDiffAsync(PkgbuildDiffQuestionDto d)
     {
-        // No findings → preserve the previous auto-approve behavior.
-        // Guard against a null list (absent on the wire / fresh install).
+        // Always present the PKGBUILD diff; scriptlet warnings (when present) are
+        // layered on top. Compute the diff on this side from the old/new PKGBUILD
+        // already carried on the wire (no DTO/protocol change required).
         var warnings = d.Warnings ?? [];
-        if (warnings.Count == 0)
-            return Task.FromResult(true);
+        var diff = PkgbuildDiff.BuildLines(d.OldPkgbuild ?? string.Empty, d.NewPkgbuild ?? string.Empty);
 
         // GTK widgets must only be touched from the main thread; marshal there
         // and bridge the dialog result back to this background wire thread.
@@ -43,7 +44,7 @@ internal static class QuestionRouter
         GLib.Functions.IdleAdd(0, () =>
         {
             var parent = (Gio.Application.GetDefault() as Application)?.GetActiveWindow();
-            _ = PkgbuildWarningDialog.ShowAsync(parent, d.PackageName, warnings)
+            _ = PkgbuildReviewDialog.ShowAsync(parent, d.PackageName, diff, warnings)
                 .ContinueWith(t => tcs.TrySetResult(t.IsCompletedSuccessfully && t.Result));
             return false;
         });
