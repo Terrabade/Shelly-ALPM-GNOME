@@ -1006,7 +1006,14 @@ public class AppImageManagerV2(string installDirectory = "")
         {
             var json = await File.ReadAllTextAsync(localDbDir);
             var appImages = JsonSerializer.Deserialize(json, AppImageJsonContext.Default.ListAppImageDto) ?? [];
-            foreach (var newApp in appImages.Select(apps => new AppImageDtoV2()
+            
+            var uniqueItems = appImages
+                .GroupBy(item => item.Name)
+                .Where(group => group.Count() == 1)
+                .SelectMany(group => group)
+                .ToList();
+            
+            foreach (var newApp in uniqueItems.Select(apps => new AppImageDtoV2()
                      {
                          Name = apps.Name,
                          Version = apps.Version,
@@ -1080,6 +1087,8 @@ public class AppImageManagerV2(string installDirectory = "")
                     {
                         if (!Directory.Exists(iconDir)) continue;
 
+                        XdgPaths.FixOwnershipIfRoot(iconDir);
+                        
                         var potentialIcons = Directory.GetFiles(iconDir, $"{cleanName}.*");
                         foreach (var icon in potentialIcons)
                         {
