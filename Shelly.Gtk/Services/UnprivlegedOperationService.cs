@@ -446,10 +446,11 @@ public class UnprivilegedOperationService(
         return result;
     }
 
-    public async Task<UnprivilegedOperationResult> AppImageRemoveAsync(string name)
+    public async Task<UnprivilegedOperationResult> AppImageRemoveAsync(string name, bool removeConfig = false)
     {
-        var result =
-            await ExecuteUnprivilegedCommandAsync("Remove AppImage's", "appimage", "remove", $"\"{name}\"", "-n");
+        var args = new List<string> { "appimage", "remove", $"\"{name}\"", "-n" };
+        if (removeConfig) args.Add("-c");
+        var result = await ExecuteUnprivilegedCommandAsync("Remove AppImage's", [.. args]);
         if (result.Success) dirtyService.MarkDirty(DirtyScopes.AppImage);
         return result;
     }

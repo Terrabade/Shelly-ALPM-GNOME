@@ -65,7 +65,7 @@ public interface IUnprivilegedOperationService
     Task<UnprivilegedOperationResult> AppImageInstallAsync(string filePath, string updateUrl = "",
         AppImageUpdateType updateType = AppImageUpdateType.None);
     Task<UnprivilegedOperationResult> AppImageUpgradeAsync();
-    Task<UnprivilegedOperationResult> AppImageRemoveAsync(string name);
+    Task<UnprivilegedOperationResult> AppImageRemoveAsync(string name, bool removeConfig = false);
     Task<UnprivilegedOperationResult> AppImageConfigureUpdatesAsync(string url, string name, AppImageUpdateType updateType, bool allowPrerelease);
     Task<UnprivilegedOperationResult> AppImageSyncApp(string name);
     Task<UnprivilegedOperationResult> AppImageSyncAll();

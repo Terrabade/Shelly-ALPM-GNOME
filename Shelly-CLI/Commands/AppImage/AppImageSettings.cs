@@ -43,6 +43,10 @@ public class AppImageRemoveSettings : CommandSettings
     [CommandOption("-n|--no-confirm")]
     [Description("Proceed without asking for user confirmation")]
     public bool NoConfirm { get; set; }
+
+    [CommandOption("-c|--remove-config")]
+    [Description("Also remove config, data, cache and state directories created by the AppImage")]
+    public bool RemoveConfig { get; set; }
 }
 
 public class AppImageConfigUpdatesSettings : CommandSettings

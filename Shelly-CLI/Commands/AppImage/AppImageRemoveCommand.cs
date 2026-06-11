@@ -88,7 +88,7 @@ public class AppImageRemoveCommand : AsyncCommand<AppImageRemoveSettings>
             manager.MessageEvent += (_, args) => AnsiConsole.MarkupLine($"[blue]{args.Message.EscapeMarkup()}[/]");
         }
 
-        var result = await manager.RemoveAppImage(targetAppImage);
+        var result = await manager.RemoveAppImage(targetAppImage, settings.RemoveConfig);
         if (Program.IsUiMode)
             UiFrames.TxFinish(result == 0, "AppImage removed.", "Failed to remove AppImage.");
         return result;

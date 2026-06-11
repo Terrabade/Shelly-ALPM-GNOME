@@ -7,6 +7,7 @@ using Shelly.Gtk.Helpers;
 using Shelly.Gtk.Services;
 using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.AppImage;
+using Shelly.Gtk.Windows.Dialog;
 using Shelly.Utilities;
 using static Shelly.GTK.Resources.Translations;
 using File = System.IO.File;
@@ -418,6 +419,7 @@ public sealed class AppImage(
             lockoutService.Hide();
         }
     }
+    
 
     private void ShowListPage()
     {
@@ -579,9 +581,29 @@ public sealed class AppImage(
         {
             if (_selectedApp == null) return;
 
+            var args = RemoveConfigDialogue.BuildRemoveDialog();
+
+            genericQuestionService.RaiseDialog(args);
+
+            var message = await args.ResponseTask;
+            bool removeConfig;
+            switch (message)
+            {
+                case ConfigRemoveEnum.Cancel:
+                    return;
+                case ConfigRemoveEnum.KeepConfig:
+                    removeConfig = false;
+                    break;
+                case ConfigRemoveEnum.RemoveConfig:
+                    removeConfig = true;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
+
             lockoutService.Show(string.Format(T("Removing {0}..."), _selectedApp.Name));
 
-            var result = await unprivilegedOperationService.AppImageRemoveAsync(_selectedApp.Name);
+            var result = await unprivilegedOperationService.AppImageRemoveAsync(_selectedApp.Name, removeConfig);
 
             if (result.Success)
             {

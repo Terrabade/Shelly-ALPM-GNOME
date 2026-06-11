@@ -188,7 +188,7 @@ public class AppImageManagerV2(string installDirectory = "")
         }
     }
 
-    public async Task<int> RemoveAppImage(string appImagePath)
+    public async Task<int> RemoveAppImage(string appImagePath, bool removeConfigFiles = false)
     {
         var appName = Path.GetFileNameWithoutExtension(appImagePath);
         var cleanName = CleanInvalidNames(appName);
@@ -246,12 +246,19 @@ public class AppImageManagerV2(string installDirectory = "")
             {
                 if (!Directory.Exists(iconDir)) continue;
 
-                var potentialIcons = Directory.GetFiles(iconDir, $"{cleanName}.*");
+                var potentialIcons = Directory.GetFiles(iconDir)
+                    .Where(f => Path.GetFileNameWithoutExtension(f)
+                        .Equals(cleanName, StringComparison.OrdinalIgnoreCase));
                 foreach (var icon in potentialIcons)
                 {
                     File.Delete(icon);
                     LogMessage($"Removed icon: {icon}");
                 }
+            }
+            
+            if (removeConfigFiles)
+            {
+                RemoveAppConfigDirectories(appName, cleanName);
             }
         }
         catch (Exception ex)
@@ -261,6 +268,37 @@ public class AppImageManagerV2(string installDirectory = "")
         }
 
         return 0;
+    }
+
+    private void RemoveAppConfigDirectories(string appName, string cleanName)
+    {
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { appName, cleanName };
+        
+        var searchRoots = new[]
+        {
+            XdgPaths.ConfigHome(),
+            XdgPaths.DataHome(),
+            XdgPaths.CacheHome(),
+            XdgPaths.StateHome(),
+        };
+
+        foreach (var root in searchRoots)
+        {
+            if (!Directory.Exists(root)) continue;
+
+            foreach (var dir in candidates.Select(candidate => Path.Combine(root, candidate)).Where(Directory.Exists))
+            {
+                try
+                {
+                    Directory.Delete(dir, true);
+                    LogMessage($"Removed config directory: {dir}");
+                }
+                catch (Exception ex)
+                {
+                    LogWarning($"Could not remove config directory {dir}: {ex.Message}");
+                }
+            }
+        }
     }
 
     public async Task<bool> SyncAppImageMeta(List<string> appImageNames)
