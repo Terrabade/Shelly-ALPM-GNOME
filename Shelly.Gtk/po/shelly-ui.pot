@@ -1324,3 +1324,30 @@ msgstr ""
 
 msgid "Accept Changes"
 msgstr ""
+
+msgid "Allow Prerelease"
+msgstr ""
+
+msgid "AppImage Migration"
+msgstr ""
+
+msgid "Drop AppImage here to install"
+msgstr ""
+
+msgid "e.g. owner/repo or https://..."
+msgstr ""
+
+msgid "Get more information about Update URL / Repository Info"
+msgstr ""
+
+msgid "Invalid format. Use owner/repo (e.g. seafoam-labs/shelly-alpm)"
+msgstr ""
+
+msgid "Launch Flags"
+msgstr ""
+
+msgid "Migrate Now"
+msgstr ""
+
+msgid "To continue managing your AppImages with shelly a confirmation is required to switch to the new v2 implementation."
+msgstr ""
