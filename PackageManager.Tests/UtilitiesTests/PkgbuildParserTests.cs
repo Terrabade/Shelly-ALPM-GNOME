@@ -373,6 +373,61 @@ public class PkgbuildParserTests
     }
 
     [Test]
+    public void InlinePostInstall_RiskyTool_ProducesValidatorFinding()
+    {
+        // Fake PKGBUILD with NO install= file — only an inline post_install().
+        var pkgbuild = """
+                       pkgname=fakeapp
+                       pkgver=1.0
+                       pkgrel=1
+                       arch=('any')
+
+                       post_install() {
+                           echo "setting up"
+                           npm install -g fakeapp
+                       }
+                       """;
+
+        // Parse (no baseDir, so the inline fallback is what populates PostInstall).
+        var info = PkgbuildParser.ParseContent(pkgbuild);
+        Assert.That(info.PostInstall, Is.Not.Null);
+        Assert.That(info.PostInstall, Does.Contain("npm install -g fakeapp"));
+
+        // The "effect": validator flags the npm invocation.
+        var result = new PostInstallValidator().Validate(info);
+
+        Assert.That(result.HasFindings, Is.True);
+        var finding = result.Findings.Single(f => f.Tool == "npm");
+        Assert.Multiple(() =>
+        {
+            Assert.That(finding.Hook, Is.EqualTo("post_install"));
+            Assert.That(finding.Severity, Is.EqualTo(ValidationSeverity.Warning));
+            Assert.That(finding.MatchedLine, Is.EqualTo("npm install -g fakeapp"));
+            Assert.That(finding.Message, Does.Contain("npm"));
+        });
+    }
+
+    [Test]
+    public void InlinePostInstall_SafeCommands_ProduceNoFindings()
+    {
+        var pkgbuild = """
+                       pkgname=fakeapp
+                       pkgver=1.0
+
+                       post_install() {
+                           systemctl daemon-reload
+                           update-desktop-database -q
+                           # npm install -g should-be-ignored
+                       }
+                       """;
+
+        var info = PkgbuildParser.ParseContent(pkgbuild);
+        var result = new PostInstallValidator().Validate(info);
+
+        Assert.That(result.HasFindings, Is.False);
+    }
+
+    [Test]
     public void ParseContent_PostInstallNull_WhenFunctionAbsentInInstallFile()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), "shelly_pkgbuild_test_" + Guid.NewGuid().ToString("N"));
