@@ -7,6 +7,7 @@ public class GenericQuestionService : IGenericQuestionService
     public event EventHandler<GenericQuestionEventArgs>? Question;
     public event EventHandler<PackageBuildEventArgs>? PackageBuildRequested;
     public event EventHandler<GenericDialogEventArgs>? Dialog;
+    public event EventHandler<PackageBuildDiffEventArgs>? PackageBuildDiffRequested;
     
     public event EventHandler<ToastMessageEventArgs>? ToastMessageRequested;
 
@@ -19,7 +20,12 @@ public class GenericQuestionService : IGenericQuestionService
     {
         PackageBuildRequested?.Invoke(this, args);
     }
-
+    
+    public void RaisePackageBuildDiff(PackageBuildDiffEventArgs args)
+    {
+        PackageBuildDiffRequested?.Invoke(this, args);
+    }
+    
     public void RaiseDialog(GenericDialogEventArgs args)
     {
         Dialog?.Invoke(this, args);

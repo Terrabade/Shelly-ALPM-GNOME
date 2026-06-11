@@ -4,23 +4,19 @@ namespace Shelly.Gtk.Services.TrayServices;
 
 public static class TrayStartService
 {
+    private const string AppName = "shelly-notifications";
+
     public static void Start()
     {
         try
         {
             const string appPath = "/usr/bin/shelly-notifications";
+            // Installed manually using local-install.sh
             const string optPath = "/opt/shelly/Shelly-Notifications";
-            var path = "";
 
-            if (File.Exists(appPath))
-            {
-                path = appPath;
-            }
-
-            if (File.Exists(optPath))
-            {
-                path = optPath;
-            }
+            var path = string.Empty;
+            if (File.Exists(appPath)) path = appPath;
+            if (File.Exists(optPath)) path = optPath;
 
             if (string.IsNullOrEmpty(path))
             {
@@ -31,8 +27,9 @@ public static class TrayStartService
 
             try
             {
-                var running = Process.GetProcessesByName("Shelly-Notifications").Length > 0;
-                if (running)
+                var processes = Process.GetProcessesByName(AppName);
+                Array.ForEach(processes, p => p.Dispose());
+                if (processes.Length > 0)
                 {
                     Console.WriteLine("Tray service is already running (process detected).");
                     return;
@@ -43,19 +40,15 @@ public static class TrayStartService
                 Console.WriteLine($"Failed to check running processes: {ex.Message}");
             }
 
-            var process = new Process
+            using var process = new Process();
+            process.StartInfo = new ProcessStartInfo
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = path,
-                    UseShellExecute = true,
-                    CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden
-                }
+                FileName = path,
+                UseShellExecute = true,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
             };
-
             process.Start();
-            process.Dispose(); // Detach from parent process
             Console.WriteLine("Tray service started successfully as detached process.");
         }
         catch (Exception ex)
@@ -63,26 +56,26 @@ public static class TrayStartService
             Console.WriteLine($"Failed to start tray service: {ex.Message}");
         }
     }
-    
+
     public static void End()
     {
         Console.WriteLine("Closing shelly notifications.");
         try
         {
-            const string appName = "shelly-notifications";
-            var processes = Process.GetProcessesByName(appName);
+            var processes = Process.GetProcessesByName(AppName);
             foreach (var process in processes)
-            {
-                try
+                using (process)
                 {
-                    process.Kill();
-                    process.WaitForExit(TimeSpan.FromSeconds(2));
+                    try
+                    {
+                        process.Kill();
+                        process.WaitForExit(TimeSpan.FromSeconds(2));
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Failed to kill {AppName} (PID: {process.Id}): {ex.Message}");
+                    }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Failed to kill {appName} (PID: {process.Id}): {ex.Message}");
-                }
-            }
         }
         catch (Exception ex)
         {

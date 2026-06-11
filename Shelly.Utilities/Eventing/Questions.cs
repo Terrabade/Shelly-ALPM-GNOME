@@ -12,7 +12,8 @@ public sealed record PkgbuildDiffQuestionDto(
     string PackageName,
     string? OldPkgbuild,
     string NewPkgbuild,
-    List<PkgbuildWarningDto>? Warnings) : QuestionRequest(QuestionId);
+    List<PkgbuildWarningDto>? Warnings,
+    List<string>? DiffLines = null) : QuestionRequest(QuestionId);
 
 public sealed record PkgbuildWarningDto(
     string Tool,

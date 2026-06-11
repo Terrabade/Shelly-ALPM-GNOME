@@ -7,11 +7,13 @@ public interface IGenericQuestionService
     event EventHandler<GenericQuestionEventArgs>? Question;
     event EventHandler<PackageBuildEventArgs>? PackageBuildRequested;
     event EventHandler<GenericDialogEventArgs>? Dialog;
+    event EventHandler<PackageBuildDiffEventArgs>? PackageBuildDiffRequested;
     
     
     event EventHandler<ToastMessageEventArgs>? ToastMessageRequested;
     void RaiseQuestion(GenericQuestionEventArgs args);
     void RaisePackageBuild(PackageBuildEventArgs args);
+    public void RaisePackageBuildDiff(PackageBuildDiffEventArgs args);
     
     void RaiseDialog(GenericDialogEventArgs args);
     void RaiseToastMessage(ToastMessageEventArgs args);

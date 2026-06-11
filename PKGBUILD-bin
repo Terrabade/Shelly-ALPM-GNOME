@@ -27,7 +27,6 @@ depends=(
 )
 optdepends=(
     'flatpak: For supporting flatpak implementation.'
-    'archlinux-appstream-data: package icons and metadata'
     'fish: Fish shell completions'
 )
 

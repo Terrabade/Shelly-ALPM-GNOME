@@ -1,4 +1,8 @@
 using PackageManager.AppImage;
+using PackageManager.AppImage.AppImageV2;
+using Shelly_CLI.Configuration;
+using Shelly_CLI.Utility;
+using Shelly.Utilities;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -8,10 +12,19 @@ public class AppImageUpdateCommand : AsyncCommand<AppImageUpdateSettings>
 {
     public override async Task<int> ExecuteAsync(CommandContext context, AppImageUpdateSettings settings)
     {
-        var manager = new AppImageManager();
-        manager.ErrorEvent += (_, args) => { AnsiConsole.MarkupLine($"[red]{args.Error.EscapeMarkup()}[/]"); };
+        var installPath = ConfigManager.ReadConfig().AppImageInstallPath ?? XdgPaths.BinHome();
+        var manager = new AppImageManagerV2(installPath);
 
-        manager.MessageEvent += (_, args) => { AnsiConsole.MarkupLine($"[blue]{args.Message.EscapeMarkup()}[/]"); };
+        if (Program.IsUiMode)
+        {
+            manager.MessageEvent += (_, e) => UiFrames.Info(e.Message);
+            manager.ErrorEvent += (_, e) => UiFrames.Error(e.Error);
+        }
+        else
+        {
+            manager.MessageEvent += (_, e) => AnsiConsole.MarkupLine($"[blue][[INFO]][/] {e.Message.EscapeMarkup()}");
+            manager.ErrorEvent += (_, e) => AnsiConsole.MarkupLine($"[red][[ERROR]][/] {e.Error.EscapeMarkup()}");
+        }
 
         var updates = await manager.CheckForAppImageUpdates();
 
@@ -20,8 +33,6 @@ public class AppImageUpdateCommand : AsyncCommand<AppImageUpdateSettings>
             AnsiConsole.MarkupLine("[yellow]No updates available for any AppImage.[/]");
             return 0;
         }
-
-        RootElevator.EnsureRootExectuion();
 
         if (!string.IsNullOrEmpty(settings.Name))
         {
@@ -54,9 +65,8 @@ public class AppImageUpdateCommand : AsyncCommand<AppImageUpdateSettings>
         return exitCode;
     }
 
-    private async Task<int> PerformUpdate(AppImageManager manager, AppImageUpdateDto update)
+    private static async Task<int> PerformUpdate(AppImageManagerV2 managerV2, AppImageUpdateDto update)
     {
-        AnsiConsole.MarkupLine($"[blue]Updating {update.Name} to {update.Version}...[/]");
-        return await manager.RunUpdate(update);
+        return await managerV2.RunUpdate(update);
     }
 }

@@ -73,4 +73,6 @@ public class ShellyConfig
     public bool AurRemoveShowHidden { get; set; }
     public bool AurUpdateRunChecks { get; set; }
     public bool AurUpdateShowHidden { get; set; }
+    
+    public string? AppImageInstallPath { get; set; }
 }

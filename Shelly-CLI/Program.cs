@@ -344,7 +344,7 @@ public class Program
                 flatpak.AddCommand<FlatpakRunningCommand>("running")
                     .WithDescription("List running flatpak apps")
                     .WithExample("flatpak", "running");
-                
+
                 flatpak.AddCommand<FlatpakRepair>("repair")
                     .WithDescription("Repairs Flatpak Installation")
                     .WithExample("flatpak", "repair");
@@ -483,6 +483,9 @@ public class Program
                 appImage.AddCommand<AppImageSyncMeta>("sync-meta")
                     .WithDescription("Syncs meta data for an AppImage")
                     .WithExample("appimage", "sync-meta", "firefox");
+
+                appImage.AddCommand<AppImageUpdateManagerVersion>("migrate-manager")
+                    .WithDescription("Migrate AppImage manager version");
             });
         });
 

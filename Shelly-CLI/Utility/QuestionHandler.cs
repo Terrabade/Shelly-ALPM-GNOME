@@ -45,8 +45,9 @@ public static class QuestionHandler
             .ToList();
 
         var id = Guid.NewGuid().ToString("N");
+        var diffLines = PackageBuilderDiffGenerator.BuildUnifiedDiffLinesUiMode(args.OldPkgbuild, args.NewPkgbuild).ToList();
         JsonPackFrame.WriteToStdout<QuestionRequest>(new PkgbuildDiffQuestionDto(
-            id, args.PackageName, args.OldPkgbuild, args.NewPkgbuild, warnings));
+            id, args.PackageName, args.OldPkgbuild, args.NewPkgbuild, warnings, diffLines));
 
         var resp = ReadAnswer<PkgbuildDiffAnswer>(id);
         args.ProceedWithUpdate = resp.ProceedWithUpdate;

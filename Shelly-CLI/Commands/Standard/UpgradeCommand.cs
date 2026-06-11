@@ -43,6 +43,7 @@ public class UpgradeCommand : AsyncCommand<UpgradeSettings>
                 var parsed = Parse<SizeDisplay>(config.FileSizeDisplay);
 
                 var table = new Table().Border(TableBorder.None);
+                table.AddColumn(new TableColumn("[bold green]Repository[/]").LeftAligned());
                 table.AddColumn(
                     new TableColumn($"[bold green]Package ({packagesNeedingUpdate.Count})[/]").LeftAligned());
                 table.AddColumn(new TableColumn("[bold green]Old Version[/]").LeftAligned());
@@ -61,6 +62,7 @@ public class UpgradeCommand : AsyncCommand<UpgradeSettings>
                     totalNetChange += netChangeBytes;
 
                     table.AddRow(
+                        $"[green]{Markup.Escape(pkg.Repository)}[/]",
                         $"[green]{Markup.Escape(pkg.Name)}[/]",
                         $"[green]{Markup.Escape(pkg.CurrentVersion)}[/]",
                         $"[green]{Markup.Escape(pkg.NewVersion)}[/]",

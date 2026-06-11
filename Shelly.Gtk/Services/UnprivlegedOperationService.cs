@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Text;
-using System.Text.Json;
 using Shelly.Gtk.Enums;
 using Shelly.Gtk.Helpers;
 using Shelly.Gtk.Services.TrayServices;
@@ -19,9 +18,13 @@ namespace Shelly.Gtk.Services;
 public class UnprivilegedOperationService(
     ITrayDbus trayDbus,
     IPackageUpdateNotifier packageUpdateNotifier,
-    IDirtyService dirtyService) : IUnprivilegedOperationService
+    IDirtyService dirtyService,
+    IAlpmEventService alpmEventService,
+    ILockoutService lockoutService,
+    IGenericQuestionService genericQuestionService) : IUnprivilegedOperationService
 {
     private readonly string _cliPath = CliPathResolver.FindCliPath();
+
 
     public async Task<List<FlatpakPackageDto>> ListFlatpakPackages()
     {
@@ -415,6 +418,59 @@ public class UnprivilegedOperationService(
             return [];
         }
     }
+    
+        public async Task<UnprivilegedOperationResult> AppImageInstallAsync(string filePath, string updateUrl = "",
+        AppImageUpdateType updateType = AppImageUpdateType.None)
+    {
+        UnprivilegedOperationResult result;
+        if (updateUrl != "" && updateType != AppImageUpdateType.None)
+        {
+            result = await ExecuteUnprivilegedCommandAsync("Install AppImage", "appimage", "install", "-l",
+                $"\"{filePath}\"", "-u",
+                updateUrl, "-t", updateType.ToString().ToLowerInvariant(), "-n");
+        }
+        else
+        {
+            result = await ExecuteUnprivilegedCommandAsync("Install AppImage", "appimage", "install", "-l",
+                $"\"{filePath}\"", "-n");
+        }
+
+        if (result.Success) dirtyService.MarkDirty(DirtyScopes.AppImage);
+        return result;
+    }
+
+    public async Task<UnprivilegedOperationResult> AppImageUpgradeAsync()
+    {
+        var result = await ExecuteUnprivilegedCommandAsync("Upgrade AppImage's", "appimage", "upgrade", "-n");
+        if (result.Success) dirtyService.MarkDirty(DirtyScopes.AppImage);
+        return result;
+    }
+
+    public async Task<UnprivilegedOperationResult> AppImageRemoveAsync(string name, bool removeConfig = false)
+    {
+        var args = new List<string> { "appimage", "remove", $"\"{name}\"", "-n" };
+        if (removeConfig) args.Add("-c");
+        var result = await ExecuteUnprivilegedCommandAsync("Remove AppImage's", [.. args]);
+        if (result.Success) dirtyService.MarkDirty(DirtyScopes.AppImage);
+        return result;
+    }
+
+    public async Task<UnprivilegedOperationResult> AppImageConfigureUpdatesAsync(string url, string name,
+        AppImageUpdateType updateType, bool allowPrerelease)
+    {
+        return await ExecuteUnprivilegedCommandAsync("Set AppImage's Update Config", "appimage", "configure-updates",
+            $"\"{name}\"", "-u", url, "-t", updateType.ToString().ToLowerInvariant(), allowPrerelease ? "-p" : "");
+    }
+
+    public async Task<UnprivilegedOperationResult> AppImageSyncApp(string name)
+    {
+        return await ExecuteUnprivilegedCommandAsync("Set AppImage's Update Config", "appimage", "sync-meta", name, "-n");
+    }
+
+    public async Task<UnprivilegedOperationResult> AppImageSyncAll()
+    {
+        return await ExecuteUnprivilegedCommandAsync("Set AppImage's Update Config", "appimage", "sync-meta");
+    }
 
     private async Task<UnprivilegedOperationResult> ExecuteUnprivilegedCommandAsync(string operationDescription,
         params string[] args)
@@ -449,7 +505,7 @@ public class UnprivilegedOperationService(
         var errorBuilder = new StringBuilder();
         StreamWriter? stdinWriter = null;
 
-        var eventRouter = new EventRouter();
+        var eventRouter = new EventRouter(alpmEventService, lockoutService);
 
         process.OutputDataReceived += async (sender, e) =>
         {
@@ -468,7 +524,7 @@ public class UnprivilegedOperationService(
                             await stdinWriter.WriteLineAsync(value);
                             await stdinWriter.FlushAsync();
                         }
-                    });
+                    }, genericQuestionService);
                 }
                 catch (Exception ex)
                 {
