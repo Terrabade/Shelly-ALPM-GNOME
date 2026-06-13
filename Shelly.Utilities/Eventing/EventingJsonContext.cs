@@ -20,6 +20,7 @@ namespace Shelly.Utilities.Eventing;
 [JsonSerializable(typeof(QuestionRequest))]
 [JsonSerializable(typeof(QuestionResponseDto))]
 [JsonSerializable(typeof(PkgbuildDiffQuestionDto))]
+[JsonSerializable(typeof(PkgbuildWarningDto))]
 [JsonSerializable(typeof(PkgbuildDiffAnswer))]
 [JsonSerializable(typeof(List<string>))]
 public partial class EventingJsonContext : JsonSerializerContext;

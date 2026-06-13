@@ -6,11 +6,11 @@ namespace Shelly_Notifications.DbusHandlers;
 
 internal class StatusNotifierItemHandler : IPathMethodHandler
 {
-    private readonly Connection _connection;
+    private readonly DBusConnection _connection;
     private readonly ConfigReader _configReader;
     private string _iconName;
 
-    public StatusNotifierItemHandler(Connection connection, ConfigReader configReader)
+    public StatusNotifierItemHandler(DBusConnection connection, ConfigReader configReader)
     {
         _connection = connection;
         _configReader = configReader;

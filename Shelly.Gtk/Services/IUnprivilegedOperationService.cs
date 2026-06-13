@@ -1,3 +1,4 @@
+using Shelly.Gtk.Enums;
 using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.AppImage;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
@@ -48,7 +49,7 @@ public interface IUnprivilegedOperationService
 
     Task<List<FlatpakPackageDto>> SearchFlathubAsync(string query);
 
-    Task<ulong> GetFlatpakAppDataAsync(string remote, string app, string arch);
+    Task<FlatpakRemoteRefInfo> GetFlatpakAppDataAsync(string remote, string app, string arch);
     
     Task<List<AppImageDto>> GetInstallAppImagesAsync();
     
@@ -60,6 +61,14 @@ public interface IUnprivilegedOperationService
     
     Task<OperationResult> AddSystemdServiceTray(string serviceContent, string service);
     Task<OperationResult> RemoveSystemdServiceTray(string service);
+    
+    Task<UnprivilegedOperationResult> AppImageInstallAsync(string filePath, string updateUrl = "",
+        AppImageUpdateType updateType = AppImageUpdateType.None);
+    Task<UnprivilegedOperationResult> AppImageUpgradeAsync();
+    Task<UnprivilegedOperationResult> AppImageRemoveAsync(string name, bool removeConfig = false);
+    Task<UnprivilegedOperationResult> AppImageConfigureUpdatesAsync(string url, string name, AppImageUpdateType updateType, bool allowPrerelease);
+    Task<UnprivilegedOperationResult> AppImageSyncApp(string name);
+    Task<UnprivilegedOperationResult> AppImageSyncAll();
     
 }
 

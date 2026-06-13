@@ -1,5 +1,8 @@
 using PackageManager.AppImage;
+using PackageManager.AppImage.AppImageV2;
+using Shelly_CLI.Configuration;
 using Shelly_CLI.Utility;
+using Shelly.Utilities;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -19,23 +22,26 @@ public class AppImageRemoveCommand : AsyncCommand<AppImageRemoveSettings>
             return 1;
         }
 
-        RootElevator.EnsureRootExectuion();
+        var config = ConfigManager.ReadConfig();
+        var installDir = config.AppImageInstallPath ?? XdgPaths.BinHome();
+        var oldDefaultPath = XdgPaths.BinHome();
 
-        const string installDir = "/opt/shelly";
-        if (!Directory.Exists(installDir))
+        var searchPaths = new List<string> { installDir };
+        if (installDir != oldDefaultPath)
         {
-            AnsiConsole.MarkupLine("[yellow]Info: /opt/shelly directory does not exist. No AppImages to remove.[/]");
-            return 0;
+            searchPaths.Add(oldDefaultPath);
         }
 
-        var appImages = Directory.GetFiles(installDir, "*.AppImage", SearchOption.TopDirectoryOnly);
-        var matches = appImages
-            .Where(f => Path.GetFileName(f).Contains(settings.Name, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var matches = new List<string>();
+        foreach (var appImages in from path in searchPaths where Directory.Exists(path) select Directory.GetFiles(path, "*.AppImage", SearchOption.TopDirectoryOnly))
+        {
+            matches.AddRange(appImages.Where(f =>
+                Path.GetFileName(f).Contains(settings.Name, StringComparison.OrdinalIgnoreCase)));
+        }
 
         if (matches.Count == 0)
         {
-            AnsiConsole.MarkupLine($"[yellow]No AppImage matching \"{settings.Name}\" found in {installDir}[/]");
+            AnsiConsole.MarkupLine($"[yellow]No AppImage matching \"{settings.Name}\" found in searched paths.[/]");
             return 0;
         }
 
@@ -69,7 +75,7 @@ public class AppImageRemoveCommand : AsyncCommand<AppImageRemoveSettings>
             return 0;
         }
 
-        var manager = new AppImageManager();
+        var manager = new AppImageManagerV2(ConfigManager.ReadConfig().AppImageInstallPath ?? "");
         if (Program.IsUiMode)
         {
             manager.ErrorEvent += (_, args) => UiFrames.Error(args.Error);
@@ -82,7 +88,7 @@ public class AppImageRemoveCommand : AsyncCommand<AppImageRemoveSettings>
             manager.MessageEvent += (_, args) => AnsiConsole.MarkupLine($"[blue]{args.Message.EscapeMarkup()}[/]");
         }
 
-        var result = await manager.RemoveAppImage(targetAppImage);
+        var result = await manager.RemoveAppImage(targetAppImage, settings.RemoveConfig);
         if (Program.IsUiMode)
             UiFrames.TxFinish(result == 0, "AppImage removed.", "Failed to remove AppImage.");
         return result;

@@ -62,6 +62,7 @@ public sealed class PackageManagement(
     private Label _errorLabel = null!;
 
     private ColumnViewColumn _nameColumn = null!;
+    private ColumnViewColumn _sizeColumn = null!;
     private ColumnViewColumn _versionColumn = null!;
 
     private ColumnViewSorter _columnViewSorter = null!;
@@ -98,8 +99,8 @@ public sealed class PackageManagement(
         checkColumn.Resizable = true;
         _nameColumn = (ColumnViewColumn)builder.GetObject("name_column")!;
         _nameColumn.Resizable = true;
-        var sizeColumn = (ColumnViewColumn)builder.GetObject("size_column")!;
-        sizeColumn.Resizable = true;
+        _sizeColumn = (ColumnViewColumn)builder.GetObject("size_column")!;
+        _sizeColumn.Resizable = true;
         _versionColumn = (ColumnViewColumn)builder.GetObject("version_column")!;
         _versionColumn.Resizable = true;
 
@@ -122,9 +123,10 @@ public sealed class PackageManagement(
         _detailRevealer = (Revealer)builder.GetObject("detail_revealer")!;
         _detailBox = (Box)builder.GetObject("detail_box")!;
 
-        SetupColumns(checkColumn, _nameColumn, sizeColumn, _versionColumn);
+        SetupColumns(checkColumn, _nameColumn, _sizeColumn, _versionColumn);
 
         _nameColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((_, _) => 0);
+        _sizeColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((_, _) => 0);
         _versionColumn.Sorter = CustomSorter.New<AlpmPackageGObject>((_, _) => 0);
 
         _columnViewSorter = (ColumnViewSorter)columnView.GetSorter()!;
@@ -530,14 +532,12 @@ public sealed class PackageManagement(
             expander.Hexpand = false;
 
             var flowBox = FlowBox.New();
-            flowBox.MarginStart = 0;
-            flowBox.MarginTop = 0;
-            flowBox.MarginBottom = 0;
-            flowBox.MarginEnd = 0;
+            flowBox.MarginTop = 8;
+            flowBox.MarginBottom = 2;
             flowBox.SelectionMode = SelectionMode.None;
             flowBox.ColumnSpacing = 6;
             flowBox.RowSpacing = 6;
-            flowBox.Halign = Align.Start;
+            flowBox.Halign = Align.Fill;
             flowBox.Valign = Align.Start;
             flowBox.MaxChildrenPerLine = isOptional ? 1u : 10u;
             flowBox.MinChildrenPerLine = 1;
@@ -731,6 +731,9 @@ public sealed class PackageManagement(
 
         if (column == _versionColumn)
             return PackageSortColumn.Version;
+
+        if (column == _sizeColumn)
+            return PackageSortColumn.Size;
 
         return null;
     }

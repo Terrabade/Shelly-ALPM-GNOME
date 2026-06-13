@@ -19,10 +19,11 @@ public class PrivilegedOperationService : IPrivilegedOperationService
     private readonly ITrayDbus _trayDbus;
     private readonly IPackageUpdateNotifier _packageUpdateNotifier;
     private readonly IDirtyService _dirtyService;
+    private readonly IGenericQuestionService _genericQuestionService;
 
     public PrivilegedOperationService(ICredentialManager credentialManager, IAlpmEventService alpmEventService,
         IConfigService configService, ILockoutService lockoutService, ITrayDbus trayDbus,
-        IPackageUpdateNotifier packageUpdateNotifier, IDirtyService dirtyService)
+        IPackageUpdateNotifier packageUpdateNotifier, IDirtyService dirtyService, IGenericQuestionService genericQuestionService)
     {
         _credentialManager = credentialManager;
         _alpmEventService = alpmEventService;
@@ -32,6 +33,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         _packageUpdateNotifier = packageUpdateNotifier;
         _dirtyService = dirtyService;
         _cliPath = CliPathResolver.FindCliPath();
+        _genericQuestionService = genericQuestionService;
     }
 
     private string[] AppendNoConfirmIfNeeded(params string[] args)
@@ -98,14 +100,6 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         return result;
     }
 
-    public async Task<OperationResult> InstallAppImageAsync(string filePath)
-    {
-        var result = await ExecutePrivilegedWithNoConfirmCheck("Install local package", "install-appimage",
-            "--location",
-            filePath);
-        if (result.Success) _dirtyService.MarkDirty(DirtyScopes.AppImage);
-        return result;
-    }
 
     private async Task<OperationResult> RemovePackageCacheAsync(
         IEnumerable<string> packages)
@@ -126,7 +120,8 @@ public class PrivilegedOperationService : IPrivilegedOperationService
             ]);
     }
 
-    public async Task<OperationResult> RemovePackagesAsync(IEnumerable<string> packages, bool isCascade, bool isCleanup, bool removeOptionalDeps, bool removePackageFromCache)
+    public async Task<OperationResult> RemovePackagesAsync(IEnumerable<string> packages, bool isCascade, bool isCleanup,
+        bool removeOptionalDeps, bool removePackageFromCache)
     {
         var packageArgs = string.Join(" ", packages);
         if (isCascade)
@@ -149,6 +144,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         {
             _ = await RemovePackageCacheAsync(packages);
         }
+
         if (result.Success) _dirtyService.MarkDirty(DirtyScopes.Native);
 
         return result;
@@ -182,6 +178,12 @@ public class PrivilegedOperationService : IPrivilegedOperationService
     public async Task<OperationResult> UpgradeAllAsync()
     {
         var result = await ExecutePrivilegedWithNoConfirmCheck("Upgrade all", "upgrade", "-a");
+        
+        if(!result.Success)
+        {
+            _ = Task.Run(() => _trayDbus.UpdatesMadeInUiAsync());
+        }
+        
         SendDbusMessage(result);
         return result;
     }
@@ -403,57 +405,6 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         return await ExecutePrivilegedCommandAsync("Clean package cache", args.ToArray());
     }
 
-    public async Task<OperationResult> AppImageInstallAsync(string filePath, string updateUrl = "",
-        AppImageUpdateType updateType = AppImageUpdateType.None)
-    {
-        OperationResult result;
-        if (updateUrl != "" && updateType != AppImageUpdateType.None)
-        {
-            result = await ExecutePrivilegedCommandAsync("Install AppImage", "appimage", "install", "-l",
-                $"\"{filePath}\"", "-u",
-                updateUrl, "-t", updateType.ToString().ToLowerInvariant(), "-n");
-        }
-        else
-        {
-            result = await ExecutePrivilegedCommandAsync("Install AppImage", "appimage", "install", "-l",
-                $"\"{filePath}\"", "-n");
-        }
-
-        if (result.Success) _dirtyService.MarkDirty(DirtyScopes.AppImage);
-        return result;
-    }
-
-    public async Task<OperationResult> AppImageUpgradeAsync()
-    {
-        var result = await ExecutePrivilegedCommandAsync("Upgrade AppImage's", "appimage", "upgrade", "-n");
-        if (result.Success) _dirtyService.MarkDirty(DirtyScopes.AppImage);
-        return result;
-    }
-
-    public async Task<OperationResult> AppImageRemoveAsync(string name)
-    {
-        var result =
-            await ExecutePrivilegedCommandAsync("Remove AppImage's", "appimage", "remove", $"\"{name}\"", "-n");
-        if (result.Success) _dirtyService.MarkDirty(DirtyScopes.AppImage);
-        return result;
-    }
-
-    public async Task<OperationResult> AppImageConfigureUpdatesAsync(string url, string name,
-        AppImageUpdateType updateType)
-    {
-        return await ExecutePrivilegedCommandAsync("Set AppImage's Update Config", "appimage", "configure-updates",
-            $"\"{name}\"", "-u", url, "-t", updateType.ToString().ToLowerInvariant());
-    }
-
-    public async Task<OperationResult> AppImageSyncApp(string name)
-    {
-        return await ExecutePrivilegedCommandAsync("Set AppImage's Update Config", "appimage", "sync-meta", name, "-n");
-    }
-
-    public async Task<OperationResult> AppImageSyncAll()
-    {
-        return await ExecutePrivilegedCommandAsync("Set AppImage's Update Config", "appimage", "sync-meta");
-    }
 
     public async Task<OperationResult> PurifyCorruptionAsync()
     {
@@ -488,6 +439,11 @@ public class PrivilegedOperationService : IPrivilegedOperationService
         var result = await ExecutePrivilegedCommandAsync("Downgrade package", args.ToArray());
         if (result.Success) _dirtyService.MarkDirty(DirtyScopes.NativeInstalled);
         return result;
+    }
+
+    public async Task<OperationResult>MigrateAppImagesAsync()
+    {
+        return await ExecutePrivilegedCommandAsync("Migrate AppImages", "appimage", "migrate-manager");
     }
 
     private void SendDbusMessage(OperationResult result)
@@ -671,7 +627,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                 Interlocked.Increment(ref pendingCallbacks);
                 try
                 {
-                    await QuestionRouter.TryDispatchAsync(b64, SafeWriteAsync);
+                    await QuestionRouter.TryDispatchAsync(b64, SafeWriteAsync, _genericQuestionService);
                 }
                 catch (Exception ex)
                 {
@@ -682,6 +638,7 @@ public class PrivilegedOperationService : IPrivilegedOperationService
                     if (Interlocked.Decrement(ref pendingCallbacks) == 0)
                         allCallbacksDone.TrySetResult();
                 }
+
                 return;
             }
 

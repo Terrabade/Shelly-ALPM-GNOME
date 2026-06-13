@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
+using PackageManager.AppImage.AppImageV2;
 
 namespace PackageManager.AppImage;
 
@@ -19,6 +20,7 @@ public partial record AppImageDto
 
 [JsonSourceGenerationOptions(WriteIndented = true)]
 [JsonSerializable(typeof(List<AppImageDto>))]
+[JsonSerializable(typeof(List<AppImageDtoV2>))]
 internal partial class AppImageJsonContext : JsonSerializerContext
 {
 }

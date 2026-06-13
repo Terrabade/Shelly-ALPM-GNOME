@@ -5,9 +5,9 @@ namespace Shelly_Notifications.DbusHandlers;
 
 public class NotificationHandler
 {
-    public async Task SendNotif(Connection connection, string body)
+    public async Task SendNotif(DBusConnection connection, string body)
     {
-        var notificationProxy = new OrgFreedesktopNotificationsProxy(connection, "org.freedesktop.Notifications",
+        var notificationProxy = new OrgFreedesktopNotificationsProxy(connection.AsConnection(), "org.freedesktop.Notifications",
             "/org/freedesktop/Notifications");
 
         await notificationProxy.NotifyAsync(

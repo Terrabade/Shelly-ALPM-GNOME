@@ -3,6 +3,7 @@ using PackageManager.AppImage;
 using PackageManager.Alpm;
 using PackageManager.Alpm.Pacfile;
 using PackageManager.Alpm.Questions;
+using PackageManager.AppImage.AppImageV2;
 using PackageManager.Aur.Models;
 using PackageManager.Flatpak;
 using PackageManager.Local;
@@ -34,6 +35,8 @@ namespace Shelly_CLI;
 [JsonSerializable(typeof(List<RssModel>))]
 [JsonSerializable(typeof(List<AppImageDto>))]
 [JsonSerializable(typeof(AppImageDto))]
+[JsonSerializable(typeof(List<AppImageDtoV2>))]
+[JsonSerializable(typeof(AppImageDtoV2))]
 [JsonSerializable(typeof(List<AppImageUpdateDto>))]
 [JsonSerializable(typeof(AppImageUpdateDto))]
 [JsonSerializable(typeof(ShellyConfig))]

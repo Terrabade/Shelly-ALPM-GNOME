@@ -25,7 +25,7 @@ public class ShellyConfig
     public bool UseKdeTheme { get; set; }
     public bool UseOldMenu { get; set; }
     public bool TrayEnabled { get; set; } = true;
-    public int TrayCheckIntervalHours { get; set; } = 12;
+    public int TrayCheckIntervalHours { get; set; } = 72;
     public bool NoConfirm { get; set; }
     public bool NewInstall { get; set; } = true;
     public string CurrentVersion { get; set; } = "0.0.0.0";
@@ -73,4 +73,6 @@ public class ShellyConfig
     public bool AurRemoveShowHidden { get; set; }
     public bool AurUpdateRunChecks { get; set; }
     public bool AurUpdateShowHidden { get; set; }
+    
+    public string? AppImageInstallPath { get; set; }
 }

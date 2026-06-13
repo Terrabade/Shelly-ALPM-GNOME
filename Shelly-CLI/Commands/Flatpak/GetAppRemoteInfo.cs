@@ -29,8 +29,8 @@ public class GetAppRemoteInfo : Command<FlatpakInstallSize>
         }
         else
         {
-            Console.Write("Download Size:" + FormatSize(result.DownloadSize) +
-                          " Install Size:" + FormatSize(result.InstalledSize));
+            Console.Write($"Download Size: {FormatSize(result.DownloadSize)} Install Size: {FormatSize(result.InstalledSize)} Permissions: {string.Join(", ", result.Permissions)} ");
+
         }
 
         return 0;

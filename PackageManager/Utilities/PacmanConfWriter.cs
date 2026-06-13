@@ -78,9 +78,9 @@ internal static partial class PacmanConfWriter
         ArgumentNullException.ThrowIfNull(path);
 
         var normalized = NormalizePackageNames(conf.IgnorePkg);
-        if (normalized.Count == 0) return;
-
-        var ignorePkgLine = $"IgnorePkg = {string.Join(' ', normalized)}";
+        var ignorePkgLine = normalized.Count == 0
+            ? "#IgnorePkg ="
+            : $"IgnorePkg = {string.Join(' ', normalized)}";
 
         var configLines = File.Exists(path)
             ? File.ReadAllLines(path).ToList()

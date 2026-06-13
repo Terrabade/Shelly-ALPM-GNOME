@@ -3,6 +3,7 @@ using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.AppImage;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
 using Shelly.Utilities;
+using Shelly.Utilities.Eventing;
 
 namespace Shelly.Gtk;
 
@@ -59,4 +60,6 @@ namespace Shelly.Gtk;
 [JsonSerializable(typeof(int[]))]
 [JsonSerializable(typeof(DowngradeOptionDto))]
 [JsonSerializable(typeof(List<DowngradeOptionDto>))]
+[JsonSerializable(typeof(PkgbuildDiffQuestionDto))]
+
 internal partial class ShellyGtkJsonContext : JsonSerializerContext;

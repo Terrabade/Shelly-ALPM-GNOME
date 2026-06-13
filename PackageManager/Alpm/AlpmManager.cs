@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -52,6 +53,12 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
     };
 
     private HashSet<string> _preDownloadedFiles = [];
+
+    private bool? _isCachyOs;
+
+    public bool IsCachyOs =>
+        _isCachyOs ??= DistributionHooks.OsRelease.PrettyName?
+            .Contains("cachyos", StringComparison.OrdinalIgnoreCase) ?? false;
 
     private AlpmFetchCallback _fetchCallback;
     private AlpmEventCallback _eventCallback;
@@ -1588,6 +1595,25 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         if (_handle == IntPtr.Zero) Initialize();
         var syncDbsPtr = GetSyncDbs(_handle);
         Update(_handle, syncDbsPtr, true);
+
+        if (IsCachyOs)
+        {
+            var updateNotice = new DistributionHooks.CachyOS.UpdateNotice();
+            var proceed = await updateNotice.CheckAsync(_config.DbPath, args =>
+            {
+                Question?.Invoke(this, args);
+                args.WaitForResponse();
+                return args.Response.Response == 1;
+            });
+
+            if (!proceed)
+            {
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(
+                    AlpmEventType.InformationalOutput, "Upgrade cancelled by user (update notice)."));
+                return false;
+            }
+        }
+
         try
         {
             _isPackageDownload = true;
@@ -1684,27 +1710,29 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         Question?.Invoke(this, args);
     }
 
-    /// <summary>
-    /// Marks an installed package in the local DB with the Depend install reason. Used by
-    /// the AUR layer to flag user-selected optional dependencies after they are installed
-    /// in a separate transaction. Returns true when the reason was successfully set.
-    /// </summary>
     public bool MarkPackageAsDepend(string packageName)
+    {
+        return MarkPackageReason(packageName, AlpmPkgReason.Depend);
+    }
+
+    public bool MarkPackageAsExplicit(string packageName)
+    {
+        return MarkPackageReason(packageName, AlpmPkgReason.Explicit);
+    }
+
+    private bool MarkPackageReason(string packageName, AlpmPkgReason reason)
     {
         if (_handle == IntPtr.Zero) Initialize();
         var localDb = GetLocalDb(_handle);
         if (localDb == IntPtr.Zero) return false;
         var localPkg = DbGetPkg(localDb, packageName);
         if (localPkg == IntPtr.Zero) return false;
-        if (PkgSetReason(localPkg, AlpmPkgReason.Depend) != 0)
-        {
-            var err = ErrorNumber(_handle);
-            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
-                $"Failed to set reason for package: {packageName} with error: {GetErrorMessage(err)}"));
-            return false;
-        }
+        if (PkgSetReason(localPkg, reason) == 0) return true;
 
-        return true;
+        var err = ErrorNumber(_handle);
+        InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+            $"Failed to set reason for package: {packageName} with error: {GetErrorMessage(err)}"));
+        return false;
     }
 
     public Task<bool> InstallLocalPackage(string path, AlpmTransFlag flags = AlpmTransFlag.None)
@@ -2548,21 +2576,28 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         return PkgVerCmp(a, b);
     }
 
-    public List<string> RemoveCorruptedPackages(bool dryRun = false)
+    public async Task<List<string>> PurifyPackages(bool dryRun = false, bool orphans = false)
     {
-        if (_handle == IntPtr.Zero)
+        if (_handle == IntPtr.Zero) Initialize(true);
+
+        List<string> purgedPackages = [];
+
+        if (orphans)
         {
-            Initialize(true);
+            purgedPackages.AddRange(GetOrphanedPackages());
+            foreach (var o in purgedPackages)
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                    $"Adding orphaned package: {o}"));
+
+            if (!dryRun)
+                await RemovePackages(purgedPackages,
+                    AlpmTransFlag.NoSave | AlpmTransFlag.Recurse | AlpmTransFlag.Cascade, true);
         }
 
-        List<string> corruptedPackages = [];
-        if (!Directory.Exists(_config.CacheDir))
-        {
-            return corruptedPackages;
-        }
-
-        var packageFiles = Directory.EnumerateFiles(_config.CacheDir, "*.pkg.tar*",
-            SearchOption.AllDirectories).Where(x => !x.EndsWith(".sig"));
+        if (!Directory.Exists(_config.CacheDir)) return purgedPackages;
+        var packageFiles = Directory
+            .EnumerateFiles(_config.CacheDir, "*.pkg.tar*", SearchOption.AllDirectories)
+            .Where(x => !x.EndsWith(".sig"));
 
         foreach (var filePath in packageFiles)
         {
@@ -2572,24 +2607,31 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             {
                 InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
                     $"Adding corrupted package at: {filePath}"));
-                corruptedPackages.Add(Path.GetFileName(filePath));
-                if (!dryRun)
-                {
-                    File.Delete(filePath);
-                }
+                purgedPackages.Add(Path.GetFileName(filePath));
+                if (!dryRun) File.Delete(filePath);
             }
-            else if (pkgPtr != IntPtr.Zero)
+            else if (pkgPtr != IntPtr.Zero && PkgFree(pkgPtr) != 0)
             {
-                if (PkgFree(pkgPtr) != 0)
-                {
-                    ErrorEvent?.Invoke(this, new AlpmErrorEventArgs("Failed to free package"));
-                    //Potentially need to manually release memory here will keep track of usage during testing.
-                    //If I find this later, and it's still here, you can just remove this as it works as expected.
-                }
+                ErrorEvent?.Invoke(this, new AlpmErrorEventArgs("Failed to free package"));
             }
         }
 
-        return corruptedPackages;
+        return purgedPackages;
+    }
+
+    private List<string> GetOrphanedPackages()
+    {
+        if (_handle == IntPtr.Zero) Initialize();
+        var dbPtr = GetLocalDb(_handle);
+        var pkgPtr = DbGetPkgCache(dbPtr);
+
+        var packages = AlpmPackage.FromList(pkgPtr)
+            .Where(pkg => GetPkgReason(pkg.PackagePtr) != AlpmPkgReason.Explicit)
+            .Where(pkg => !PackageChecker.IsStillNeededByOther(pkg.PackagePtr))
+            .Select(p => p.Name)
+            .ToList();
+
+        return packages;
     }
 
     public bool IsPackageInstalled(string packageName)
@@ -2620,6 +2662,28 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
     public List<string> GetIgnoredPackages()
     {
         return PacmanConfWriter.NormalizePackageNames(_config.IgnorePkg);
+    }
+
+    public List<string> GetAllowedArchitectures()
+    {
+        if (_handle == IntPtr.Zero) Initialize();
+        var architectures = new List<string>();
+        var syncDbsPtr = GetArchitectures(_handle);
+
+        var currentPtr = syncDbsPtr;
+        while (currentPtr != IntPtr.Zero)
+        {
+            var node = Marshal.PtrToStructure<AlpmList>(currentPtr);
+            if (node.Data != IntPtr.Zero)
+            {
+                var arch = Marshal.PtrToStringUTF8(node.Data);
+                if (arch != null) architectures.Add(arch);
+            }
+
+            currentPtr = node.Next;
+        }
+
+        return architectures;
     }
 
     private void HandleErrorMessage(IntPtr dataPtr, AlpmErrno error)

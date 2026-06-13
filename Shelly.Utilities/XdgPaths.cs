@@ -9,6 +9,7 @@ public static class XdgPaths
     public static string CacheHome() => Resolve("XDG_CACHE_HOME", ".cache");
     public static string DataHome() => Resolve("XDG_DATA_HOME", Path.Combine(".local", "share"));
     public static string StateHome() => Resolve("XDG_STATE_HOME", Path.Combine(".local", "state"));
+    public static string BinHome() => Resolve("XDG_BIN_HOME", Path.Combine(".local", "bin"));
 
     public static string ShellyCache(params string[] parts) =>
         Path.Combine([CacheHome(), "Shelly", .. parts]);

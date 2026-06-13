@@ -2,6 +2,7 @@ using System.Text.Json;
 using PackageManager.Alpm;
 using PackageManager.Alpm.Questions;
 using PackageManager.Aur;
+using PackageManager.Utilities.PkgBuild;
 using PackageManager.Wire;
 using Shelly.Utilities.Eventing;
 using Spectre.Console;
@@ -21,26 +22,57 @@ public static class QuestionHandler
     {
         if (noConfirm)
         {
-            args.ProceedWithUpdate = true;
+            PrintWarnings(args.Warnings);
+            args.ProceedWithUpdate = args.Warnings.Count <= 0;
             return;
         }
 
         if (!uiMode)
         {
             PackageBuilderDiffGenerator.PrintUnifiedDiff(args.OldPkgbuild, args.NewPkgbuild, isUiMode: false);
+            PrintWarnings(args.Warnings);
             args.ProceedWithUpdate = AnsiConsole.Confirm(
                 $"[yellow]Proceed with update to {args.PackageName.EscapeMarkup()}?[/]",
-                defaultValue: true);
+                // A careless Enter must not auto-approve a risky scriptlet.
+                defaultValue: args.Warnings.Count == 0);
             return;
         }
 
         // UiMode: emit a framed PkgbuildDiffQuestionDto on stdout, block on the matching answer.
+        var warnings = args.Warnings
+            .Select(w => new PkgbuildWarningDto(
+                w.Tool, w.Severity.ToString(), w.Hook, w.MatchedLine, w.Message))
+            .ToList();
+
         var id = Guid.NewGuid().ToString("N");
+        var diffLines = PackageBuilderDiffGenerator.BuildUnifiedDiffLines(args.OldPkgbuild, args.NewPkgbuild).ToList();
         JsonPackFrame.WriteToStdout<QuestionRequest>(new PkgbuildDiffQuestionDto(
-            id, args.PackageName, args.OldPkgbuild, args.NewPkgbuild));
+            id, args.PackageName, args.OldPkgbuild, args.NewPkgbuild, warnings, diffLines));
 
         var resp = ReadAnswer<PkgbuildDiffAnswer>(id);
         args.ProceedWithUpdate = resp.ProceedWithUpdate;
+    }
+
+    /// <summary>
+    /// Renders PostInstallValidator findings (npm/curl/etc. used in post_install)
+    /// next to the diff so the interactive user sees them before confirming.
+    /// </summary>
+    private static void PrintWarnings(IReadOnlyList<ValidationFinding> warnings)
+    {
+        if (warnings.Count == 0) return;
+
+        AnsiConsole.MarkupLine(
+            "[red bold]Install scriptlet warnings \u2014 these commands fetch/execute code outside pacman's control:[/]");
+
+        foreach (var w in warnings)
+        {
+            var color = w.Severity == ValidationSeverity.Critical ? "red" : "yellow";
+            AnsiConsole.MarkupLine(
+                $"  [{color}]\u2022 {w.Tool.EscapeMarkup()} used in {w.Hook.EscapeMarkup()}[/]");
+            if (!string.IsNullOrWhiteSpace(w.Message))
+                AnsiConsole.MarkupLine($"    {w.Message.EscapeMarkup()}");
+            AnsiConsole.MarkupLine($"    [grey]{w.MatchedLine.EscapeMarkup()}[/]");
+        }
     }
 
     /// <summary>
@@ -122,7 +154,8 @@ public static class QuestionHandler
                 var desc = o.Description ?? string.Empty;
                 var installed = o.IsInstalled ? "1" : "0";
                 var selected = o.IsSelected ? "1" : "0";
-                Console.Error.WriteLine($"[ALPM_OPTDEPS_OPTION]{i}\u001F{o.Name}\u001F{desc}\u001F{installed}\u001F{selected}");
+                Console.Error.WriteLine(
+                    $"[ALPM_OPTDEPS_OPTION]{i}\u001F{o.Name}\u001F{desc}\u001F{installed}\u001F{selected}");
             }
 
             Console.Error.WriteLine("[ALPM_OPTDEPS_END]");
@@ -133,6 +166,15 @@ public static class QuestionHandler
                 .Select((o, i) => o with { IsSelected = selectedIndices.Contains(i) && !o.IsInstalled })
                 .ToList();
             question.SetResponse(new QuestionResponse(0, uiSelected));
+            return;
+        }
+
+        if (noConfirm)
+        {
+            var noneSelected = question.ProviderOptions
+                .Select(o => o with { IsSelected = false })
+                .ToList();
+            question.SetResponse(new QuestionResponse(0, noneSelected));
             return;
         }
 
@@ -207,6 +249,12 @@ public static class QuestionHandler
                 // For safety, we could set a default if needed, but the UI shouldn't send empty input
             }
 
+            return;
+        }
+
+        if (noConfirm)
+        {
+            question.SetResponse(new QuestionResponse(0, question.ProviderOptions));
             return;
         }
 

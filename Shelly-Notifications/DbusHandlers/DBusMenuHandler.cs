@@ -6,7 +6,7 @@ using Tmds.DBus.Protocol;
 
 namespace Shelly_Notifications.DbusHandlers;
 
-public class DBusMenuHandler(Connection connection) : IPathMethodHandler
+public class DBusMenuHandler(DBusConnection connection) : IPathMethodHandler
 {
     public string Path => "/MenuBar";
     public bool HandlesChildPaths => false;

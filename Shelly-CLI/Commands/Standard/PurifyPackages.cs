@@ -4,23 +4,20 @@ using Spectre.Console.Cli;
 
 namespace Shelly_CLI.Commands.Standard;
 
-public class CorruptedPackages : Command<CorruptedPackagesSettings>
+public class PurifyPackages : AsyncCommand<PurifyPackagesSettings>
 {
-    public override int Execute(CommandContext context, CorruptedPackagesSettings settings)
+    public override async Task<int> ExecuteAsync(CommandContext context, PurifyPackagesSettings settings)
     {
-        if (Program.IsUiMode)
-        {
-            return HandleUiMode(settings);
-        }
+        if (Program.IsUiMode) return await HandleUiMode(settings);
 
         RootElevator.EnsureRootExectuion();
         AnsiConsole.MarkupLine("[yellow] Initializing ALPM... [/]");
         using var manager = new AlpmManager();
         manager.Initialize(true);
-        var results = manager.RemoveCorruptedPackages(settings.DryRun);
+        var results = await manager.PurifyPackages(settings.DryRun, settings.Orphans);
         if (results.Count == 0)
         {
-            AnsiConsole.MarkupLine("[green] No corrupted packages found! [/]");
+            AnsiConsole.MarkupLine("[green] No packages found to purify! [/]");
             return 0;
         }
 
@@ -38,21 +35,22 @@ public class CorruptedPackages : Command<CorruptedPackagesSettings>
         var length = Math.Max(columnOne.Count, Math.Max(columnTwo.Count, columnThree.Count));
         for (var i = 0; i < length; i++)
         {
-            var columnOneOutput = i < columnOne.Count ? columnOne[i] : "";
-            var columnTwoOutput = i < columnTwo.Count ? columnTwo[i] : "";
-            var columnThreeOutput = i < columnThree.Count ? columnThree[i] : "";
-            table.AddRow(columnOneOutput, columnTwoOutput, columnThreeOutput);
+            List<string> rows = [];
+            if (i < columnOne.Count) rows.Add(columnOne[i]);
+            if (i < columnTwo.Count) rows.Add(columnTwo[i]);
+            if (i < columnThree.Count) rows.Add(columnThree[i]);
+            table.AddRow(rows.ToArray());
         }
 
         AnsiConsole.Write(table);
         return 0;
     }
 
-    private int HandleUiMode(CorruptedPackagesSettings settings)
+    private static async Task<int> HandleUiMode(PurifyPackagesSettings settings)
     {
         using var manager = new AlpmManager();
         manager.Initialize(true);
-        var results = manager.RemoveCorruptedPackages(settings.DryRun);
+        var results = await manager.PurifyPackages(settings.DryRun, settings.Orphans);
         Console.WriteLine(string.Join(",", results));
         return 0;
     }

@@ -1,6 +1,6 @@
 namespace Shelly.Gtk.Enums;
 
-public enum FlatpakRemoveEnum
+public enum ConfigRemoveEnum
 {
     Cancel,
     RemoveConfig,

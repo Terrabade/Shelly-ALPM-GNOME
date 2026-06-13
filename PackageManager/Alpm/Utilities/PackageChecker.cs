@@ -13,6 +13,12 @@ public static class PackageChecker
                Walk(AlpmReference.PkgComputeOptionalFor(localPkgPtr)).Any(consumer => !removedSet.Contains(consumer));
     }
 
+    public static bool IsStillNeededByOther(IntPtr localPkgPtr)
+    {
+        return Walk(AlpmReference.PkgComputeRequiredBy(localPkgPtr)).Any() ||
+               Walk(AlpmReference.PkgComputeOptionalFor(localPkgPtr)).Any();
+    }
+
     private static IEnumerable<string> Walk(IntPtr listPtr)
     {
         var cur = listPtr;
