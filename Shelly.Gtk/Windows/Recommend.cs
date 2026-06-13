@@ -53,6 +53,7 @@ public sealed class Recommend(
     public Widget CreateWindow()
     {
         var builder = Builder.NewFromString(ResourceHelper.LoadUiFile("UiFiles/Recommend.ui"), -1);
+        builder.TranslationDomain = Domain;
         var overlay = (Overlay)builder.GetObject("ShellyRecommend")!;
 
         _scrolledWindow = (Box)builder.GetObject("recommend_scroll_window")!;

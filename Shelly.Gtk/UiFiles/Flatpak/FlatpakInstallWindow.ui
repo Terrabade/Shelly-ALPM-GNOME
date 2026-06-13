@@ -497,12 +497,23 @@
                                                                     </object>
                                                                 </child>
                                                                 <child>
+                                                                    <object class="GtkButton" id="overlay_permissions_button">
+                                                                        <property name="halign">end</property>
+                                                                        <property name="valign">start</property>
+                                                                        <property name="label" translatable="yes">App Permissions</property>
+                                                                        <layout>
+                                                                            <property name="column">2</property>
+                                                                            <property name="row">0</property>
+                                                                        </layout>
+                                                                    </object>
+                                                                </child>
+                                                                <child>
                                                                     <object class="GtkButton" id="version_history_button">
                                                                         <property name="halign">end</property>
                                                                         <property name="valign">start</property>
                                                                         <property name="label" translatable="yes">Version History</property>
                                                                         <layout>
-                                                                            <property name="column">2</property>
+                                                                            <property name="column">3</property>
                                                                             <property name="row">0</property>
                                                                         </layout>
                                                                     </object>

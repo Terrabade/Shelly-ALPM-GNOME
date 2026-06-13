@@ -181,6 +181,12 @@ public class Program
                 .WithExample("upgrade")
                 .WithExample("upgrade", "--no-confirm");
 
+            config.AddCommand<MarkCommand>("mark")
+                .WithDescription("Mark installed packages as explicit or dependency-installed")
+                .WithExample("mark", "firefox", "--explicit")
+                .WithExample("mark", "firefox", "vlc", "--depends")
+                .WithExample("mark", "firefox", "--depends", "--no-confirm");
+
             config.AddCommand<DowngradePackageCommand>("downgrade")
                 .WithDescription("Downgrade a package")
                 .WithExample("downgrade", "firefox")
@@ -212,9 +218,10 @@ public class Program
                 .WithDescription("Shows Arch news you haven't seen before")
                 .WithExample("news", "--all");
 
-            config.AddCommand<CorruptedPackages>("purify")
-                .WithDescription("Find and remove corrupted packages")
+            config.AddCommand<PurifyPackages>("purify")
+                .WithDescription("Find and remove corrupted packages; optionally remove orphaned packages")
                 .WithExample("purify")
+                .WithExample("purify", "--orphans")
                 .WithExample("purify", "--dry-run")
                 .WithExample("purify", "--no-confirm");
 
