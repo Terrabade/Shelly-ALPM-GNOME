@@ -79,7 +79,7 @@ public static class PkgbuildReviewDialog
         if (hasWarnings)
         {
             var subtitle = Label.New(T(
-                "These commands fetch and execute code outside of pacman's control. Review them before continuing."));
+                "These commands fetch and execute code outside of shelly and libalpm's control. Review them before continuing."));
             subtitle.SetXalign(0);
             subtitle.SetWrap(true);
             subtitle.AddCssClass("error");
