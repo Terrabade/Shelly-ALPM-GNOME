@@ -212,9 +212,10 @@ public class Program
                 .WithDescription("Shows Arch news you haven't seen before")
                 .WithExample("news", "--all");
 
-            config.AddCommand<CorruptedPackages>("purify")
-                .WithDescription("Find and remove corrupted packages")
+            config.AddCommand<PurifyPackages>("purify")
+                .WithDescription("Find and remove corrupted packages; optionally remove orphaned packages")
                 .WithExample("purify")
+                .WithExample("purify", "--orphans")
                 .WithExample("purify", "--dry-run")
                 .WithExample("purify", "--no-confirm");
 

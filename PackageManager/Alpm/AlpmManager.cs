@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -2573,21 +2574,28 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
         return PkgVerCmp(a, b);
     }
 
-    public List<string> RemoveCorruptedPackages(bool dryRun = false)
+    public async Task<List<string>> PurifyPackages(bool dryRun = false, bool orphans = false)
     {
-        if (_handle == IntPtr.Zero)
+        if (_handle == IntPtr.Zero) Initialize(true);
+
+        List<string> purgedPackages = [];
+
+        if (orphans)
         {
-            Initialize(true);
+            purgedPackages.AddRange(GetOrphanedPackages());
+            foreach (var o in purgedPackages)
+                InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
+                    $"Adding orphaned package: {o}"));
+
+            if (!dryRun)
+                await RemovePackages(purgedPackages,
+                    AlpmTransFlag.NoSave | AlpmTransFlag.Recurse | AlpmTransFlag.Cascade, true);
         }
 
-        List<string> corruptedPackages = [];
-        if (!Directory.Exists(_config.CacheDir))
-        {
-            return corruptedPackages;
-        }
-
-        var packageFiles = Directory.EnumerateFiles(_config.CacheDir, "*.pkg.tar*",
-            SearchOption.AllDirectories).Where(x => !x.EndsWith(".sig"));
+        if (!Directory.Exists(_config.CacheDir)) return purgedPackages;
+        var packageFiles = Directory
+            .EnumerateFiles(_config.CacheDir, "*.pkg.tar*", SearchOption.AllDirectories)
+            .Where(x => !x.EndsWith(".sig"));
 
         foreach (var filePath in packageFiles)
         {
@@ -2597,24 +2605,31 @@ public class AlpmManager(string configPath = "/etc/pacman.conf") : IDisposable, 
             {
                 InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.TraceOutput,
                     $"Adding corrupted package at: {filePath}"));
-                corruptedPackages.Add(Path.GetFileName(filePath));
-                if (!dryRun)
-                {
-                    File.Delete(filePath);
-                }
+                purgedPackages.Add(Path.GetFileName(filePath));
+                if (!dryRun) File.Delete(filePath);
             }
-            else if (pkgPtr != IntPtr.Zero)
+            else if (pkgPtr != IntPtr.Zero && PkgFree(pkgPtr) != 0)
             {
-                if (PkgFree(pkgPtr) != 0)
-                {
-                    ErrorEvent?.Invoke(this, new AlpmErrorEventArgs("Failed to free package"));
-                    //Potentially need to manually release memory here will keep track of usage during testing.
-                    //If I find this later, and it's still here, you can just remove this as it works as expected.
-                }
+                ErrorEvent?.Invoke(this, new AlpmErrorEventArgs("Failed to free package"));
             }
         }
 
-        return corruptedPackages;
+        return purgedPackages;
+    }
+
+    private List<string> GetOrphanedPackages()
+    {
+        if (_handle == IntPtr.Zero) Initialize();
+        var dbPtr = GetLocalDb(_handle);
+        var pkgPtr = DbGetPkgCache(dbPtr);
+
+        var packages = AlpmPackage.FromList(pkgPtr)
+            .Where(pkg => GetPkgReason(pkg.PackagePtr) != AlpmPkgReason.Explicit)
+            .Where(pkg => !PackageChecker.IsStillNeededByOther(pkg.PackagePtr))
+            .Select(p => p.Name)
+            .ToList();
+
+        return packages;
     }
 
     public bool IsPackageInstalled(string packageName)
