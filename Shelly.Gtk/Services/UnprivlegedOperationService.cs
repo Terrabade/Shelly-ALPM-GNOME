@@ -228,23 +228,23 @@ public class UnprivilegedOperationService(
             url, "--system", "true");
     }
 
-    public async Task<ulong> GetFlatpakAppDataAsync(string remote, string app, string arch)
+    public async Task<FlatpakRemoteRefInfo> GetFlatpakAppDataAsync(string remote, string app, string arch)
     {
         try
         {
             var result =
                 await ExecuteUnprivilegedCommandAsync("Sync remote", "flatpak app-remote-info", remote, app, arch,
                     "-j");
-            if (!result.Success) return 0;
+            if (!result.Success) return new FlatpakRemoteRefInfo();
             JsonPackFrame.TryDecode<FlatpakRemoteRefInfo>(result.Output, out var framed);
-            return framed?.DownloadSize ?? 0;
+            return framed ?? new FlatpakRemoteRefInfo();
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Failed to get remote info: {ex.Message}");
         }
 
-        return 0;
+        return new FlatpakRemoteRefInfo();
     }
 
     public async Task<List<AppImageDto>> GetInstallAppImagesAsync()
@@ -418,8 +418,8 @@ public class UnprivilegedOperationService(
             return [];
         }
     }
-    
-        public async Task<UnprivilegedOperationResult> AppImageInstallAsync(string filePath, string updateUrl = "",
+
+    public async Task<UnprivilegedOperationResult> AppImageInstallAsync(string filePath, string updateUrl = "",
         AppImageUpdateType updateType = AppImageUpdateType.None)
     {
         UnprivilegedOperationResult result;
@@ -464,7 +464,8 @@ public class UnprivilegedOperationService(
 
     public async Task<UnprivilegedOperationResult> AppImageSyncApp(string name)
     {
-        return await ExecuteUnprivilegedCommandAsync("Set AppImage's Update Config", "appimage", "sync-meta", name, "-n");
+        return await ExecuteUnprivilegedCommandAsync("Set AppImage's Update Config", "appimage", "sync-meta", name,
+            "-n");
     }
 
     public async Task<UnprivilegedOperationResult> AppImageSyncAll()
@@ -530,6 +531,7 @@ public class UnprivilegedOperationService(
                 {
                     Console.Error.WriteLine($"QuestionRouter error: {ex.Message}");
                 }
+
                 return;
             }
 
@@ -643,6 +645,7 @@ public class UnprivilegedOperationService(
                     process.Kill(true);
                 throw;
             }
+
             var success = process.ExitCode == 0;
 
             return new UnprivilegedOperationResult

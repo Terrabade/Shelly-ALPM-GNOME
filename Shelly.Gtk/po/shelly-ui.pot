@@ -1487,3 +1487,6 @@ msgstr ""
 #, csharp-format
 msgid "Failed to remove packages: {0}"
 msgstr ""
+
+msgid "App Permissions"
+msgstr ""

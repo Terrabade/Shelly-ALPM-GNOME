@@ -107,10 +107,10 @@ public interface IAlpmManager
     static int VersionCompare(string a, string b) => AlpmReference.PkgVerCmp(a, b);
 
     /// <summary>
-    /// Removes corrupted packages from the sync database.
+    /// Removes corrupted and orphaned packages from the sync database.
     /// </summary>
     /// <returns>Names of corrupted pkgs removed</returns>
-    List<string> RemoveCorruptedPackages(bool dryRun = false);
+    Task<List<string>> PurifyPackages(bool dryRun = false, bool orphans = false);
     
     /// <summary>
     /// Checks if a package is installed
