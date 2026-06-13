@@ -36,6 +36,7 @@ public class FlatpakInstall(
     private SingleSelection? _selectionModel;
     private SignalHandler<Button>? _versionHistoryHandler;
     private SignalHandler<Button>? _addonHistoryHandler;
+    private SignalHandler<Button>? _permissionHistoryHandler;
     private ListBox? _categoryListBox;
     private List<AppstreamApp> _allPackages = [];
     private HashSet<string> _trendingApps = [];
@@ -51,6 +52,7 @@ public class FlatpakInstall(
     private Button _overlayCloseButton = null!;
     private Button _overlayInstallButton = null!;
     private Button _versionHistoryButton = null!;
+    private Button _permissionsButton = null!;
     private Label _overlayAuthorLabel = null!;
     private Label _overlayNameLabel = null!;
     private Label _overlayVersionLabel = null!;
@@ -128,6 +130,7 @@ public class FlatpakInstall(
         _overlayCloseButton = (Button)builder.GetObject("overlay_back_button")!;
         _overlayInstallButton = (Button)builder.GetObject("overlay_install_button")!;
         _versionHistoryButton = (Button)builder.GetObject("version_history_button")!;
+        _permissionsButton = (Button)builder.GetObject("overlay_permissions_button")!;
         _remoteRefBackButton = (Button)builder.GetObject("overlay_remote_back_button")!;
         _addRemoteButton = (Button)builder.GetObject("overlay_add_remote_button")!;
         _addRemoteBackButton = (Button)builder.GetObject("overlay_add_remote_back_button")!;
@@ -511,7 +514,7 @@ public class FlatpakInstall(
                 _overlayInstallButton.Label = Translations.T("Install");
             }
 
-            _overlaySizeLabel.SetText(Translations.T("Size: {0}", SizeHelpers.FormatSize((long)result)));
+            _overlaySizeLabel.SetText(Translations.T("Size: {0}", SizeHelpers.FormatSize((long)result.InstalledSize)));
 
             SetUrlLinks(obj.Urls);
 
@@ -540,14 +543,25 @@ public class FlatpakInstall(
 
             if (_versionHistoryHandler is not null)
                 _versionHistoryButton.OnClicked -= _versionHistoryHandler;
-
+            
             _versionHistoryHandler = (_, _) =>
             {
                 _overlayBoxRoot?.Dispose();
                 ShowVersionHistory(obj.Releases);
             };
-
+            
             _versionHistoryButton.OnClicked += _versionHistoryHandler;
+            
+            if (_permissionHistoryHandler is not null)
+                _permissionsButton.OnClicked -= _permissionHistoryHandler;
+            
+            _permissionHistoryHandler = (_, _) =>
+            {
+                _overlayBoxRoot?.Dispose();
+                ShowPermissions(result.Permissions);
+            };
+            
+            _permissionsButton.OnClicked += _permissionHistoryHandler;
 
             if (obj.Addons.Count > 0)
             {
@@ -1208,6 +1222,114 @@ public class FlatpakInstall(
 
         genericQuestionService.RaiseDialog(new GenericDialogEventArgs(_overlayBoxRoot));
     }
+    
+    private void ShowPermissions(List<string> permissions)
+    {
+        _overlayBoxRoot = Box.New(Orientation.Vertical, 12);
+        _overlayBoxRoot.SetSizeRequest(500, -1);
+
+        var title = Label.New(Translations.T("App Permissions"));
+        title.AddCssClass("title-2");
+        title.SetHalign(Align.Start);
+        _overlayBoxRoot.Append(title);
+
+        var scroll = ScrolledWindow.New();
+        scroll.HscrollbarPolicy = PolicyType.Never;
+        scroll.VscrollbarPolicy = PolicyType.Automatic;
+        scroll.SetOverlayScrolling(false);
+        scroll.SetSizeRequest(-1, 400);
+        scroll.SetMarginStart(8);
+        scroll.SetMarginEnd(8);
+
+        var list = Box.New(Orientation.Vertical, 16);
+
+        var grouped = permissions
+            .Select(p =>
+            {
+                var eqIdx = p.IndexOf('=');
+                var colonIdx = p.IndexOf(':');
+                if (eqIdx < 0 || colonIdx < 0 || colonIdx <= eqIdx)
+                    return (Group: string.Empty, Key: p, Value: string.Empty);
+                return (
+                    Group: p[..eqIdx],
+                    Key: p[(eqIdx + 1)..colonIdx],
+                    Value: p[(colonIdx + 1)..]
+                );
+            })
+            .GroupBy(x => x.Group)
+            .OrderBy(g => g.Key);
+
+        var listBox = ListBox.New();
+        listBox.AddCssClass("boxed-list");
+        listBox.SelectionMode = SelectionMode.None;
+
+        foreach (var group in grouped)
+        {
+            foreach (var perm in group)
+                listBox.Append(BuildPermissionRow(perm.Key, perm.Value));
+        }
+
+        list.Append(listBox);
+
+        scroll.SetChild(list);
+        _overlayBoxRoot.Append(scroll);
+
+        genericQuestionService.RaiseDialog(new GenericDialogEventArgs(_overlayBoxRoot));
+    }
+
+    protected virtual Widget BuildPermissionRow(string key, string value)
+    {
+        var row = ListBoxRow.New();
+
+        var inner = Box.New(Orientation.Horizontal, 12);
+        inner.SetMarginTop(10);
+        inner.SetMarginBottom(10);
+        inner.SetMarginStart(12);
+        inner.SetMarginEnd(12);
+
+        var icon = Image.NewFromIconName(GetPermissionIcon(key));
+        icon.SetValign(Align.Center);
+        icon.AddCssClass("dim-label");
+
+        var textBox = Box.New(Orientation.Vertical, 2);
+        textBox.Hexpand = true;
+        textBox.SetValign(Align.Center);
+
+        var keyLabel = Label.New(key);
+        keyLabel.AddCssClass("body");
+        keyLabel.SetHalign(Align.Start);
+        textBox.Append(keyLabel);
+
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            var valueLabel = Label.New(value);
+            valueLabel.AddCssClass("dim-label");
+            valueLabel.AddCssClass("caption");
+            valueLabel.SetHalign(Align.Start);
+            valueLabel.SetWrap(true);
+            valueLabel.SetXalign(0);
+            textBox.Append(valueLabel);
+        }
+
+        inner.Append(icon);
+        inner.Append(textBox);
+        row.SetChild(inner);
+
+        return row;
+    }
+
+    private static string GetPermissionIcon(string key) => key.ToLowerInvariant() switch
+    {
+        "network" or "networks" => "network-wireless-symbolic",
+        "filesystems" or "filesystem" => "folder-symbolic",
+        "ipc" => "system-run-symbolic",
+        "sockets" => "preferences-system-network-symbolic",
+        "devices" => "computer-symbolic",
+        "features" => "applications-system-symbolic",
+        "dbus" or "sessionbus" or "systembus" => "preferences-desktop-symbolic",
+        "shared" => "emblem-shared-symbolic",
+        _ => "dialog-information-symbolic"
+    };
 
     protected virtual Widget BuildReleaseCard(string version, string date, string description)
     {

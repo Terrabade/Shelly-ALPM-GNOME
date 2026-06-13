@@ -1366,3 +1366,6 @@ msgstr ""
 
 msgid "{0} used in {1}"
 msgstr ""
+
+msgid "App Permissions"
+msgstr ""

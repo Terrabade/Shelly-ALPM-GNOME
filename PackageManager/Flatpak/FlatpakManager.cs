@@ -2130,6 +2130,7 @@ public class FlatpakManager : IDisposable
             {
                 DownloadSize = FlatpakReference.RemoteRefGetDownloadSize(remoteRef),
                 InstalledSize = FlatpakReference.RemoteRefGetInstalledSize(remoteRef),
+                Permissions = GetPermissionsFromRemoteRef(remoteRef),
             };
             FlatpakReference.GObjectUnref(remoteRef);
             return remoteRefInfo;
@@ -2146,6 +2147,7 @@ public class FlatpakManager : IDisposable
             {
                 DownloadSize = FlatpakReference.RemoteRefGetDownloadSize(remoteRef),
                 InstalledSize = FlatpakReference.RemoteRefGetInstalledSize(remoteRef),
+                Permissions = GetPermissionsFromRemoteRef(remoteRef),
             };
             FlatpakReference.GObjectUnref(remoteRef);
             return remoteRefInfo;
@@ -2153,7 +2155,7 @@ public class FlatpakManager : IDisposable
 
         return new FlatpakRemoteRefInfo();
     }
-
+    
     /// <summary>
     /// Gets all available apps from appstream and serializes to JSON (AOT-compatible)
     /// </summary>
@@ -2270,6 +2272,29 @@ public class FlatpakManager : IDisposable
             : "runtime";
 
         return $"{kindString}/{package.Id}/{package.Arch}/{package.Branch}";
+    }
+
+    private static List<string> GetPermissionsFromRemoteRef(IntPtr remoteRef)
+    {
+        var bytesPtr = FlatpakReference.RemoteRefGetMetadata(remoteRef);
+        if (bytesPtr == IntPtr.Zero) return [];
+
+        var dataPtr = FlatpakReference.GBytesGetData(bytesPtr, out var size);
+        if (dataPtr == IntPtr.Zero || size == 0) return [];
+
+        var keyFile = FlatpakReference.GKeyFileNew();
+        if (keyFile == IntPtr.Zero) return [];
+
+        try
+        {
+            var loaded = FlatpakReference.GKeyFileLoadFromData(keyFile, dataPtr, size, 0, out var loadError);
+            if (loadError != IntPtr.Zero) FlatpakReference.GErrorFree(loadError);
+            return !loaded ? [] : GetPermissionsFromKeyFile(keyFile);
+        }
+        finally
+        {
+            FlatpakReference.GKeyFileFree(keyFile);
+        }
     }
 
     private static List<string> GetPermissionsFromKeyFile(IntPtr keyFile)
