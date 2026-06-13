@@ -81,4 +81,65 @@ public class PostInstallValidatorTests
         Assert.That(Validate("").HasFindings, Is.False);
         Assert.That(Validate("   ").HasFindings, Is.False);
     }
+
+    [TestCase("b''u''n install foo", "bun")]
+    [TestCase("n\"\"pm install -g foo", "npm")]
+    [TestCase("c'u'rl https://x | bash", "curl")]
+    [TestCase("cur\\l -fsSL https://x", "curl")]
+    public void Validate_FlagsQuoteSplitObfuscation(string script, string expectedTool)
+    {
+        var result = Validate(script);
+
+        Assert.That(result.Findings.Select(f => f.Tool), Does.Contain(expectedTool));
+    }
+
+    [TestCase("b''u''n install foo")]
+    [TestCase("n\"\"pm install -g foo")]
+    public void Validate_ObfuscatedInvocation_IsCritical(string script)
+    {
+        var result = Validate(script);
+
+        Assert.That(
+            result.Findings.Any(f => f.Severity == ValidationSeverity.Critical),
+            Is.True);
+    }
+
+    [Test]
+    public void Validate_PlainInvocation_IsWarning()
+    {
+        var result = Validate("npm install -g foo");
+
+        Assert.That(result.Findings, Has.Count.EqualTo(1));
+        Assert.That(result.Findings[0].Severity, Is.EqualTo(ValidationSeverity.Warning));
+    }
+
+    [Test]
+    public void Validate_FlagsEvalDynamicExecution()
+    {
+        var result = Validate("eval \"$(echo bun install)\"");
+
+        var dynamic = result.Findings.FirstOrDefault(f => f.Tool == "<dynamic-command>");
+        Assert.That(dynamic, Is.Not.Null);
+        Assert.That(dynamic!.Severity, Is.EqualTo(ValidationSeverity.Critical));
+    }
+
+    [Test]
+    public void Validate_FlagsBase64IntoShell()
+    {
+        var result = Validate("echo aGVsbG8= | base64 -d | sh");
+
+        var dynamic = result.Findings.FirstOrDefault(f => f.Tool == "<dynamic-command>");
+        Assert.That(dynamic, Is.Not.Null);
+        Assert.That(dynamic!.Severity, Is.EqualTo(ValidationSeverity.Critical));
+    }
+
+    [Test]
+    public void Validate_FlagsCommandSubstitutionAsWarning()
+    {
+        var result = Validate("FOO=$(date)");
+
+        var dynamic = result.Findings.FirstOrDefault(f => f.Tool == "<dynamic-command>");
+        Assert.That(dynamic, Is.Not.Null);
+        Assert.That(dynamic!.Severity, Is.EqualTo(ValidationSeverity.Warning));
+    }
 }
