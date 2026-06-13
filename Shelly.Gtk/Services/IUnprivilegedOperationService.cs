@@ -49,7 +49,7 @@ public interface IUnprivilegedOperationService
 
     Task<List<FlatpakPackageDto>> SearchFlathubAsync(string query);
 
-    Task<ulong> GetFlatpakAppDataAsync(string remote, string app, string arch);
+    Task<FlatpakRemoteRefInfo> GetFlatpakAppDataAsync(string remote, string app, string arch);
     
     Task<List<AppImageDto>> GetInstallAppImagesAsync();
     
