@@ -390,6 +390,9 @@ public class AurUpdate(
             {
                 lockoutService.Show(T("Installing..."));
 
+                // The PKGBUILD review/diff is now surfaced through the unified
+                // wire-based PkgbuildReviewDialog during the operation, so the
+                // legacy pre-operation PKGBUILD prompt is no longer raised here.
                 var result =
                     await privilegedOperationService.UpdateAurPackagesAsync(selectedPackages,
                         _runChecksCheck.GetActive());

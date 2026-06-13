@@ -2,6 +2,7 @@ using System.Text.Json;
 using PackageManager.Alpm;
 using PackageManager.Alpm.Questions;
 using PackageManager.Aur;
+using PackageManager.Utilities.PkgBuild;
 using PackageManager.Wire;
 using Shelly.Utilities.Eventing;
 using Spectre.Console;
@@ -17,31 +18,61 @@ public static class QuestionHandler
     public static void HandleQuestion(PkgbuildDiffRequestEventArgs args, bool uiMode = false, bool noConfirm = false)
         => HandlePkgbuildDiff(args, uiMode, noConfirm);
 
-    private static void HandlePkgbuildDiff(PkgbuildDiffRequestEventArgs args, bool uiMode, bool noConfirm)
+    public static void HandlePkgbuildDiff(PkgbuildDiffRequestEventArgs args, bool uiMode, bool noConfirm)
     {
         if (noConfirm)
         {
-            args.ProceedWithUpdate = true;
+            PrintWarnings(args.Warnings);
+            args.ProceedWithUpdate = args.Warnings.Count <= 0;
             return;
         }
 
         if (!uiMode)
         {
             PackageBuilderDiffGenerator.PrintUnifiedDiff(args.OldPkgbuild, args.NewPkgbuild, isUiMode: false);
+            PrintWarnings(args.Warnings);
             args.ProceedWithUpdate = AnsiConsole.Confirm(
                 $"[yellow]Proceed with update to {args.PackageName.EscapeMarkup()}?[/]",
-                defaultValue: true);
+                // A careless Enter must not auto-approve a risky scriptlet.
+                defaultValue: args.Warnings.Count == 0);
             return;
         }
 
         // UiMode: emit a framed PkgbuildDiffQuestionDto on stdout, block on the matching answer.
+        var warnings = args.Warnings
+            .Select(w => new PkgbuildWarningDto(
+                w.Tool, w.Severity.ToString(), w.Hook, w.MatchedLine, w.Message))
+            .ToList();
+
         var id = Guid.NewGuid().ToString("N");
-        var diffLines = PackageBuilderDiffGenerator.BuildUnifiedDiffLinesUiMode(args.OldPkgbuild, args.NewPkgbuild).ToList();
+        var diffLines = PackageBuilderDiffGenerator.BuildUnifiedDiffLines(args.OldPkgbuild, args.NewPkgbuild).ToList();
         JsonPackFrame.WriteToStdout<QuestionRequest>(new PkgbuildDiffQuestionDto(
-            id, args.PackageName, args.OldPkgbuild, args.NewPkgbuild, diffLines));
+            id, args.PackageName, args.OldPkgbuild, args.NewPkgbuild, warnings, diffLines));
 
         var resp = ReadAnswer<PkgbuildDiffAnswer>(id);
         args.ProceedWithUpdate = resp.ProceedWithUpdate;
+    }
+
+    /// <summary>
+    /// Renders PostInstallValidator findings (npm/curl/etc. used in post_install)
+    /// next to the diff so the interactive user sees them before confirming.
+    /// </summary>
+    private static void PrintWarnings(IReadOnlyList<ValidationFinding> warnings)
+    {
+        if (warnings.Count == 0) return;
+
+        AnsiConsole.MarkupLine(
+            "[red bold]Install scriptlet warnings \u2014 these commands fetch/execute code outside pacman's control:[/]");
+
+        foreach (var w in warnings)
+        {
+            var color = w.Severity == ValidationSeverity.Critical ? "red" : "yellow";
+            AnsiConsole.MarkupLine(
+                $"  [{color}]\u2022 {w.Tool.EscapeMarkup()} used in {w.Hook.EscapeMarkup()}[/]");
+            if (!string.IsNullOrWhiteSpace(w.Message))
+                AnsiConsole.MarkupLine($"    {w.Message.EscapeMarkup()}");
+            AnsiConsole.MarkupLine($"    [grey]{w.MatchedLine.EscapeMarkup()}[/]");
+        }
     }
 
     /// <summary>

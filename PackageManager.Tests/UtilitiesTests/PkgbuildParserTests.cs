@@ -1,4 +1,5 @@
 using PackageManager.Utilities;
+using PackageManager.Utilities.PkgBuild;
 
 namespace PackageManager.Tests.UtilitiesTests;
 
@@ -262,5 +263,251 @@ public class PkgbuildParserTests
         var pkgbuild = "optdepends=(\n  'a: ok'\n  'b: also ok'\n";
 
         Assert.DoesNotThrow(() => PkgbuildParser.ParseContent(pkgbuild));
+    }
+
+    // ---- install= / post_install handling ----
+
+    [Test]
+    public void ParseContent_NoInstallDirective_LeavesInstallFileAndPostInstallNull()
+    {
+        var pkgbuild = """
+                       pkgname=myapp
+                       pkgver=1.0
+                       depends=('bash')
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.InstallFile, Is.Null);
+        Assert.That(result.PostInstall, Is.Null);
+    }
+
+    [Test]
+    public void ParseContent_ResolvesInstallFileWithVariableSubstitution()
+    {
+        var pkgbuild = """
+                       pkgname=myapp
+                       pkgver=1.0
+                       install=${pkgname}.install
+                       """;
+
+        // No baseDir provided -> install file lookup is relative and won't exist,
+        // so PostInstall is null but InstallFile must still be resolved.
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.InstallFile, Is.EqualTo("myapp.install"));
+        Assert.That(result.PostInstall, Is.Null);
+    }
+
+    [Test]
+    public void ParseContent_ResolvesQuotedInstallFile()
+    {
+        var pkgbuild = """
+                       pkgname=foo
+                       install="foo.install"
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.InstallFile, Is.EqualTo("foo.install"));
+    }
+
+    [Test]
+    public void ParseContent_ExtractsPostInstallBody_FromInstallFileInBaseDir()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "shelly_pkgbuild_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var installContent = """
+                                 post_install() {
+                                     echo "installing"
+                                     update-desktop-database -q
+                                 }
+
+                                 post_upgrade() {
+                                     echo "upgrading"
+                                 }
+                                 """;
+            File.WriteAllText(Path.Combine(tempDir, "myapp.install"), installContent);
+
+            var pkgbuild = """
+                           pkgname=myapp
+                           install=${pkgname}.install
+                           """;
+
+            var result = PkgbuildParser.ParseContent(pkgbuild, tempDir);
+
+            Assert.That(result.InstallFile, Is.EqualTo("myapp.install"));
+            Assert.That(result.PostInstall, Is.Not.Null);
+            Assert.That(result.PostInstall, Does.Contain("echo \"installing\""));
+            Assert.That(result.PostInstall, Does.Contain("update-desktop-database -q"));
+            // Body of post_upgrade must not leak into post_install.
+            Assert.That(result.PostInstall, Does.Not.Contain("upgrading"));
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Test]
+    public void ParseContent_ExtractsInlinePostInstall_WhenNoInstallFile()
+    {
+        var pkgbuild = """
+                       pkgname=myapp
+                       pkgver=1.0
+
+                       post_install() {
+                           npm install -g foo
+                       }
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.PostInstall, Is.Not.Null);
+        Assert.That(result.PostInstall, Does.Contain("npm install -g foo"));
+
+        var findings = new PostInstallValidator().Validate(result).Findings;
+        Assert.That(findings, Has.Some.Matches<ValidationFinding>(f => f.Tool == "npm"));
+    }
+
+    [Test]
+    public void InlinePostInstall_RiskyTool_ProducesValidatorFinding()
+    {
+        // Fake PKGBUILD with NO install= file — only an inline post_install().
+        var pkgbuild = """
+                       pkgname=fakeapp
+                       pkgver=1.0
+                       pkgrel=1
+                       arch=('any')
+
+                       post_install() {
+                           echo "setting up"
+                           npm install -g fakeapp
+                       }
+                       """;
+
+        // Parse (no baseDir, so the inline fallback is what populates PostInstall).
+        var info = PkgbuildParser.ParseContent(pkgbuild);
+        Assert.That(info.PostInstall, Is.Not.Null);
+        Assert.That(info.PostInstall, Does.Contain("npm install -g fakeapp"));
+
+        // The "effect": validator flags the npm invocation.
+        var result = new PostInstallValidator().Validate(info);
+
+        Assert.That(result.HasFindings, Is.True);
+        var finding = result.Findings.Single(f => f.Tool == "npm");
+        Assert.Multiple(() =>
+        {
+            Assert.That(finding.Hook, Is.EqualTo("post_install"));
+            Assert.That(finding.Severity, Is.EqualTo(ValidationSeverity.Warning));
+            Assert.That(finding.MatchedLine, Is.EqualTo("npm install -g fakeapp"));
+            Assert.That(finding.Message, Does.Contain("npm"));
+        });
+    }
+
+    [Test]
+    public void InlinePostInstall_SafeCommands_ProduceNoFindings()
+    {
+        var pkgbuild = """
+                       pkgname=fakeapp
+                       pkgver=1.0
+
+                       post_install() {
+                           systemctl daemon-reload
+                           update-desktop-database -q
+                           # npm install -g should-be-ignored
+                       }
+                       """;
+
+        var info = PkgbuildParser.ParseContent(pkgbuild);
+        var result = new PostInstallValidator().Validate(info);
+
+        Assert.That(result.HasFindings, Is.False);
+    }
+
+    [Test]
+    public void ParseContent_PostInstallNull_WhenFunctionAbsentInInstallFile()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "shelly_pkgbuild_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(tempDir, "bar.install"),
+                "post_upgrade() {\n  echo hi\n}\n");
+
+            var pkgbuild = """
+                           pkgname=bar
+                           install=bar.install
+                           """;
+
+            var result = PkgbuildParser.ParseContent(pkgbuild, tempDir);
+
+            Assert.That(result.InstallFile, Is.EqualTo("bar.install"));
+            Assert.That(result.PostInstall, Is.Null);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Test]
+    public void ParseContent_HandlesNestedBracesInPostInstallBody()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "shelly_pkgbuild_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var installContent = """
+                                 post_install() {
+                                     if [ -d /tmp ]; then
+                                         echo "${HOME}"
+                                     fi
+                                 }
+                                 """;
+            File.WriteAllText(Path.Combine(tempDir, "nested.install"), installContent);
+
+            var pkgbuild = """
+                           pkgname=nested
+                           install=nested.install
+                           """;
+
+            var result = PkgbuildParser.ParseContent(pkgbuild, tempDir);
+
+            Assert.That(result.PostInstall, Is.Not.Null);
+            Assert.That(result.PostInstall, Does.Contain("if [ -d /tmp ]; then"));
+            Assert.That(result.PostInstall, Does.Contain("echo \"${HOME}\""));
+            Assert.That(result.PostInstall, Does.Contain("fi"));
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Test]
+    public void ParseContent_MissingInstallFile_DoesNotThrowAndPostInstallNull()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "shelly_pkgbuild_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var pkgbuild = """
+                           pkgname=ghost
+                           install=ghost.install
+                           """;
+
+            PkgbuildInfo? result = null;
+            Assert.DoesNotThrow(() => result = PkgbuildParser.ParseContent(pkgbuild, tempDir));
+            Assert.That(result!.InstallFile, Is.EqualTo("ghost.install"));
+            Assert.That(result.PostInstall, Is.Null);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
     }
 }

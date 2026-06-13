@@ -13,6 +13,7 @@ using PackageManager.Alpm.Questions;
 using PackageManager.Alpm.Utilities;
 using PackageManager.Aur.Models;
 using PackageManager.Utilities;
+using PackageManager.Utilities.PkgBuild;
 using Shelly.Utilities;
 
 #pragma warning disable CS8618 // Non-nullable field must contain a non-null value when exiting constructor. Consider adding the 'required' modifier or declaring as nullable.
@@ -25,6 +26,9 @@ public class PkgbuildDiffRequestEventArgs : EventArgs
     public required string OldPkgbuild { get; init; }
     public required string NewPkgbuild { get; init; }
     public bool ProceedWithUpdate { get; set; } = true;
+
+
+    public List<ValidationFinding> Warnings { get; init; } = [];
 }
 
 /// <summary>
@@ -2043,8 +2047,11 @@ public sealed class AurPackageManager(string? configPath = null)
         return pkgbase;
     }
 
-    private bool RequestPkgbuildApproval(string packageName, string? oldPkgbuild, string? newPkgbuild)
+    private bool RequestPkgbuildApproval(string packageName, string? oldPkgbuild, string? newPkgbuild,
+        string? baseDir = null)
     {
+        var warnings = ValidatePkgbuild(newPkgbuild, baseDir);
+
         if (PkgbuildDiffRequest is null) return true;
 
         var args = new PkgbuildDiffRequestEventArgs
@@ -2052,11 +2059,30 @@ public sealed class AurPackageManager(string? configPath = null)
             PackageName = packageName,
             OldPkgbuild = oldPkgbuild ?? string.Empty,
             NewPkgbuild = newPkgbuild ?? string.Empty,
+            Warnings = warnings,
             ProceedWithUpdate = true
         };
 
         PkgbuildDiffRequest.Invoke(this, args);
         return args.ProceedWithUpdate;
+    }
+    
+    private List<ValidationFinding> ValidatePkgbuild(string? newPkgbuild, string? baseDir)
+    {
+        if (string.IsNullOrWhiteSpace(newPkgbuild))
+            return [];
+
+        try
+        {
+            var info = PkgbuildParser.ParseContent(newPkgbuild, baseDir);
+            return new PostInstallValidator().Validate(info).Findings;
+        }
+        catch (Exception ex)
+        {
+            InformationalEvent?.Invoke(this, new InformationalEventArgs(AlpmEventType.InformationalOutput,
+                $"Failed to validate PKGBUILD scriptlets: {ex.Message}"));
+            return [];
+        }
     }
 
     private async Task<bool> ShouldProceedWithPkgbuildAsync(string packageName)
@@ -2064,7 +2090,10 @@ public sealed class AurPackageManager(string? configPath = null)
         var oldPkgbuild = await ReadCachedPkgbuildAsync(packageName);
         var newPkgbuild = await FetchPkgbuildAsync(packageName);
 
-        return RequestPkgbuildApproval(packageName, oldPkgbuild, newPkgbuild);
+        var pkgbase = await _aurSearchManager.GetPackageBaseAsync(packageName);
+        var baseDir = XdgPaths.ShellyCache(pkgbase);
+
+        return RequestPkgbuildApproval(packageName, oldPkgbuild, newPkgbuild, baseDir);
     }
 
     private async Task<string?> TryResolveFromSrcinfoAsync(string pkgname)

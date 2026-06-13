@@ -1351,3 +1351,18 @@ msgstr ""
 
 msgid "To continue managing your AppImages with shelly a confirmation is required to switch to the new v2 implementation."
 msgstr ""
+
+msgid "Review install scriptlet warnings"
+msgstr ""
+
+msgid "The install scriptlet for {0} runs external tools"
+msgstr ""
+
+msgid "These commands fetch and execute code outside of pacman's control. Review them before continuing."
+msgstr ""
+
+msgid "Install Anyway"
+msgstr ""
+
+msgid "{0} used in {1}"
+msgstr ""
