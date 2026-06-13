@@ -125,6 +125,13 @@ internal static partial class FlatpakReference
         StringMarshalling = StringMarshalling.Utf8)]
     public static partial IntPtr InstalledGetLatestCommit(IntPtr installation);
 
+    [LibraryImport(LibName, EntryPoint = "flatpak_installed_ref_load_metadata",
+        StringMarshalling = StringMarshalling.Utf8)]
+    public static partial IntPtr InstalledRefLoadMetadata(IntPtr installedRef, IntPtr cancellable, out IntPtr error);
+    
+    [LibraryImport(LibName, EntryPoint = "flatpak_remote_ref_get_metadata")]
+    public static partial IntPtr RemoteRefGetMetadata(IntPtr remoteRef);
+
     [LibraryImport(LibName, EntryPoint = "flatpak_ref_get_kind", StringMarshalling = StringMarshalling.Utf8)]
     public static partial int RefGetKind(IntPtr instance);
 
@@ -338,6 +345,19 @@ internal static partial class FlatpakReference
 
     [LibraryImport(GLibName, EntryPoint = "g_strfreev")]
     public static partial void GStrFreeV(IntPtr strArray);
+
+    [LibraryImport(GLibName, EntryPoint = "g_key_file_new")]
+    public static partial IntPtr GKeyFileNew();
+
+    [LibraryImport(GLibName, EntryPoint = "g_key_file_free")]
+    public static partial void GKeyFileFree(IntPtr keyFile);
+
+    [LibraryImport(GLibName, EntryPoint = "g_key_file_load_from_data", StringMarshalling = StringMarshalling.Utf8)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GKeyFileLoadFromData(IntPtr keyFile, IntPtr data, nuint length, int flags, out IntPtr error);
+
+    [LibraryImport(GLibName, EntryPoint = "g_bytes_get_data")]
+    public static partial IntPtr GBytesGetData(IntPtr bytes, out nuint size);
 
     #endregion
 
