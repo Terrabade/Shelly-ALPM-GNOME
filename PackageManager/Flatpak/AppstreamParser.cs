@@ -102,10 +102,16 @@ public class AppstreamParser
             return null;
         }
 
+        var id = component.Element("id")?.Value ?? string.Empty;
+        if (id.EndsWith(".desktop"))
+        {
+            id = id[..^8];
+        }
+
         var app = new AppstreamApp
         {
             Type = type,
-            Id = component.Element("id")?.Value ?? string.Empty,
+            Id = id,
             Name = component.Elements("name")
                 .FirstOrDefault(e => e.Attribute(XNamespace.Xml + "lang") == null)?.Value ?? string.Empty,
             Summary = component.Elements("summary")
