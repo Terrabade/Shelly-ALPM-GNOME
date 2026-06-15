@@ -133,10 +133,11 @@ public class AppImageManagerV2(string installDirectory = "")
         try
         {
             var appImages = await GetAppImagesFromLocalDb();
-            
+
             if (!string.IsNullOrEmpty(appImage.DesktopName))
             {
-                appImages.RemoveAll(a => string.Equals(a.DesktopName, appImage.DesktopName, StringComparison.OrdinalIgnoreCase));
+                appImages.RemoveAll(a =>
+                    string.Equals(a.DesktopName, appImage.DesktopName, StringComparison.OrdinalIgnoreCase));
             }
 
             appImages.Add(appImage);
@@ -344,12 +345,38 @@ public class AppImageManagerV2(string installDirectory = "")
 
             foreach (var appName in appImageNames)
             {
+                var existing = appImagesInDb.FirstOrDefault(a =>
+                    string.Equals(a.Name, appName, StringComparison.OrdinalIgnoreCase));
+
                 var appImagePath = Path.Combine(_installDirectory, $"{appName}.AppImage");
+
                 if (!File.Exists(appImagePath))
                 {
-                    LogWarning($"AppImage not found at {appImagePath}");
-                    success = false;
-                    continue;
+                    if (existing != null && !string.IsNullOrEmpty(existing.Path) && File.Exists(existing.Path))
+                    {
+                        LogMessage($"AppImage found at {existing.Path}. Moving to {_installDirectory}...");
+                        try
+                        {
+                            if (!Directory.Exists(_installDirectory))
+                                Directory.CreateDirectory(_installDirectory);
+
+                            File.Move(existing.Path, appImagePath, true);
+                            XdgPaths.FixOwnershipIfRoot(appImagePath);
+                            LogMessage($"Moved {appName} to {appImagePath}");
+                        }
+                        catch (Exception ex)
+                        {
+                            LogError($"Failed to move AppImage from {existing.Path} to {appImagePath}: {ex.Message}");
+                            success = false;
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        LogWarning($"AppImage not found at {appImagePath}");
+                        success = false;
+                        continue;
+                    }
                 }
 
                 LogMessage($"Syncing metadata for {appName}...");
@@ -361,8 +388,6 @@ public class AppImageManagerV2(string installDirectory = "")
                     continue;
                 }
 
-                var existing = appImagesInDb.FirstOrDefault(a =>
-                    string.Equals(a.Name, appName, StringComparison.OrdinalIgnoreCase));
                 if (existing != null)
                 {
                     if (!string.IsNullOrEmpty(existing.UpdateURl))
@@ -386,6 +411,7 @@ public class AppImageManagerV2(string installDirectory = "")
                 }
 
                 await AddAppImageToLocalDb(appImageDto);
+                await MigrateDesktopEntry(appImageDto);
             }
 
             return success;
@@ -981,8 +1007,9 @@ public class AppImageManagerV2(string installDirectory = "")
             {
                 client.Timeout = TimeSpan.FromMinutes(5);
                 client.DefaultRequestHeaders.UserAgent.Add(Http.UserAgent);
-                
-                using var response = await client.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead);
+
+                using var response =
+                    await client.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead);
                 response.EnsureSuccessStatusCode();
 
                 var totalBytes = response.Content.Headers.ContentLength;
@@ -1110,7 +1137,7 @@ public class AppImageManagerV2(string installDirectory = "")
             var appImages = JsonSerializer.Deserialize(json, AppImageJsonContext.Default.ListAppImageDto) ?? [];
 
             var existingApps = await GetAppImagesFromLocalDb();
-            
+
             foreach (var app in appImages)
             {
                 try
