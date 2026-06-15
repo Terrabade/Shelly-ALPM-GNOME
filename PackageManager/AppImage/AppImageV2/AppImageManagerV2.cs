@@ -426,6 +426,45 @@ public class AppImageManagerV2(string installDirectory = "")
     private async Task<AppImageDtoV2?> ExtractMetadata(string filePath)
     {
         var appName = Path.GetFileNameWithoutExtension(filePath);
+        
+        //handle Temp Update files
+        if (filePath.EndsWith(".rep", StringComparison.OrdinalIgnoreCase))
+        {
+            appName = Path.GetFileNameWithoutExtension(appName);
+        }
+
+        var cleanName = CleanInvalidNames(appName);
+        var execPath = filePath.EndsWith(".rep", StringComparison.OrdinalIgnoreCase) 
+            ? filePath[..^4] 
+            : filePath;
+
+        var desktopDir = Path.Combine(XdgPaths.DataHome(), "applications");
+        if (Directory.Exists(desktopDir))
+        {
+            //Clean Bad desktop entries.
+            try
+            {
+                var badDesktopFiles = Directory.GetFiles(desktopDir, "*.desktop", SearchOption.TopDirectoryOnly)
+                    .Where(f => f.EndsWith(".AppImage.desktop", StringComparison.OrdinalIgnoreCase));
+                foreach (var badDesktopPath in badDesktopFiles)
+                {
+                    try
+                    {
+                        File.Delete(badDesktopPath);
+                        LogMessage($"Cleaned up invalid desktop entry: {badDesktopPath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogWarning($"Failed to delete invalid desktop entry {badDesktopPath}: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogWarning($"Error while searching for invalid desktop entries: {ex.Message}");
+            }
+        }
+
         var workingDir = Path.Combine(Path.GetTempPath(), $"Shelly-{Environment.UserName}",
             $"sync-{appName}-{Guid.NewGuid().ToString("N")[..8]}");
         var appImageVersion = "Unknown";
@@ -542,7 +581,7 @@ public class AppImageManagerV2(string installDirectory = "")
                                 break;
                             }
 
-                            patchedContent.AppendLine($"Exec=\"{filePath}\"{fieldCodes}");
+                            patchedContent.AppendLine($"Exec=\"{execPath}\"{fieldCodes}");
                         }
                         else if (line.StartsWith("TryExec="))
                         {
@@ -573,11 +612,9 @@ public class AppImageManagerV2(string installDirectory = "")
                         }
                     }
 
-                    var cleanName = CleanInvalidNames(appName);
                     var desktopFileName = $"{cleanName}.desktop";
                     var desktopContent = patchedContent.ToString();
 
-                    var desktopDir = Path.Combine(XdgPaths.DataHome(), "applications");
                     try
                     {
                         Directory.CreateDirectory(desktopDir);
@@ -596,13 +633,13 @@ public class AppImageManagerV2(string installDirectory = "")
                 catch (Exception ex)
                 {
                     LogWarning($"Could not update any desktop entry: {ex.Message}");
-                    CreateDesktopEntry(appName, filePath, icon: finalIconPath);
+                    CreateDesktopEntry(appName, execPath, icon: finalIconPath);
                 }
             }
             else
             {
                 LogMessage($"No desktop file found in AppImage, creating default one.");
-                CreateDesktopEntry(appName, filePath, icon: finalIconPath);
+                CreateDesktopEntry(appName, execPath, icon: finalIconPath);
             }
 
             var updateInfo = await GetAppImageUpdateInfo(filePath);
@@ -617,7 +654,7 @@ public class AppImageManagerV2(string installDirectory = "")
                 DesktopName = string.IsNullOrEmpty(desktopName) ? appName : desktopName,
                 SizeOnDisk = new FileInfo(filePath).Length,
                 CommandLineArgs = commandLineArgs,
-                Path = filePath,
+                Path = execPath,
             };
 
             return appImageDto;
