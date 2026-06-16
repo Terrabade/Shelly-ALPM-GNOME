@@ -13,7 +13,6 @@
                         <property name="orientation">vertical</property>
                         <property name="spacing">5</property>
                         <property name="margin-top">8</property>
-                        <property name="margin-start">10</property>
                         <property name="margin-end">10</property>
                         <property name="hexpand">false</property>
                         <property name="width-request">120</property>
