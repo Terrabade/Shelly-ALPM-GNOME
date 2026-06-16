@@ -23,6 +23,7 @@ public class AppImageManagerV2(string installDirectory = "")
 
     public event EventHandler<AppImageErrorEventArgs>? ErrorEvent;
     public event EventHandler<AppImageMessageEventArgs>? MessageEvent;
+    public event EventHandler<AppImageProgressEventArgs>? ProgressEvent;
 
     private void LogMessage(string message)
     {
@@ -37,6 +38,12 @@ public class AppImageManagerV2(string installDirectory = "")
     private void LogWarning(string message)
     {
         MessageEvent?.Invoke(this, new AppImageMessageEventArgs($"Warning: {message}"));
+    }
+
+    private void LogProgress(string appName, long? totalBytes, long downloadedBytes)
+    {
+        double? percentage = totalBytes.HasValue ? (double)downloadedBytes / totalBytes.Value * 100 : null;
+        ProgressEvent?.Invoke(this, new AppImageProgressEventArgs(appName, totalBytes, downloadedBytes, percentage));
     }
 
     public async Task<int> InstallAppImage(string location)
@@ -126,10 +133,11 @@ public class AppImageManagerV2(string installDirectory = "")
         try
         {
             var appImages = await GetAppImagesFromLocalDb();
-            
+
             if (!string.IsNullOrEmpty(appImage.DesktopName))
             {
-                appImages.RemoveAll(a => string.Equals(a.DesktopName, appImage.DesktopName, StringComparison.OrdinalIgnoreCase));
+                appImages.RemoveAll(a =>
+                    string.Equals(a.DesktopName, appImage.DesktopName, StringComparison.OrdinalIgnoreCase));
             }
 
             appImages.Add(appImage);
@@ -337,12 +345,38 @@ public class AppImageManagerV2(string installDirectory = "")
 
             foreach (var appName in appImageNames)
             {
+                var existing = appImagesInDb.FirstOrDefault(a =>
+                    string.Equals(a.Name, appName, StringComparison.OrdinalIgnoreCase));
+
                 var appImagePath = Path.Combine(_installDirectory, $"{appName}.AppImage");
+
                 if (!File.Exists(appImagePath))
                 {
-                    LogWarning($"AppImage not found at {appImagePath}");
-                    success = false;
-                    continue;
+                    if (existing != null && !string.IsNullOrEmpty(existing.Path) && File.Exists(existing.Path))
+                    {
+                        LogMessage($"AppImage found at {existing.Path}. Moving to {_installDirectory}...");
+                        try
+                        {
+                            if (!Directory.Exists(_installDirectory))
+                                Directory.CreateDirectory(_installDirectory);
+
+                            File.Move(existing.Path, appImagePath, true);
+                            XdgPaths.FixOwnershipIfRoot(appImagePath);
+                            LogMessage($"Moved {appName} to {appImagePath}");
+                        }
+                        catch (Exception ex)
+                        {
+                            LogError($"Failed to move AppImage from {existing.Path} to {appImagePath}: {ex.Message}");
+                            success = false;
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        LogWarning($"AppImage not found at {appImagePath}");
+                        success = false;
+                        continue;
+                    }
                 }
 
                 LogMessage($"Syncing metadata for {appName}...");
@@ -354,8 +388,6 @@ public class AppImageManagerV2(string installDirectory = "")
                     continue;
                 }
 
-                var existing = appImagesInDb.FirstOrDefault(a =>
-                    string.Equals(a.Name, appName, StringComparison.OrdinalIgnoreCase));
                 if (existing != null)
                 {
                     if (!string.IsNullOrEmpty(existing.UpdateURl))
@@ -379,6 +411,7 @@ public class AppImageManagerV2(string installDirectory = "")
                 }
 
                 await AddAppImageToLocalDb(appImageDto);
+                await MigrateDesktopEntry(appImageDto);
             }
 
             return success;
@@ -393,6 +426,45 @@ public class AppImageManagerV2(string installDirectory = "")
     private async Task<AppImageDtoV2?> ExtractMetadata(string filePath)
     {
         var appName = Path.GetFileNameWithoutExtension(filePath);
+        
+        //handle Temp Update files
+        if (filePath.EndsWith(".rep", StringComparison.OrdinalIgnoreCase))
+        {
+            appName = Path.GetFileNameWithoutExtension(appName);
+        }
+
+        var cleanName = CleanInvalidNames(appName);
+        var execPath = filePath.EndsWith(".rep", StringComparison.OrdinalIgnoreCase) 
+            ? filePath[..^4] 
+            : filePath;
+
+        var desktopDir = Path.Combine(XdgPaths.DataHome(), "applications");
+        if (Directory.Exists(desktopDir))
+        {
+            //Clean Bad desktop entries.
+            try
+            {
+                var badDesktopFiles = Directory.GetFiles(desktopDir, "*.desktop", SearchOption.TopDirectoryOnly)
+                    .Where(f => f.EndsWith(".AppImage.desktop", StringComparison.OrdinalIgnoreCase));
+                foreach (var badDesktopPath in badDesktopFiles)
+                {
+                    try
+                    {
+                        File.Delete(badDesktopPath);
+                        LogMessage($"Cleaned up invalid desktop entry: {badDesktopPath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogWarning($"Failed to delete invalid desktop entry {badDesktopPath}: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogWarning($"Error while searching for invalid desktop entries: {ex.Message}");
+            }
+        }
+
         var workingDir = Path.Combine(Path.GetTempPath(), $"Shelly-{Environment.UserName}",
             $"sync-{appName}-{Guid.NewGuid().ToString("N")[..8]}");
         var appImageVersion = "Unknown";
@@ -509,7 +581,7 @@ public class AppImageManagerV2(string installDirectory = "")
                                 break;
                             }
 
-                            patchedContent.AppendLine($"Exec=\"{filePath}\"{fieldCodes}");
+                            patchedContent.AppendLine($"Exec=\"{execPath}\"{fieldCodes}");
                         }
                         else if (line.StartsWith("TryExec="))
                         {
@@ -540,11 +612,9 @@ public class AppImageManagerV2(string installDirectory = "")
                         }
                     }
 
-                    var cleanName = CleanInvalidNames(appName);
                     var desktopFileName = $"{cleanName}.desktop";
                     var desktopContent = patchedContent.ToString();
 
-                    var desktopDir = Path.Combine(XdgPaths.DataHome(), "applications");
                     try
                     {
                         Directory.CreateDirectory(desktopDir);
@@ -563,13 +633,13 @@ public class AppImageManagerV2(string installDirectory = "")
                 catch (Exception ex)
                 {
                     LogWarning($"Could not update any desktop entry: {ex.Message}");
-                    CreateDesktopEntry(appName, filePath, icon: finalIconPath);
+                    CreateDesktopEntry(appName, execPath, icon: finalIconPath);
                 }
             }
             else
             {
                 LogMessage($"No desktop file found in AppImage, creating default one.");
-                CreateDesktopEntry(appName, filePath, icon: finalIconPath);
+                CreateDesktopEntry(appName, execPath, icon: finalIconPath);
             }
 
             var updateInfo = await GetAppImageUpdateInfo(filePath);
@@ -584,7 +654,7 @@ public class AppImageManagerV2(string installDirectory = "")
                 DesktopName = string.IsNullOrEmpty(desktopName) ? appName : desktopName,
                 SizeOnDisk = new FileInfo(filePath).Length,
                 CommandLineArgs = commandLineArgs,
-                Path = filePath,
+                Path = execPath,
             };
 
             return appImageDto;
@@ -972,11 +1042,39 @@ public class AppImageManagerV2(string installDirectory = "")
             LogMessage($"Downloading update for {update.Name}...");
             using (var client = new HttpClient())
             {
+                client.Timeout = TimeSpan.FromMinutes(5);
                 client.DefaultRequestHeaders.UserAgent.Add(Http.UserAgent);
-                var response = await client.GetAsync(update.DownloadUrl);
+
+                using var response =
+                    await client.GetAsync(update.DownloadUrl, HttpCompletionOption.ResponseHeadersRead);
                 response.EnsureSuccessStatusCode();
+
+                var totalBytes = response.Content.Headers.ContentLength;
                 await using var fs = new FileStream(downloadPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                await response.Content.CopyToAsync(fs);
+                await using var contentStream = await response.Content.ReadAsStreamAsync();
+
+                var buffer = new byte[81920];
+                long totalDownloadedBytes = 0;
+                int bytesRead;
+                var lastReportedProgress = -1;
+
+                while ((bytesRead = await contentStream.ReadAsync(buffer)) != 0)
+                {
+                    await fs.WriteAsync(buffer.AsMemory(0, bytesRead));
+                    totalDownloadedBytes += bytesRead;
+
+                    if (totalBytes.HasValue)
+                    {
+                        var currentProgress = (int)((double)totalDownloadedBytes / totalBytes.Value * 100);
+                        if (currentProgress <= lastReportedProgress) continue;
+                        LogProgress(update.Name, totalBytes, totalDownloadedBytes);
+                        lastReportedProgress = currentProgress;
+                    }
+                    else
+                    {
+                        LogProgress(update.Name, totalBytes, totalDownloadedBytes);
+                    }
+                }
             }
 
             SetFilePermissions(downloadPath, "a+x");
@@ -1076,7 +1174,7 @@ public class AppImageManagerV2(string installDirectory = "")
             var appImages = JsonSerializer.Deserialize(json, AppImageJsonContext.Default.ListAppImageDto) ?? [];
 
             var existingApps = await GetAppImagesFromLocalDb();
-            
+
             foreach (var app in appImages)
             {
                 try
