@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using PackageManager.Alpm.Enums;
 
 namespace PackageManager.Alpm.Events;
 

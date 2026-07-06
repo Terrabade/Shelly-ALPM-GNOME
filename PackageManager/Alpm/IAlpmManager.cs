@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using PackageManager.Alpm.Enums;
 using PackageManager.Alpm.Events.EventArgs;
+using PackageManager.Alpm.Package;
+using AlpmReference = PackageManager.Alpm.Native.AlpmReference;
 
 namespace PackageManager.Alpm;
 
@@ -18,7 +21,7 @@ public interface IAlpmManager
     event EventHandler<AlpmPacsaveEventArgs>? PacsaveInfo;
 
     event EventHandler<AlpmErrorEventArgs>? ErrorEvent;
-    
+
     event EventHandler<InformationalEventArgs>? InformationalEvent;
 
     void IntializeWithSync();
@@ -43,6 +46,8 @@ public interface IAlpmManager
     Task<bool> SyncSystemUpdate(AlpmTransFlag flags = AlpmTransFlag.None);
 
     Task<bool> InstallLocalPackage(string path, AlpmTransFlag flags = AlpmTransFlag.None);
+
+    Task<bool> InstallLocalPackages(List<string> paths, AlpmTransFlag flags = AlpmTransFlag.None);
 
     /// <summary>
     /// Raises the Question event from outside the AlpmManager so other layers (e.g., the AUR
@@ -111,13 +116,73 @@ public interface IAlpmManager
     /// </summary>
     /// <returns>Names of corrupted pkgs removed</returns>
     Task<List<string>> PurifyPackages(bool dryRun = false, bool orphans = false);
-    
+
     /// <summary>
     /// Checks if a package is installed
     /// </summary>
     /// <param name="packageName"></param>
     /// <returns></returns>
     bool IsPackageInstalled(string packageName);
-    
-    
+
+    /// <summary>
+    /// Gets a single installed package by name, or null if it is not installed or hidden.
+    /// </summary>
+    AlpmPackageDto? GetInstalledPackage(string name);
+
+    /// <summary>
+    /// Gets installed packages that are not present in any sync database (foreign packages).
+    /// </summary>
+    List<AlpmPackageDto> GetForeignPackages();
+
+    /// <summary>
+    /// Marks an installed package as a dependency.
+    /// </summary>
+    bool MarkPackageAsDepend(string packageName);
+
+    /// <summary>
+    /// Marks an installed package as explicitly installed.
+    /// </summary>
+    bool MarkPackageAsExplicit(string packageName);
+
+    /// <summary>
+    /// Updates a single package.
+    /// </summary>
+    bool UpdateSinglePackage(string packageName,
+        AlpmTransFlag flags = AlpmTransFlag.NoScriptlet | AlpmTransFlag.NoHooks);
+
+    /// <summary>
+    /// Updates all packages.
+    /// </summary>
+    bool UpdateAll(AlpmTransFlag flags = AlpmTransFlag.NoScriptlet | AlpmTransFlag.NoHooks);
+
+    /// <summary>
+    /// Adds a package to the ignore list.
+    /// </summary>
+    void IgnorePackage(string packageName);
+
+    /// <summary>
+    /// Adds multiple packages to the ignore list.
+    /// </summary>
+    void IgnorePackages(IEnumerable<string> packageNames);
+
+    /// <summary>
+    /// Removes a package from the ignore list.
+    /// </summary>
+    void UnignorePackage(string packageName);
+
+    /// <summary>
+    /// Removes multiple packages from the ignore list.
+    /// </summary>
+    void UnignorePackages(IEnumerable<string> packageNames);
+
+    /// <summary>
+    /// Gets the list of ignored packages.
+    /// </summary>
+    List<string> GetIgnoredPackages();
+
+    /// <summary>
+    /// Gets the list of allowed architectures.
+    /// </summary>
+    List<string> GetAllowedArchitectures();
+
 }

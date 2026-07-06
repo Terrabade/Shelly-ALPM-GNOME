@@ -1,9 +1,11 @@
 using Gtk;
+using Shelly.Gtk.Enums;
 using Shelly.Gtk.Helpers;
 using Shelly.GTK.Resources;
 using Shelly.Gtk.Services;
 using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
+using Shelly.Utilities;
 
 // ReSharper disable CollectionNeverQueried.Local
 
@@ -25,8 +27,8 @@ public class FlatpakUpdate(
     private List<FlatpakPackageDto> _allPackages = [];
     private string _searchText = string.Empty;
     private SignalListItemFactory? _factory;
+    private Label? _noUpdatesLabel;
     private readonly List<StringObject> _stringObjectRefs = [];
-    private bool _userOnly;
 
     public Widget CreateWindow()
     {
@@ -44,6 +46,7 @@ public class FlatpakUpdate(
         _factory.OnSetup += OnSetup;
         _factory.OnBind += OnBind;
         _listView.SetFactory(_factory);
+        _noUpdatesLabel = (Label)builder.GetObject("no_updates_label")!;
 
         _listView.OnRealize += (_, _) => { _ = LoadDataAsync(_cts.Token); };
         removeButton.OnClicked += (_, _) => { _ = UpdateAllCommand(); };
@@ -58,44 +61,44 @@ public class FlatpakUpdate(
     {
         var listItem = (ListItem)args.Object;
         var mainVbox = Box.New(Orientation.Vertical, 0);
-        
-        var hbox = Box.New(Orientation.Horizontal, 10);
-        hbox.MarginStart = 10;
-        hbox.MarginEnd = 10;
-        hbox.MarginTop = 5;
-        hbox.MarginBottom = 5;
+
+        var contentGrid = Grid.New();
+        contentGrid.MarginStart = 10;
+        contentGrid.MarginEnd = 10;
+        contentGrid.MarginTop = 5;
+        contentGrid.MarginBottom = 5;
+        contentGrid.ColumnSpacing = 10;
+        contentGrid.RowSpacing = 2;
+        contentGrid.Hexpand = true;
 
         var icon = Image.New();
-        hbox.Append(icon);
+        contentGrid.Attach(icon, 0, 0, 1, 2);
 
-        var vbox = Box.New(Orientation.Vertical, 2);
         var nameLabel = Label.New(string.Empty);
         nameLabel.Halign = Align.Start;
+        contentGrid.Attach(nameLabel, 1, 0, 1, 1);
 
         var idLabel = Label.New(string.Empty);
         idLabel.Halign = Align.Start;
         idLabel.AddCssClass("dim-label");
-
-        vbox.Append(nameLabel);
-        vbox.Append(idLabel);
-        hbox.Append(vbox);
+        contentGrid.Attach(idLabel, 1, 1, 1, 1);
 
         var versionLabel = Label.New(string.Empty);
         versionLabel.Halign = Align.End;
         versionLabel.Hexpand = true;
-        hbox.Append(versionLabel);
-        
-        mainVbox.Append(hbox);
+        contentGrid.Attach(versionLabel, 2, 0, 1, 2);
+
+        mainVbox.Append(contentGrid);
 
         var permissionExpander = Expander.New(Translations.T("Permission Changes"));
         permissionExpander.MarginStart = 50;
         permissionExpander.MarginEnd = 10;
         permissionExpander.MarginBottom = 5;
         permissionExpander.Visible = false;
-        
+
         var permissionVbox = Box.New(Orientation.Vertical, 2);
         permissionExpander.SetChild(permissionVbox);
-        
+
         mainVbox.Append(permissionExpander);
 
         listItem.SetChild(mainVbox);
@@ -111,22 +114,20 @@ public class FlatpakUpdate(
         var package = _allPackages.FirstOrDefault(p => p.Id == packageId);
         if (package == null) return;
 
-        var hbox = (Box)mainVbox.GetFirstChild()!;
-        var icon = (Image)hbox.GetFirstChild()!;
-        var vbox = (Box)icon.GetNextSibling()!;
-        var nameLabel = (Label)vbox.GetFirstChild()!;
-        var idLabel = (Label)nameLabel.GetNextSibling()!;
-        var versionLabel = (Label)hbox.GetLastChild()!;
+        var contentGrid = (Grid)mainVbox.GetFirstChild()!;
+        var icon = (Image)contentGrid.GetChildAt(0, 0)!;
+        var nameLabel = (Label)contentGrid.GetChildAt(1, 0)!;
+        var idLabel = (Label)contentGrid.GetChildAt(1, 1)!;
+        var versionLabel = (Label)contentGrid.GetChildAt(2, 0)!;
 
-        var permissionExpander = (Expander)hbox.GetNextSibling()!;
+        var permissionExpander = (Expander)mainVbox.GetLastChild()!;
         var permissionVbox = (Box)permissionExpander.GetChild()!;
 
         string path;
-        if (_userOnly)
+        if (package.InstallLevel == InstallLevel.User)
         {
-            var userHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             path =
-                Path.Combine(userHome, ".local/share/flatpak/appstream", package.Remote,
+                Path.Combine(XdgPaths.DataHome(), "flatpak/appstream", package.Remote,
                     "x86_64/active/icons/64x64", $"{package.Id}.png");
         }
         else
@@ -143,7 +144,7 @@ public class FlatpakUpdate(
         nameLabel.SetText(package.Name);
         idLabel.SetText(package.Id);
         versionLabel.SetText(package.Version);
-        
+
         var child = permissionVbox.GetFirstChild();
         while (child != null)
         {
@@ -167,6 +168,7 @@ public class FlatpakUpdate(
                 {
                     permLabel.AddCssClass("error");
                 }
+
                 permissionVbox.Append(permLabel);
             }
         }
@@ -183,11 +185,8 @@ public class FlatpakUpdate(
             _allPackages = await unprivilegedOperationService.ListFlatpakUpdates();
             ct.ThrowIfCancellationRequested();
 
-            var remotes = await unprivilegedOperationService.FlatpakListRemotes();
-
             GLib.Functions.IdleAdd(0, () =>
             {
-                _userOnly = remotes.Any(r => r.Scope != "system");
                 ApplyFilter();
                 return false;
             });
@@ -223,6 +222,10 @@ public class FlatpakUpdate(
             _stringObjectRefs.Add(strObj);
             _listStore.Append(strObj);
         }
+
+        if (_listStore.GetNItems() != 0) return;
+        _noUpdatesLabel!.Label_ = (Translations.T("<span size='large'>Flatpaks are up to date</span>"));
+        _noUpdatesLabel.Visible = true;
     }
 
     private async Task UpdateAllCommand()

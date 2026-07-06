@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using PackageManager.Alpm;
+using PackageManager.Alpm.Enums;
 using PackageManager.Aur.Models;
 
 namespace PackageManager.Aur;

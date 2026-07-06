@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using PackageManager.Alpm;
+using PackageManager.Alpm.Enums;
 
 namespace PackageManager.Utilities;
 
@@ -48,6 +49,7 @@ internal static class PacmanConfParser
                 {
                     currentRepo = new Repository { Name = currentSection };
                 }
+
                 continue;
             }
 
@@ -82,8 +84,14 @@ internal static class PacmanConfParser
             case "cachedir": conf.CacheDir = value; break;
             case "logfile": conf.LogFile = value; break;
             case "gpgdir": conf.GpgDir = value; break;
-            case "hookdir": conf.HookDir = value.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList(); break;
-            case "holdpkg": conf.HoldPkg = value.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList(); break;
+            case "hookdir": conf.HookDir.AddRange(value.Split(' ', StringSplitOptions.RemoveEmptyEntries)); break;
+            case "holdpkg":
+            {
+                conf.HoldPkg = value.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList();
+                if (!conf.HoldPkg.Contains("shelly"))
+                    conf.HoldPkg.Add("shelly");
+                break;
+            }
             case "xfercommand":
                 if (string.IsNullOrEmpty(conf.TransferCommand)) conf.TransferCommand = value;
                 else conf.TransferCommandTwo = value;
@@ -93,17 +101,22 @@ internal static class PacmanConfParser
                 break;
             case "architecture": conf.Architecture = value; break;
             case "ignorepkg": conf.IgnorePkg.AddRange(value.Split(' ', StringSplitOptions.RemoveEmptyEntries)); break;
-            case "ignoregroup": conf.IgnoreGroup.AddRange(value.Split(' ', StringSplitOptions.RemoveEmptyEntries)); break;
+            case "ignoregroup":
+                conf.IgnoreGroup.AddRange(value.Split(' ', StringSplitOptions.RemoveEmptyEntries)); break;
             case "noupgrade": conf.NoUpgrade.AddRange(value.Split(' ', StringSplitOptions.RemoveEmptyEntries)); break;
             case "noextract": conf.NoExtract.AddRange(value.Split(' ', StringSplitOptions.RemoveEmptyEntries)); break;
             case "usesyslog": conf.UseSyslog = true; break;
             case "checkspace": conf.CheckSpace = true; break;
-            case "siglevel": conf.SigLevel = ParseSigLevel(value.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList()); break;
-            case "localfilesiglevel": conf.LocalFileSigLevel = ParseSigLevel(value.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList()); break;
+            case "siglevel":
+                conf.SigLevel = ParseSigLevel(value.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList()); break;
+            case "localfilesiglevel":
+                conf.LocalFileSigLevel =
+                    ParseSigLevel(value.Split(' ', StringSplitOptions.RemoveEmptyEntries).ToList()); break;
         }
     }
 
-    private static void ParseRepoOption(string key, string value, Repository repo, PacmanConf conf, ref string currentSection)
+    private static void ParseRepoOption(string key, string value, Repository repo, PacmanConf conf,
+        ref string currentSection)
     {
         switch (key.ToLowerInvariant())
         {
@@ -127,10 +140,11 @@ internal static class PacmanConfParser
                         }
                     }
                 }
+
                 break;
         }
     }
-    
+
     private static AlpmSigLevel ParseSigLevel(IEnumerable<string> levels)
     {
         AlpmSigLevel result = AlpmSigLevel.None;
@@ -174,7 +188,8 @@ internal static class PacmanConfParser
                     result = AlpmSigLevel.None;
                     break;
                 case "trustall":
-                    result |= AlpmSigLevel.PackageUnknownOk | AlpmSigLevel.PackageMarginalOk | AlpmSigLevel.DatabaseUnknownOk | AlpmSigLevel.DatabaseMarginalOk;
+                    result |= AlpmSigLevel.PackageUnknownOk | AlpmSigLevel.PackageMarginalOk |
+                              AlpmSigLevel.DatabaseUnknownOk | AlpmSigLevel.DatabaseMarginalOk;
                     break;
                 case "usedefault":
                     result |= AlpmSigLevel.UseDefault;

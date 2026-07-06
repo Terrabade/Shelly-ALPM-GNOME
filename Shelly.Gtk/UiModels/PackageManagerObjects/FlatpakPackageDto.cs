@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Shelly.Gtk.Enums;
 
 namespace Shelly.Gtk.UiModels.PackageManagerObjects;
 
@@ -18,4 +19,6 @@ public partial class FlatpakPackageDto
     public List<string> Categories { get; set; } = [];
     public string Remote { get; set; } = string.Empty;
     public List<string> Permissions { get; set; } = [];
+    public InstallLevel InstallLevel { get; set; }
+    public uint InstalledSize { get; set; }
 }

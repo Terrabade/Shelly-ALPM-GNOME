@@ -189,7 +189,7 @@ flowboxchild:hover {
     transition: border-color 200ms, background-color 200ms;
 }
 
-.drop-zone.drag-hover {
-    border-color: @accent_color;
-    background-color: alpha(@accent_color, 0.1);
+.flatpak-nav row:selected {
+    border-left: 4px solid @theme_fg_color;
+    background: alpha( @theme_fg_color, 0.1);
 }

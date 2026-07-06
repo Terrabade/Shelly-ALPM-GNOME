@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using PackageManager.Aur;
 using PackageManager.Aur.Models;
 using NUnit.Framework;
+using Shelly.Utilities.Networking;
 
 namespace PackageManager.Tests.Aur;
 
@@ -20,9 +21,9 @@ public class AurSearchManagerTests
     [SetUp]
     public void SetUp()
     {
-        _httpClient = new HttpClient();
+        _httpClient = OptimizedClient.CreateClient(300, 5, 5);
         _manager = new AurSearchManager(_httpClient);
-        
+
         var configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "shelly");
         _testCachePath = Path.Combine(configPath, "aur-packages.json");
     }
@@ -32,7 +33,7 @@ public class AurSearchManagerTests
     {
         _httpClient.Dispose();
         _manager?.Dispose();
-        
+
         if (File.Exists(_testCachePath + ".bak"))
         {
             File.Move(_testCachePath + ".bak", _testCachePath, true);
@@ -51,18 +52,18 @@ public class AurSearchManagerTests
         {
             File.Move(_testCachePath, _testCachePath + ".bak", true);
         }
-        
+
         var cachedPackages = new List<AurPackageDto>
         {
             new AurPackageDto { Name = "test-package-123", Description = "A test package" }
         };
-        
+
         Directory.CreateDirectory(Path.GetDirectoryName(_testCachePath)!);
         await File.WriteAllTextAsync(_testCachePath, JsonSerializer.Serialize(cachedPackages, AurJsonContext.Default.ListAurPackageDto));
-        
+
         // Act
         var response = await _manager.SearchAsync("test-package-123");
-        
+
         // Assert
         Assert.That(response, Is.Not.Null);
         Assert.That(response.Results, Is.Not.Null);

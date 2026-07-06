@@ -30,6 +30,7 @@ public class AlpmEventDialog
         box.Append(titleLabel);
 
         var questionLabel = Label.New(e.QuestionText);
+        questionLabel.SetText(e.QuestionText);
         questionLabel.SetWrap(true);
         questionLabel.SetHalign(Align.Start);
         questionLabel.SetXalign(0);
@@ -65,7 +66,7 @@ public class AlpmEventDialog
             box.Append(combo);
 
             var selectButton = Button.NewWithLabel(T("Select"));
-            selectButton.OnClicked += (_,_) =>
+            selectButton.OnClicked += (_, _) =>
             {
                 e.SetResponse(combo.GetActive());
                 parentOverlay.RemoveOverlay(baseFrame);
@@ -124,7 +125,7 @@ public class AlpmEventDialog
             box.Append(scrolled);
 
             selectAllCheck.SetActive(false);
-            selectAllCheck.OnToggled += (_,_) =>
+            selectAllCheck.OnToggled += (_, _) =>
             {
                 var active = selectAllCheck.GetActive();
                 foreach (var cb in checkButtons) cb.SetActive(active);
@@ -132,7 +133,7 @@ public class AlpmEventDialog
 
             var confirmButton = Button.NewWithLabel(T("Confirm"));
             confirmButton.SetCssClasses(["suggested-action"]);
-            confirmButton.OnClicked += (_,_) =>
+            confirmButton.OnClicked += (_, _) =>
             {
                 var selectedIndices = new List<int>();
                 for (int v = 0; v < checkButtons.Count; v++)
@@ -150,23 +151,23 @@ public class AlpmEventDialog
         else
         {
             var noButton = Button.NewWithLabel(T("No"));
-            noButton.OnClicked += (_,_) =>
+            noButton.OnClicked += (_, _) =>
             {
-                e.SetResponse(0); 
+                e.SetResponse(0);
                 parentOverlay.RemoveOverlay(baseFrame);
             };
 
             var yesButton = Button.NewWithLabel(T("Yes"));
             yesButton.SetCssClasses(["suggested-action"]);
-            yesButton.OnClicked += (_,_) =>
+            yesButton.OnClicked += (_, _) =>
             {
-                e.SetResponse(1); 
+                e.SetResponse(1);
                 parentOverlay.RemoveOverlay(baseFrame);
             };
 
             buttonBox.Append(yesButton);
             buttonBox.Append(noButton);
-          
+
         }
 
         box.Append(buttonBox);

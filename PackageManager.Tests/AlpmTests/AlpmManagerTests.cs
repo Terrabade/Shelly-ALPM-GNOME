@@ -2,6 +2,8 @@ using System.Diagnostics;
 using PackageManager.Alpm;
 using System.IO;
 using System.Runtime.InteropServices;
+using PackageManager.Alpm.Enums;
+using PackageManager.Alpm.Interop;
 using PackageManager.Alpm.Questions;
 
 namespace PackageManager.Tests.AlpmTests;

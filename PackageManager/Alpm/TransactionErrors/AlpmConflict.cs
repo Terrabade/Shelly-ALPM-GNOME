@@ -1,5 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
+using PackageManager.Alpm.Interop;
+using PackageManager.Alpm.Package;
 
 namespace PackageManager.Alpm.TransactionErrors;
 

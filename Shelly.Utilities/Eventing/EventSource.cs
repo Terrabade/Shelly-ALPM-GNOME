@@ -82,7 +82,24 @@ public enum ProgressType
     LoadStart,
     KeyringStart,
     PackageDownload = 100,
+    DatabaseDownload = 101,
     MakepkgBuild = 200,
     MakepkgPackage = 201,
     AurDownload = 202
+}
+
+public enum FlatpakEvents
+{
+    Information,
+    Warning,
+    Error,
+    Success
+}
+
+public enum AppImageEvents
+{
+    Information,
+    Warning,
+    Error,
+    Success
 }

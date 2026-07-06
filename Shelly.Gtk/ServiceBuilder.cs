@@ -29,12 +29,11 @@ public static class ServiceBuilder
         collection.AddSingleton<IOperationLogService, OperationLogService>();
         collection.AddSingleton<IPackageUpdateNotifier, PackageUpdateNotifier>();
         collection.AddSingleton<IIConDownloadService, IconDownloadService>();
-        collection.AddSingleton<IFingerprintAuthDetector, FingerprintAuthDetector>();
-        collection.AddSingleton<IFingerprintAuthState, FingerprintAuthState>();
+        collection.AddSingleton<IProcessExecutor, ProcessExecutor>();
         collection.AddScoped<IUpdateService, GitHubUpdateService>();
         collection.AddScoped<ITrayDbus, TrayDBus>();
         collection.AddScoped<IFlatHubApiService, FlatHubApiService>();
-        collection.AddTransient<FlatpakRemove>();
+        collection.AddTransient<FlatpakManage>();
         collection.AddTransient<AurInstall>();
         collection.AddTransient<AurUpdate>();
         collection.AddTransient<AurRemove>();
@@ -50,8 +49,8 @@ public static class ServiceBuilder
         collection.AddTransient<AlpmEventDialog>();
         collection.AddTransient<AppImage>();
         collection.AddTransient<Recommend>();
-        collection.AddTransient<WebWindow>();
         collection.AddTransient<SetupWindow>();
+        collection.AddTransient<StatWindow>();
         return collection.BuildServiceProvider();
     }
 }

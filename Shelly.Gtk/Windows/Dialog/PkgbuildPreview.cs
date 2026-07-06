@@ -3,107 +3,91 @@ using Pango;
 using Shelly.Gtk.Services;
 using Shelly.Gtk.UiModels;
 using WrapMode = Gtk.WrapMode;
-
+ 
 namespace Shelly.Gtk.Windows.Dialog;
-
+ 
 public static class PkgbuildPreview
 {
-    public static void ShowPackageBuildPreview(Overlay parentOverlay, PackageBuildEventArgs e, IGenericQuestionService questionService)
+    public static void ShowPackageBuildPreview(Window? parent, PackageBuildEventArgs? e)
     {
-        var background = Box.New(Orientation.Horizontal, 0);
-        background.AddCssClass("lockout-overlay");
-        background.SetHalign(Align.Fill);
-        background.SetValign(Align.Fill);
-        background.SetHexpand(true);
-        background.SetVexpand(true);
-
-        var baseFrame = Frame.New(null);
-        baseFrame.SetHalign(Align.Center);
-        baseFrame.SetValign(Align.Center);
-        baseFrame.SetSizeRequest(900, 600); 
-        baseFrame.SetMarginTop(20);
-        baseFrame.SetMarginBottom(20);
-        baseFrame.SetMarginStart(20);
-        baseFrame.SetMarginEnd(20);
-        baseFrame.AddCssClass("background");
-        baseFrame.AddCssClass("dialog-overlay");
-        baseFrame.SetOverflow(Overflow.Hidden);
-        background.Append(baseFrame);
-
-        var box = Box.New(Orientation.Vertical, 12);
-        baseFrame.SetChild(box);
-
-        var headerBox = Box.New(Orientation.Horizontal, 0);
-        headerBox.SetMarginTop(4);
-        headerBox.SetMarginStart(4);
-
-        var closeButton = Button.New();
-        closeButton.SetIconName("window-close-symbolic");
-        closeButton.TooltipText = "Close Preview";
-        closeButton.OnClicked += (_, _) => Close();
+        if (e is null) return;
         
-        var copyButton = Button.New();
-        copyButton.SetIconName("edit-copy-symbolic"); 
-        copyButton.TooltipText = "Copy PKGBUILD to clipboard";
-        copyButton.OnClicked += (_, _) =>
+        var tcs = new TaskCompletionSource<bool>();
+ 
+        var dialog = Window.New();
+        
+        dialog.SetTitle(e.Title);                      
+        dialog.SetTransientFor(parent);                  
+        dialog.SetModal(true);                         
+        dialog.SetDefaultSize(900, 650);    
+        dialog.SetResizable(true);
+ 
+        var outer = Box.New(Orientation.Vertical, 12);
+ 
+        var notebook = Notebook.New();
+        notebook.SetVexpand(true);
+        notebook.SetHexpand(true);
+        notebook.SetScrollable(true);
+ 
+        if (!string.IsNullOrEmpty(e.PkgBuild))
         {
-            var clipboard = copyButton.GetClipboard();
-            clipboard.SetText(e.PkgBuild);
-            questionService.RaiseToastMessage(new ToastMessageEventArgs("PKGBUILD copied to clipboard"));
-        };
-
-        var titleLabel = Label.New(e.Title);
-        titleLabel.AddCssClass("title-4");
-        titleLabel.SetHexpand(true);
-        titleLabel.SetHalign(Align.Center);
-        titleLabel.SetXalign(0.5f);
-        titleLabel.SetMarginEnd(40);
-
-        headerBox.Append(copyButton);
-        headerBox.Append(titleLabel);
-        headerBox.Append(closeButton);
-
-        box.Append(headerBox);
-        
-
-        var textView = TextView.New();
-        textView.SetWrapMode(WrapMode.WordChar);
-        textView.Editable = false;          
-        textView.Monospace = true;        
-        textView.CursorVisible = false;
-        textView.LeftMargin = 12;
-        textView.RightMargin = 12;
-        textView.TopMargin = 12;
-        textView.BottomMargin = 12;
-        
-        textView.GetBuffer().SetText(e.PkgBuild, -1);
-
-        var scrolledWindow = ScrolledWindow.New();
-        scrolledWindow.SetPolicy(PolicyType.Automatic, PolicyType.Automatic);
-        scrolledWindow.SetVexpand(true);
-        scrolledWindow.SetHexpand(true);
-        scrolledWindow.AddCssClass("view"); 
-        scrolledWindow.SetChild(textView);
-        
-        box.Append(scrolledWindow);
-
-        var shortcutController = ShortcutController.New();
-        shortcutController.Scope = ShortcutScope.Global;
-        
-        var escAction = CallbackAction.New((_, _) => {
-            Close();
-            return true;
-        });
-        shortcutController.AddShortcut(Shortcut.New(ShortcutTrigger.ParseString("Escape"), escAction));
-        background.AddController(shortcutController);
-
-        parentOverlay.AddOverlay(background);
-        return;
-
-        void Close()
-        {
-            e.SetResponse(false);
-            parentOverlay.RemoveOverlay(background);
+            var textView = TextView.New();
+            textView.WrapMode = WrapMode.WordChar;
+            textView.Editable = false;          
+            textView.Monospace = true;        
+            textView.CursorVisible = false;
+            textView.LeftMargin = 12;
+            textView.RightMargin = 12;
+            textView.TopMargin = 12;
+            textView.BottomMargin = 12;
+            textView.GetBuffer().SetText(e.PkgBuild, -1);
+ 
+            var scrolledWindow = ScrolledWindow.New();
+            scrolledWindow.SetPolicy(PolicyType.Automatic, PolicyType.Automatic);
+            scrolledWindow.SetVexpand(true);
+            scrolledWindow.SetHexpand(true);
+            scrolledWindow.AddCssClass("view"); 
+            scrolledWindow.SetChild(textView);
+ 
+            notebook.AppendPage(scrolledWindow, Label.New("PKGBUILD"));
         }
+        
+        foreach (var (name, content) in e.SourceFiles)
+        {
+            if (string.IsNullOrEmpty(content)) continue;
+ 
+            var sourceView = TextView.New();
+            sourceView.SetWrapMode(WrapMode.WordChar);
+            sourceView.Editable = false;
+            sourceView.Monospace = true;
+            sourceView.CursorVisible = false;
+            sourceView.LeftMargin = 12;
+            sourceView.RightMargin = 12;
+            sourceView.TopMargin = 12;
+            sourceView.BottomMargin = 12;
+            sourceView.GetBuffer().SetText(content, -1);
+ 
+            var sourceScroll = ScrolledWindow.New();
+            sourceScroll.SetPolicy(PolicyType.Automatic, PolicyType.Automatic);
+            sourceScroll.SetVexpand(true);
+            sourceScroll.SetHexpand(true);
+            sourceScroll.AddCssClass("view");
+            sourceScroll.SetChild(sourceView);
+ 
+            notebook.AppendPage(sourceScroll, Label.New(name));
+        }
+ 
+        outer.Append(notebook);
+ 
+        dialog.SetChild(outer);
+ 
+        dialog.OnCloseRequest += (_, _) =>
+        {
+            tcs.TrySetResult(false);
+            dialog.Dispose();
+            return false;
+        };
+ 
+        dialog.Present();
     }
 }

@@ -16,21 +16,21 @@
     </PropertyGroup>
 
     <PropertyGroup>
-        <Version>2.3.3.4</Version>
+        <Version>2.4.1.2</Version>
         <AssemblyName>shelly-ui</AssemblyName>
-        <AssemblyVersion>2.3.3.4</AssemblyVersion>
+        <AssemblyVersion>2.4.1.2</AssemblyVersion>
         <AssemblyTitle>Shelly GTK UI</AssemblyTitle>
         <Description>Shelly GTK is a arch linux package manager</Description>
         <Company>Seafoam Labs</Company>
         <Product>Shelly CLI by Seafoam Labs</Product>
         <Copyright>2026 Seafoam Labs</Copyright>
     </PropertyGroup>
-    
+
 
     <ItemGroup>
         <EmbeddedResource Include="UiFiles\**\*.ui" />
         <EmbeddedResource Include="Assets\chel-intro.png" />
-        <EmbeddedResource Include="Assets\chelflag.png" />
+        <EmbeddedResource Include="Assets\shellychel.png" />
     </ItemGroup>
 
     <ItemGroup>
@@ -43,7 +43,6 @@
         <PackageReference Include="GirCore.GObject-2.0.Integration" Version="0.8.0-preview.1"/>
         <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="11.0.0-preview.2.26159.112" />
         <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="11.0.0-preview.2.26159.112" />
-        <PackageReference Include="Tmds.DBus.Protocol" Version="0.92.0" />
     </ItemGroup>
     <ItemGroup>
         <EmbeddedResource Include="Assets\style.css" />
@@ -74,5 +73,8 @@
     </ItemGroup>
     <ItemGroup>
       <ProjectReference Include="..\Shelly.Utilities\Shelly.Utilities.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+      <Folder Include="Helpers\CustomUiComps\" />
     </ItemGroup>
 </Project>

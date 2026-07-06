@@ -1,3 +1,5 @@
+using PackageManager.Alpm.Native;
+
 namespace PackageManager.Tests.AlpmReferenceTests;
 
 public class LibraryInitializationTests
@@ -5,9 +7,9 @@ public class LibraryInitializationTests
     [Test]
     public void InitializeReturnsNonNullHandle()
     {
-        var handle = Alpm.AlpmReference.Initialize("/","/var/lib/pacman",out var error);
+        var handle = AlpmReference.Initialize("/","/var/lib/pacman",out var error);
         Assert.That(handle, Is.Not.EqualTo(IntPtr.Zero));
-        var result = Alpm.AlpmReference.Release(handle);
+        var result = AlpmReference.Release(handle);
         
     }
 }

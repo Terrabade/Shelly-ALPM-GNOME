@@ -3,6 +3,8 @@ using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
+using PackageManager.Alpm.Enums;
+using PackageManager.Alpm.Events.EventArgs;
 using PackageManager.Alpm.Questions;
 
 namespace PackageManager.Alpm.DistributionHooks.CachyOS;

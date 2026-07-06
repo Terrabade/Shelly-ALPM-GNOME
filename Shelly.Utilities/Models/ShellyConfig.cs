@@ -5,24 +5,20 @@ namespace Shelly.Utilities;
 public class ShellyConfig
 {
     // Existing CLI settings
-    public string FileSizeDisplay { get; set; } = nameof(SizeDisplay.Bytes);
+    public string FileSizeDisplay { get; set; } = nameof(SizeDisplay.Megabytes);
     public string DefaultExecution { get; set; } = nameof(DefaultCommand.UpgradeAll);
 
     public int ParallelDownloadCount { get; set; } = 10;
 
     // Migrated from UI
-    public string? AccentColor { get; set; }
     public string? Culture { get; set; }
-    public bool DarkMode { get; set; } = true;
     public bool AurEnabled { get; set; }
     public bool ShellySearchEnabled { get; set; }
     public bool AurWarningConfirmed { get; set; }
     public bool FlatPackEnabled { get; set; }
-    public bool ConsoleEnabled { get; set; }
     public double WindowWidth { get; set; } = 800;
     public double WindowHeight { get; set; } = 600;
     public string DefaultView { get; set; } = "HomeScreen";
-    public bool UseKdeTheme { get; set; }
     public bool UseOldMenu { get; set; }
     public bool TrayEnabled { get; set; } = true;
     public int TrayCheckIntervalHours { get; set; } = 72;
@@ -32,7 +28,6 @@ public class ShellyConfig
     public bool UseWeeklySchedule { get; set; }
     public List<DayOfWeek> DaysOfWeek { get; set; } = [];
     public TimeOnly? Time { get; set; }
-    public bool WebViewEnabled { get; set; }
     public bool ShellyIconsEnabled { get; set; } = true;
     public bool AppImageEnabled { get; set; }
     public bool NewInstallInitSettings { get; set; }
@@ -44,9 +39,7 @@ public class ShellyConfig
 
     public ShellyTabs DefaultPageDropDown { get; set; } = ShellyTabs.Packages;
 
-    public bool SuppressFingerprintWarning { get; set; }
-
-    public bool RecommendedEnabled { get; set; }
+    public bool RecommendedEnabled { get; set; } = true;
 
     public string ProgressBarStyle { get; set; } = nameof(ProgressBarStyleKind.Blocks);
     public int ProgressBarFps { get; set; } = 7;
@@ -73,6 +66,11 @@ public class ShellyConfig
     public bool AurRemoveShowHidden { get; set; }
     public bool AurUpdateRunChecks { get; set; }
     public bool AurUpdateShowHidden { get; set; }
-    
     public string? AppImageInstallPath { get; set; }
+    public bool StarFishEnabled { get; set; } = false;
+    
+    public ViewType PackageInstallView { get; set; } = ViewType.List;
+    public ViewType PackageUpdateView { get; set; } = ViewType.List;
+    public ViewType PackageManageView { get; set; } = ViewType.List;
+   
 }

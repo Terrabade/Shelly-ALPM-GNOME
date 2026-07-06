@@ -26,17 +26,17 @@ internal sealed class EventRouter
         switch (evt)
         {
             case AlpmErrorEvent e:
-                Console.Error.WriteLine($"[ALPM_ERROR] {e.ErrorMessage}");
-                Log($"[ERROR] {e.ErrorMessage}");
+                Console.Error.WriteLine($"{e.ErrorMessage}");
+                Log($"{e.ErrorMessage}");
                 break;
             case AlpmHookEvent e:
-                Log($"[HOOK] {e.Description}");
+                Log($"{e.Description}");
                 break;
             case AlpmScriptletEvent e:
-                Log($"[SCRIPTLET] {e.Line}");
+                Log($"{e.Line}");
                 break;
             case AlpmReplaceEvent e:
-                Log($"[REPLACE] {e.Repository}/{e.PackageName} replaces {string.Join(", ", e.Replaces)}");
+                Log($"{e.Repository}/{e.PackageName} replaces {string.Join(", ", e.Replaces)}");
                 break;
             case AlpmPackageProgressEvent e:
                 var key = e.PackageName ?? string.Empty;
@@ -48,16 +48,29 @@ internal sealed class EventRouter
                 var label = string.IsNullOrEmpty(e.Message)
                     ? $"{e.PackageName}: {e.Percent}% - {e.ProgressType}"
                     : $"{e.PackageName}: {e.Percent}% - {e.Message}";
-                Log($"[PROGRESS] {label}");
+                Log($"{label}");
                 break;
             case AlpmInformationalEvent e:
                 var prefix = e.PackageName != null && e.CurrentIndex.HasValue && e.TotalCount.HasValue
-                    ? $"[{e.CurrentIndex}/{e.TotalCount}] {e.PackageName}: "
+                    ? $"{e.PackageName}: "
                     : string.Empty;
-                Log($"[INFO {e.EventType}] {prefix}{e.Message}");
+                Log($"{prefix}{e.Message}");
                 break;
             case AlpmStatusEvent e:
-                Log($"[STATUS] {e.Status}");
+                Log($"{e.Status}");
+                break;
+            case FlatpakProgressEvent e:
+                Log($"{e.Status} {e.Percentage}%");
+                break;
+            case FlatpakStatusEvent e:
+                Log($"{e.Status} {e.Message}");
+                break;
+            case AppImageProgressEvent e:
+                Log($"{e.Status} {e.Percentage}%");
+                break;
+            case AppImageStatusEvent e:
+                var msg = string.IsNullOrEmpty(e.Message) ? e.Status.ToString() : e.Message;
+                Log($"{msg}");
                 break;
         }
         return true;

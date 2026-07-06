@@ -1,5 +1,8 @@
+using System.Text.Json.Serialization;
+
 namespace Shelly.Utilities.Enums;
 
+[JsonConverter(typeof(JsonStringEnumConverter<ShellyTabs>))]
 public enum ShellyTabs
 {
     Packages = 0,

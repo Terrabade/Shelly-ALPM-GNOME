@@ -18,6 +18,7 @@ namespace Shelly.Gtk.Windows.AUR;
 
 public class AurInstall(
     IPrivilegedOperationService privilegedOperationService,
+    IUnprivilegedOperationService unprivilegedOperationService,
     ILockoutService lockoutService,
     IPkgBuildService pkgBuildService,
     IConfigService configService,
@@ -379,13 +380,13 @@ public class AurInstall(
 
         if (!string.IsNullOrWhiteSpace(_searchText))
         {
-            var result = await privilegedOperationService.SearchAurPackagesAsync(_searchText);
+            var result = await unprivilegedOperationService.SearchAurPackagesAsync(_searchText);
             _searchForPackageLabel.Visible = false;
             ct.ThrowIfCancellationRequested();
 
             Console.WriteLine($"[DEBUG_LOG] Search result: {result.Count}");
 
-            var installedPackages = await privilegedOperationService.GetInstalledPackagesAsync();
+            var installedPackages = await unprivilegedOperationService.GetInstalledPackagesAsync();
             var installedNames = new HashSet<string>(installedPackages.Select(p => p.Name));
             installedPackages.Clear();
             installedPackages.TrimExcess();
@@ -490,64 +491,10 @@ public class AurInstall(
                 );
 
                 genericQuestionService.RaiseToastMessage(args);
-                return;
             }
-
-            ShowInstallFailureDialog(selectedPackages, result);
         }
     }
-
-    private void ShowInstallFailureDialog(IReadOnlyCollection<string> selectedPackages, OperationResult result)
-    {
-        var dialogArgs = AurInstallFailureDialog.Create(
-            selectedPackages,
-            LogHelpers.BuildFailureSummary(result),
-            () => ExportInstallLogAsync(selectedPackages, result));
-
-        genericQuestionService.RaiseDialog(dialogArgs);
-    }
-
-    private async Task<bool> ExportInstallLogAsync(IReadOnlyCollection<string> selectedPackages, OperationResult result)
-    {
-        try
-        {
-            var dialog = FileDialog.New();
-            dialog.SetTitle(T("Export AUR install log"));
-            dialog.SetInitialName(LogHelpers.CreateSuggestedLogFileName(selectedPackages, "aur"));
-
-            var filter = FileFilter.New();
-            filter.SetName(T("Log Files (*.log)"));
-            filter.AddPattern("*.log");
-
-            var filters = Gio.ListStore.New(FileFilter.GetGType());
-            filters.Append(filter);
-            dialog.SetFilters(filters);
-
-            var file = await dialog.SaveAsync((Window)_box.GetRoot()!);
-            if (file is null)
-            {
-                return false;
-            }
-
-            var path = file.GetPath();
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                return false;
-            }
-
-            await File.WriteAllTextAsync(path, LogHelpers.BuildInstallLog(selectedPackages, result, "aur"));
-
-            genericQuestionService.RaiseToastMessage(new ToastMessageEventArgs(T("Exported AUR install log")));
-            return true;
-        }
-        catch (Exception e)
-        {
-            Console.WriteLine($"Failed to export AUR install log: {e.Message}");
-            genericQuestionService.RaiseToastMessage(new ToastMessageEventArgs(T("Failed to export AUR install log")));
-            return false;
-        }
-    }
-
+    
     private bool AnySelected()
     {
         for (uint i = 0; i < _listStore.GetNItems(); i++)
@@ -660,11 +607,13 @@ public class AurInstall(
         headerBox.Append(iconImage);
 
         var nameLabel = Label.New(pkgObj.Name);
+        nameLabel.Selectable = true;
         nameLabel.AddCssClass("title-2");
         nameLabel.Halign = Align.Center;
         headerBox.Append(nameLabel);
 
         var descLabel = Label.New(pkgObj.Description);
+        descLabel.Selectable = true;
         descLabel.AddCssClass("dim-label");
         descLabel.Halign = Align.Center;
         descLabel.Wrap = true;
@@ -737,29 +686,6 @@ public class AurInstall(
             AddChipList(T("Groups"), pkgObj.Groups);
         if (pkgObj.Replaces?.Count > 0)
             AddChipList(T("Replaces"), pkgObj.Replaces);
-
-        if (configService.LoadConfig().WebViewEnabled)
-        {
-            if (pkgObj.Depends?.Count > 0)
-            {
-                var dictionary = new Dictionary<string, List<string>> { { pkgObj.Name, pkgObj.Depends } };
-
-                foreach (var dep in pkgObj.Depends)
-                {
-                    for (uint i = 0; i < _listStore.GetNItems(); i++)
-                    {
-                        var obj = _listStore.GetObject(i);
-                        if (obj is not AurPackageGObject depObj) continue;
-                        if (_aurPackages[depObj.Index].Name.Contains(dep))
-                            dictionary.TryAdd(_aurPackages[depObj.Index].Name,
-                                _aurPackages[depObj.Index].Depends ?? []);
-                    }
-                }
-
-                var window = new WebWindow(pkgObj.Name, dictionary);
-                _detailBox.Append(window.CreateWindow());
-            }
-        }
 
         _detailRevealer.SetRevealChild(true);
         return;

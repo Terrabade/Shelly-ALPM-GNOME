@@ -15,6 +15,7 @@ namespace Shelly.Gtk.Windows.AUR;
 
 public class AurUpdate(
     IPrivilegedOperationService privilegedOperationService,
+    IUnprivilegedOperationService unprivilegedOperationService,
     ILockoutService lockoutService,
     IConfigService configService,
     IGenericQuestionService genericQuestionService,
@@ -33,6 +34,7 @@ public class AurUpdate(
     private CustomFilter _filter = null!;
     private SignalListItemFactory _checkFactory = null!;
     private SignalListItemFactory _nameFactory = null!;
+    private SignalListItemFactory _oldVersionFactory = null!;
     private SignalListItemFactory _versionFactory = null!;
     private ColumnViewSorter _columnViewSorter = null!;
     private Box _detailBox = null!;
@@ -45,6 +47,7 @@ public class AurUpdate(
     private readonly List<AurUpdateGObject> _packageGObjectRefs = [];
     private ColumnViewColumn _checkColumn = null!;
     private ColumnViewColumn _nameColumn = null!;
+    private ColumnViewColumn _oldColumn = null!;
     private ColumnViewColumn _versionColumn = null!;
     private Button _updateButton = null!;
     private Label _noPackagesLabel = null!;
@@ -65,6 +68,9 @@ public class AurUpdate(
 
         _nameColumn = (ColumnViewColumn)builder.GetObject("name_column")!;
         _nameColumn.Resizable = true;
+
+        _oldColumn = (ColumnViewColumn)builder.GetObject("old_column")!;
+        _oldColumn.Resizable = true;
 
         _versionColumn = (ColumnViewColumn)builder.GetObject("version_column")!;
         _versionColumn.Resizable = true;
@@ -91,7 +97,7 @@ public class AurUpdate(
         _selectionModel.Autoselect = false;
         _columnView.SetModel(_selectionModel);
 
-        SetupColumns(_checkColumn, _nameColumn, _versionColumn);
+        SetupColumns(_checkColumn, _nameColumn, _oldColumn, _versionColumn);
 
         // Creating sorter
         _nameColumn.Sorter = CustomSorter.New<AurPackageGObject>((a, b) => 0);
@@ -140,6 +146,7 @@ public class AurUpdate(
 
         ColumnViewHelper.AlignColumnHeader(_columnView, 1, Align.Start);
         ColumnViewHelper.AlignColumnHeader(_columnView, 2, Align.End);
+        ColumnViewHelper.AlignColumnHeader(_columnView, 3, Align.End);
 
 
         _columnView.OnRealize += (_, _) => { Reload(); };
@@ -216,7 +223,8 @@ public class AurUpdate(
         _filter.Changed(FilterChange.Different);
     }
 
-    private void SetupColumns(ColumnViewColumn checkColumn, ColumnViewColumn nameColumn, ColumnViewColumn versionColumn)
+    private void SetupColumns(ColumnViewColumn checkColumn, ColumnViewColumn nameColumn, ColumnViewColumn oldColumn,
+        ColumnViewColumn versionColumn)
     {
         _checkFactory = SignalListItemFactory.New();
         _checkFactory.OnSetup += (_, args) =>
@@ -288,6 +296,23 @@ public class AurUpdate(
         };
         nameColumn.SetFactory(_nameFactory);
 
+        _oldVersionFactory = SignalListItemFactory.New();
+        _oldVersionFactory.OnSetup += (_, args) =>
+        {
+            if (args.Object is not ColumnViewCell listItem) return;
+            var label = Label.New(string.Empty);
+            listItem.SetChild(label);
+        };
+        _oldVersionFactory.OnBind += (_, args) =>
+        {
+            if (args.Object is not ColumnViewCell listItem) return;
+            if (listItem.GetItem() is not AurUpdateGObject { Package: { } pkg } ||
+                listItem.GetChild() is not Label label) return;
+            label.SetText(pkg.Version);
+            label.Halign = Align.End;
+        };
+        oldColumn.SetFactory(_oldVersionFactory);
+
         _versionFactory = SignalListItemFactory.New();
         _versionFactory.OnSetup += (_, args) =>
         {
@@ -300,7 +325,7 @@ public class AurUpdate(
             if (args.Object is not ColumnViewCell listItem) return;
             if (listItem.GetItem() is not AurUpdateGObject { Package: { } pkg } ||
                 listItem.GetChild() is not Label label) return;
-            label.SetText(pkg.Version);
+            label.SetText(pkg.NewVersion);
             label.Halign = Align.End;
         };
         versionColumn.SetFactory(_versionFactory);
@@ -310,9 +335,9 @@ public class AurUpdate(
     {
         try
         {
-            var packages = await privilegedOperationService.GetAurUpdatePackagesAsync(_showHiddenCheck.Active);
+            var packages = await unprivilegedOperationService.GetAurUpdatePackagesAsync(_showHiddenCheck.Active);
             ct.ThrowIfCancellationRequested();
-            Console.WriteLine($@"[DEBUG_LOG] {packages.Count} AUR packages for update.");
+            Console.WriteLine($"[DEBUG_LOG] {packages.Count} AUR packages for update.");
 
             GLib.Functions.IdleAdd(0, () =>
             {
@@ -492,11 +517,13 @@ public class AurUpdate(
         headerBox.Append(iconImage);
 
         var nameLabel = Label.New(pkg.Name);
+        nameLabel.Selectable = true;
         nameLabel.AddCssClass("title-2");
         nameLabel.Halign = Align.Center;
         headerBox.Append(nameLabel);
 
         var descLabel = Label.New(pkg.Description);
+        descLabel.Selectable = true;
         descLabel.AddCssClass("dim-label");
         descLabel.Halign = Align.Center;
         descLabel.Wrap = true;

@@ -75,4 +75,6 @@ public partial class AurPackageDto
 
     
     public List<string>? Keywords { get; set; }
+
+    public bool Explicit { get; set; } 
 }

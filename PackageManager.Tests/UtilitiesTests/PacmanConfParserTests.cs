@@ -3,6 +3,7 @@ using PackageManager.Utilities;
 using System.IO;
 using System.Linq;
 using PackageManager.Alpm;
+using PackageManager.Alpm.Enums;
 
 namespace PackageManager.Tests.UtilitiesTests;
 
@@ -50,7 +51,7 @@ Server = https://another-mirror.example.com/extra/os/$arch
         {
             Assert.That(conf.RootDirectory, Is.EqualTo("/mnt/target"));
             Assert.That(conf.DbPath, Is.EqualTo("/mnt/target/var/lib/pacman"));
-            Assert.That(conf.HoldPkg, Is.EquivalentTo(new[] { "pacman", "glibc", "linux" }));
+            Assert.That(conf.HoldPkg, Is.EquivalentTo(new[] { "pacman", "glibc", "linux", "shelly"}));
             Assert.That(conf.Architecture, Is.EqualTo("x86_64"));
             Assert.That(conf.CheckSpace, Is.True);
             Assert.That(conf.Repos, Has.Count.EqualTo(2));

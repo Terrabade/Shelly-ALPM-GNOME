@@ -5,6 +5,7 @@ using Gtk;
 using Shelly.Gtk.Helpers;
 using Shelly.Gtk.Services;
 using Shelly.Gtk.UiModels;
+using Shelly.Utilities.Enums;
 using static Shelly.GTK.Resources.Translations;
 using Functions = GLib.Functions;
 using Task = System.Threading.Tasks.Task;
@@ -14,7 +15,7 @@ namespace Shelly.Gtk.Windows;
 public sealed class SetupWindow(
     IConfigService configService,
     IPrivilegedOperationService privilegedOperationService,
-    IUnprivilegedOperationService unPrivilegedOperationService,
+    IUnprivilegedOperationService unprivilegedOperationService,
     ILockoutService lockoutService,
     IGenericQuestionService genericQuestionService) : IShellyWindow
 {
@@ -75,6 +76,9 @@ public sealed class SetupWindow(
             config.TrayAutoStart = trayAutoCheck.Active;
             config.NewInstallInitSettings = true;
             config.NewInstall = false;
+            config.PackageInstallView = ViewType.Grid;
+            config.PackageUpdateView = ViewType.Grid;
+            config.PackageManageView = ViewType.Grid;
 
             try
             {
@@ -83,7 +87,7 @@ public sealed class SetupWindow(
                 if (trayAutoCheck.Active)
                     try
                     {
-                        await unPrivilegedOperationService.AddSystemdServiceTray(Settings.TrayServiceContent,
+                        await unprivilegedOperationService.AddSystemdServiceTray(Settings.TrayServiceContent,
                             "shelly-notifications");
                     }
                     catch (Exception ex)
@@ -95,7 +99,7 @@ public sealed class SetupWindow(
                 if (!flatpakCheck.Active) return;
                 try
                 {
-                    var result = await privilegedOperationService.IsPackageInstalledOnMachine("flatpak");
+                    var result = await unprivilegedOperationService.IsPackageInstalledOnMachine("flatpak");
                     if (result) return;
 
                     lockoutService.Show(T("Installing flatpak..."));

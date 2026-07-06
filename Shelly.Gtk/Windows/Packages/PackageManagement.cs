@@ -1,5 +1,6 @@
-using GObject;
+using System.Runtime.CompilerServices;
 using Gtk;
+using Shelly.Gtk.DataStores;
 using Shelly.Gtk.Helpers;
 using Shelly.Gtk.Services;
 using Shelly.Gtk.Services.Icons;
@@ -11,6 +12,7 @@ using Shelly.Gtk.UiModels;
 using Shelly.Gtk.UiModels.PackageManagerObjects;
 using Shelly.Gtk.UiModels.PackageManagerObjects.GObjects;
 using Shelly.Gtk.Windows.Dialog;
+using Shelly.Utilities.Enums;
 
 // ReSharper disable NotAccessedField.Local
 // ReSharper disable CollectionNeverUpdated.Local
@@ -20,6 +22,7 @@ namespace Shelly.Gtk.Windows.Packages;
 
 public sealed class PackageManagement(
     IPrivilegedOperationService privilegedOperationService,
+    IUnprivilegedOperationService unprivilegedOperationService,
     ILockoutService lockoutService,
     IConfigService configService,
     IGenericQuestionService genericQuestionService,
@@ -37,8 +40,7 @@ public sealed class PackageManagement(
     private CustomFilter _filter = null!;
     private string _searchText = string.Empty;
 
-    private readonly Dictionary<ColumnViewCell, (SignalHandler<CheckButton> OnToggled, EventHandler OnExternalToggle)>
-        _checkBinding = [];
+    private static readonly ConditionalWeakTable<CheckButton, BindState> CheckState = new();
 
     private readonly bool _deletePackageCache = configService.LoadConfig().RemoveCache;
     private Overlay _box = null!;
@@ -70,6 +72,10 @@ public sealed class PackageManagement(
     private Revealer _detailRevealer = null!;
     private Box _detailBox = null!;
     private HashSet<string> _installedPackageNames = [];
+
+    private GridView _gridView = null!;
+    private Label _cartLabel = null!;
+    private Box _cartItemsBox = null!;
 
     public Widget CreateWindow()
     {
@@ -174,7 +180,7 @@ public sealed class PackageManagement(
         _box.AddController(shortcutController);
         shortcutController.AddShortcut(Shortcut.New(ShortcutTrigger.ParseString("<Control>f"), action));
 
-        columnView.OnRealize += (_, _) => { Reload(); };
+        Reload();
         columnView.OnActivate += (_, _) =>
         {
             var item = _selectionModel.GetSelectedItem();
@@ -244,6 +250,49 @@ public sealed class PackageManagement(
             ScrollToTop();
         };
 
+        _cartLabel = (Label)builder.GetObject("cart_label")!;
+        _cartItemsBox = (Box)builder.GetObject("cart_items_box")!;
+
+        _gridView = (GridView)builder.GetObject("list_packages")!;
+        var detailGridHbox = (Box)builder.GetObject("detail_grid_hbox")!;
+        var detailHbox = (Box)builder.GetObject("detail_hbox")!;
+
+        var savedView = configService.LoadConfig().PackageManageView;
+        detailGridHbox.SetVisible(savedView == ViewType.Grid);
+        detailHbox.SetVisible(savedView == ViewType.List);
+
+        var gridViewButton = (ToggleButton)builder.GetObject("grid_view_button")!;
+        var listViewButton = (ToggleButton)builder.GetObject("list_view_button")!;
+
+        gridViewButton.Active = savedView == ViewType.Grid;
+        listViewButton.Active = savedView == ViewType.List;
+
+        gridViewButton.OnToggled += (_, _) =>
+        {
+            if (!gridViewButton.Active) return;
+            listViewButton.Active = false;
+            detailGridHbox.SetVisible(true);
+            detailHbox.SetVisible(false);
+            var updatedConfig = configService.LoadConfig();
+            updatedConfig.PackageManageView = ViewType.Grid;
+            configService.SaveConfig(updatedConfig);
+        };
+        listViewButton.OnToggled += (_, _) =>
+        {
+            if (!listViewButton.Active) return;
+            gridViewButton.Active = false;
+            detailHbox.SetVisible(true);
+            detailGridHbox.SetVisible(false);
+            var updatedConfig = configService.LoadConfig();
+            updatedConfig.PackageManageView = ViewType.List;
+            configService.SaveConfig(updatedConfig);
+        };
+
+        _gridView.SetMaxColumns(4);
+        _gridView.SetMinColumns(1);
+
+        SetupGridView();
+
         _sub = DirtySubscription.Attach(dirtyService, this);
         return _box;
     }
@@ -252,6 +301,7 @@ public sealed class PackageManagement(
     {
         using var removeLocal = new RemoveLocal(
             privilegedOperationService,
+            unprivilegedOperationService,
             lockoutService,
             configService,
             genericQuestionService,
@@ -321,11 +371,13 @@ public sealed class PackageManagement(
         headerBox.Append(iconImage);
 
         var nameLabel = Label.New(pkg.Name);
+        nameLabel.Selectable = true;
         nameLabel.AddCssClass("title-2");
         nameLabel.Halign = Align.Center;
         headerBox.Append(nameLabel);
 
         var descLabel = Label.New(pkg.Description);
+        descLabel.Selectable = true;
         descLabel.AddCssClass("dim-label");
         descLabel.Halign = Align.Center;
         descLabel.Wrap = true;
@@ -417,27 +469,6 @@ public sealed class PackageManagement(
             };
 
             _detailBox.Append(fileExpander);
-        }
-
-        if (configService.LoadConfig().WebViewEnabled && pkg.Depends.Count > 0)
-        {
-            var dictionary = new Dictionary<string, List<string>> { { pkg.Name, pkg.Depends } };
-
-            foreach (var dep in pkg.Depends)
-            {
-                for (uint i = 0; i < _listStore.GetNItems(); i++)
-                {
-                    var obj = _listStore.GetObject(i);
-                    if (obj is not AlpmPackageGObject depObj) continue;
-                    if (depObj.Index < 0 || depObj.Index >= _packageData.Count) continue;
-                    var depPkg = _packageData[depObj.Index];
-                    if (depPkg.Name.Contains(dep))
-                        dictionary.TryAdd(depPkg.Name, depPkg.Depends);
-                }
-            }
-
-            var window = new WebWindow(pkg.Name, dictionary);
-            _detailBox.Append(window.CreateWindow());
         }
 
         _detailRevealer.SetRevealChild(true);
@@ -588,6 +619,215 @@ public sealed class PackageManagement(
         }
     }
 
+    private void SetupGridView()
+    {
+        var factory = SignalListItemFactory.New();
+        factory.OnSetup += (_, args) =>
+        {
+            var item = (ListItem)args.Object;
+
+            var contentGrid = Grid.New();
+            contentGrid.MarginStart = 12;
+            contentGrid.MarginEnd = 12;
+            contentGrid.MarginTop = 6;
+            contentGrid.MarginBottom = 6;
+            contentGrid.ColumnSpacing = 6;
+            contentGrid.RowSpacing = 0;
+            contentGrid.Hexpand = true;
+            contentGrid.Halign = Align.Fill;
+            contentGrid.Valign = Align.Center;
+
+            var image = Image.NewFromIconName("package-x-generic");
+            image.SetPixelSize(64);
+            image.SetValign(Align.Center);
+            image.SetHalign(Align.Center);
+            
+            contentGrid.Attach(image, 0, 0, 1, 2);
+
+            var rightBox = Box.New(Orientation.Vertical, 0);
+            rightBox.Valign = Align.Center;
+            rightBox.Halign = Align.Fill;
+            rightBox.Hexpand = true;
+
+            var titleLabel = Label.New("");
+            titleLabel.SetHalign(Align.Start);
+            titleLabel.SetValign(Align.Center);
+            titleLabel.Vexpand = false;
+            titleLabel.Hexpand = false;
+            titleLabel.UseMarkup = true;
+            titleLabel.SetEllipsize(Pango.EllipsizeMode.End);
+            titleLabel.MaxWidthChars = 30;
+
+            var titleGrid = Grid.New();
+            titleGrid.ColumnSpacing = 4;
+            titleGrid.Halign = Align.Start;
+            titleGrid.Attach(titleLabel, 0, 0, 1, 1);
+
+            rightBox.Append(titleGrid);
+
+            var descLabel = Label.New("");
+            descLabel.SetHalign(Align.Start);
+            descLabel.SetValign(Align.Start);
+            descLabel.Vexpand = false;
+            descLabel.Hexpand = true;
+            descLabel.AddCssClass("dim-label");
+            descLabel.SetEllipsize(Pango.EllipsizeMode.End);
+            descLabel.MaxWidthChars = 35;
+            descLabel.WidthChars = -1;
+            rightBox.Append(descLabel);
+
+            contentGrid.Attach(rightBox, 1, 0, 1, 2);
+            
+            var selectionCheck = CheckButton.New();
+            selectionCheck.SetValign(Align.Center);
+            selectionCheck.SetHalign(Align.End);
+            selectionCheck.SetHexpand(false);
+            contentGrid.Attach(selectionCheck, 2, 0, 1, 2);
+
+            var frame = Frame.New(null);
+            frame.SetChild(contentGrid);
+            frame.SetSizeRequest(300, -1);
+            frame.Hexpand = false;
+            frame.Halign = Align.Fill;
+            frame.SetMarginStart(2);
+            frame.SetMarginEnd(2);
+            frame.SetMarginTop(1);
+            frame.SetMarginBottom(1);
+            frame.AddCssClass("card");
+
+            item.Child = frame;
+        };
+        factory.OnBind += (_, args) =>
+        {
+            var item = (ListItem)args.Object;
+            if (item.Item is not AlpmPackageGObject pkgObj) return;
+            var frame = (Frame)item.Child!;
+            var contentGrid = (Grid)frame.GetChild()!;
+            var iconImage = (Image)contentGrid.GetChildAt(0, 0)!;
+            var rightBox = (Box)contentGrid.GetChildAt(1, 0)!;
+            var titleGrid = (Grid)rightBox.GetFirstChild()!;
+            var titleLabel = (Label)titleGrid.GetChildAt(0, 0)!;
+            var descLabel = (Label)rightBox.GetLastChild()!;
+            var selectionCheck = (CheckButton)contentGrid.GetChildAt(2, 0)!;
+
+            if (CheckState.TryGetValue(selectionCheck, out var old))
+            {
+                if (old.Toggled is not null) selectionCheck.OnToggled -= old.Toggled;
+                if (old.Pkg is not null && old.External is not null)
+                    old.Pkg.OnSelectionToggled -= old.External;
+                CheckState.Remove(selectionCheck);
+            }
+
+            selectionCheck.Active = pkgObj.IsSelected;
+
+            selectionCheck.OnToggled += OnToggled;
+            pkgObj.OnSelectionToggled += OnExternalToggle;
+            CheckState.Add(selectionCheck, new BindState
+            {
+                Pkg = pkgObj,
+                Toggled = OnToggled,
+                External = OnExternalToggle
+            });
+
+            if (pkgObj.Index < 0 || pkgObj.Index >= _packageData.Count) return;
+
+            var pkg = _packageData[pkgObj.Index];
+
+            var iconPath = iconResolverService.GetIconPath(pkg.Name);
+            if (!string.IsNullOrWhiteSpace(iconPath) && iconPath != "Unavailable" && File.Exists(iconPath))
+            {
+                iconImage.SetFromFile(iconPath);
+            }
+            else
+            {
+                iconImage.SetFromIconName("package-x-generic");
+            }
+
+            titleLabel.SetMarkup($"<b>{GLib.Markup.EscapeText(pkg.Name)}</b>");
+            descLabel.SetText(pkg.Description);
+            return;
+
+            void OnExternalToggle(object? s, EventArgs e)
+            {
+                selectionCheck.Active = pkgObj.IsSelected;
+                var anySelected = AnySelected();
+                _removeButton.SetSensitive(anySelected);
+                _downgradeButton.SetSensitive(anySelected);
+                UpdateCart();
+            }
+
+            void OnToggled(CheckButton sender2, EventArgs e)
+            {
+                if (pkgObj.IsSelected != sender2.Active)
+                    pkgObj.IsSelected = sender2.Active;
+                var anySelected = AnySelected();
+                _removeButton.SetSensitive(anySelected);
+                _downgradeButton.SetSensitive(anySelected);
+                UpdateCart();
+                if (sender2.Active)
+                    ShowPackageDetails(pkgObj);
+            }
+        };
+        factory.OnUnbind += (_, args) =>
+        {
+            var item = (ListItem)args.Object;
+            var frame = (Frame?)item.Child;
+            var contentGrid = (Grid?)frame?.GetChild();
+            var selectionCheck = (CheckButton?)contentGrid?.GetChildAt(2, 0);
+            if (selectionCheck is null) return;
+            if (!CheckState.TryGetValue(selectionCheck, out var state)) return;
+            if (state.Toggled is not null) selectionCheck.OnToggled -= state.Toggled;
+            if (state.Pkg is not null && state.External is not null)
+                state.Pkg.OnSelectionToggled -= state.External;
+            CheckState.Remove(selectionCheck);
+        };
+        factory.OnTeardown += (_, args) =>
+        {
+            var item = (ListItem)args.Object;
+            item.Child = null;
+        };
+        _gridView.SetFactory(factory);
+        _gridView.SetModel(_selectionModel);
+    }
+
+    private void UpdateCart()
+    {
+        while (_cartItemsBox.GetFirstChild() is { } child)
+        {
+            _cartItemsBox.Remove(child);
+        }
+
+        var selectedPackages = _packageGObjectRefs.Where(p => p.IsSelected).ToList();
+        _cartLabel.SetText(T("{0} Selected", selectedPackages.Count));
+        _removeButton.SetSensitive(selectedPackages.Count > 0);
+        _downgradeButton.SetSensitive(selectedPackages.Count > 0);
+
+        foreach (var pkg in selectedPackages)
+        {
+            if (pkg.Index < 0 || pkg.Index >= _packageData.Count) continue;
+            var box = Box.New(Orientation.Horizontal, 0);
+
+            var name = _packageData[pkg.Index].Name;
+            var label = Label.New(name);
+            label.Hexpand = true;
+            label.Halign = Align.Start;
+            label.MarginStart = 4;
+            label.MarginEnd = 8;
+            box.Append(label);
+
+            var removeButton = Button.NewFromIconName("window-close-symbolic");
+            removeButton.Halign = Align.End;
+            removeButton.OnClicked += (_, _) =>
+            {
+                pkg.ToggleSelection();
+                UpdateCart();
+            };
+            box.Append(removeButton);
+
+            _cartItemsBox.Append(box);
+        }
+    }
+
     private void SetupColumns(ColumnViewColumn checkColumn, ColumnViewColumn nameColumn, ColumnViewColumn sizeColumn,
         ColumnViewColumn versionColumn)
     {
@@ -599,15 +839,6 @@ public sealed class PackageManagement(
             check.MarginStart = 10;
             check.MarginEnd = 10;
             listItem.SetChild(check);
-
-            check.OnToggled += (s, _) =>
-            {
-                if (listItem.GetItem() is not AlpmPackageGObject current) return;
-                current.IsSelected = s.GetActive();
-                var anySelected = AnySelected();
-                _removeButton.SetSensitive(anySelected);
-                _downgradeButton.SetSensitive(anySelected);
-            };
         };
 
         checkFactory.OnBind += (_, args) =>
@@ -618,20 +849,46 @@ public sealed class PackageManagement(
 
             checkButton.SetActive(pkgObj.IsSelected);
 
+            checkButton.OnToggled += OnToggled;
             pkgObj.OnSelectionToggled += OnExternalToggle;
-
+            CheckState.Add(checkButton, new BindState
+            {
+                Pkg = pkgObj,
+                Toggled = OnToggled,
+                External = OnExternalToggle
+            });
             return;
+
+            void OnToggled(CheckButton s, EventArgs e)
+            {
+                pkgObj.IsSelected = s.GetActive();
+                var anySelected = AnySelected();
+                _removeButton.SetSensitive(anySelected);
+                _downgradeButton.SetSensitive(anySelected);
+                UpdateCart();
+            }
 
             void OnExternalToggle(object? s, EventArgs e)
             {
-                if (listItem.GetItem() == pkgObj)
-                {
-                    checkButton.SetActive(pkgObj.IsSelected);
-                }
+                if (listItem.GetItem() != pkgObj) return;
+                checkButton.SetActive(pkgObj.IsSelected);
+                var anySelected = AnySelected();
+                _removeButton.SetSensitive(anySelected);
+                _downgradeButton.SetSensitive(anySelected);
+                UpdateCart();
             }
         };
 
-        checkFactory.OnUnbind += (_, _) => { };
+        checkFactory.OnUnbind += (_, args) =>
+        {
+            if (args.Object is not ColumnViewCell listItem) return;
+            if (listItem.GetChild() is not CheckButton checkButton) return;
+            if (!CheckState.TryGetValue(checkButton, out var state)) return;
+            if (state.Toggled is not null) checkButton.OnToggled -= state.Toggled;
+            if (state.Pkg is not null && state.External is not null)
+                state.Pkg.OnSelectionToggled -= state.External;
+            CheckState.Remove(checkButton);
+        };
 
         checkFactory.OnTeardown += (_, args) =>
         {
@@ -756,7 +1013,7 @@ public sealed class PackageManagement(
 
         try
         {
-            var packages = await privilegedOperationService.GetInstalledPackagesAsync(_showHiddenCheck.Active);
+            var packages = await unprivilegedOperationService.GetInstalledPackagesAsync(_showHiddenCheck.Active);
             _groups = packages.SelectMany(x => x.Groups).Distinct().ToList();
             _groups.Insert(0, T("Any"));
             _installedPackageNames = new HashSet<string>(packages.Select(x => x.Name));
@@ -902,6 +1159,10 @@ public sealed class PackageManagement(
                     genericQuestionService.RaiseToastMessage(args);
                 }
 
+                foreach (var pkg in _packageGObjectRefs.Where(p => p.IsSelected))
+                {
+                    pkg.ToggleSelection();
+                }
                 Reload();
             }
             catch (Exception e)
@@ -911,6 +1172,7 @@ public sealed class PackageManagement(
             }
             finally
             {
+                UpdateCart();
                 lockoutService.Hide();
             }
         }
@@ -957,7 +1219,7 @@ public sealed class PackageManagement(
             List<DowngradeOptionDto> options;
             try
             {
-                options = await privilegedOperationService.GetDowngradeOptionsAsync(packageName);
+                options = await unprivilegedOperationService.GetDowngradeOptionsAsync(packageName);
             }
             catch (Exception e)
             {
@@ -1003,6 +1265,12 @@ public sealed class PackageManagement(
             }
         }
 
+        foreach (var pkg in _packageGObjectRefs.Where(p => p.IsSelected))
+        {
+            pkg.ToggleSelection();
+        }
+        UpdateCart();
+
         if (successCount > 0)
         {
             genericQuestionService.RaiseToastMessage(
@@ -1026,7 +1294,6 @@ public sealed class PackageManagement(
 
         _packageGObjectRefs.Clear();
         _packageData.Clear();
-        _checkBinding.Clear();
         _groups.Clear();
         _installedPackageNames.Clear();
     }

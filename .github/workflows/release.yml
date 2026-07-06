@@ -22,14 +22,16 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang zlib1g-dev libalpm-dev libgtk-4-dev zip gettext
+          sudo apt-get install -y clang zlib1g-dev libalpm-dev libgtk-4-dev zip gettext valac meson ninja-build libjson-glib-dev
 
-      - name: Publish Shelly-CLI
+      - name: Publish Shelly.Cli
         run: |
-          dotnet publish Shelly-CLI/Shelly-CLI.csproj -c Release -o publish/shelly-cli -p:InstructionSet=x86-64
+          dotnet publish Shelly.Cli/Shelly.Cli.csproj -c Release -o publish/shelly-cli -p:InstructionSet=x86-64
           cd publish/shelly-cli
           rm -f *.dbg *.pdb
-          cp ../../shelly.fish .
+          # generate completion scripts from the freshly built binary
+          ./shelly completions fish > shelly.fish
+          ./shelly completions zsh  > _shelly
           tar -czf ../Shelly-CLI-linux-x64.tar.gz .
           cd ../..
 
@@ -52,11 +54,11 @@ jobs:
               msgfmt "$po_file" -o "publish/shelly-ui/locale/$lang/LC_MESSAGES/shelly-ui.mo"
             fi
           done
-          
+
       - name: Compile and bundle tray service translations
         run: |
           mkdir -p publish/shelly-ui/locale
-          for po_file in Shelly-Notifications/po/*.po; do
+          for po_file in Shelly.Notifications/po/*.po; do
             if [ -f "$po_file" ]; then
               lang=$(basename "$po_file" .po)
               mkdir -p "publish/shelly-ui/locale/$lang/LC_MESSAGES"
@@ -64,11 +66,12 @@ jobs:
             fi
           done
 
-      - name: Publish Shelly-Notifications
+      - name: Publish Shelly.Notifications
         run: |
-          dotnet publish Shelly-Notifications/Shelly-Notifications.csproj -c Release -o publish/shelly-notifications -p:InstructionSet=x86-64
+          meson setup build-notify Shelly.Notifications
+          meson compile -C build-notify
           # Bundle Notifications into the UI directory
-          cp publish/shelly-notifications/Shelly-Notifications publish/shelly-ui/
+          cp build-notify/shelly-notifications publish/shelly-ui/
 
       - name: Publish Shelly.Keys
         run: |
@@ -85,14 +88,17 @@ jobs:
 
       - name: Bundle Shelly-ALPM
         run: |
-          cp shelly.fish publish/shelly-ui/
+          cp publish/shelly-cli/shelly.fish publish/shelly-ui/
+          cp publish/shelly-cli/_shelly     publish/shelly-ui/
           cd publish/shelly-ui
           rm -f *.dbg *.pdb
           tar -czf ../Shelly-ALPM-linux-x64.tar.gz .
           cd ../..
 
       - name: Copy standalone completions
-        run: cp shelly.fish publish/shelly.fish
+        run: |
+          cp publish/shelly-cli/shelly.fish publish/shelly.fish
+          cp publish/shelly-cli/_shelly     publish/_shelly
 
       - name: Generate SHA256 checksums
         run: |
@@ -102,7 +108,7 @@ jobs:
           curl -sL "https://github.com/ZoeyErinBauer/Shelly-ALPM/archive/${VERSION}.tar.gz" -o "source-${VERSION}.tar.gz"
           sha256sum "source-${VERSION}.tar.gz" | sed "s/source-${VERSION}.tar.gz/${VERSION}.tar.gz/" > SHA256SUMS.txt
           # Add binary tarballs and completions checksums
-          sha256sum Shelly-ALPM-linux-x64.tar.gz Shelly-CLI-linux-x64.tar.gz Shelly-Keys-linux-x64.tar.gz shelly.fish >> SHA256SUMS.txt
+          sha256sum Shelly-ALPM-linux-x64.tar.gz Shelly-CLI-linux-x64.tar.gz Shelly-Keys-linux-x64.tar.gz shelly.fish _shelly >> SHA256SUMS.txt
           rm "source-${VERSION}.tar.gz"
           cat SHA256SUMS.txt
 
@@ -114,8 +120,15 @@ jobs:
             publish/Shelly-CLI-linux-x64.tar.gz
             publish/Shelly-Keys-linux-x64.tar.gz
             publish/shelly.fish
+            publish/_shelly
             publish/SHA256SUMS.txt
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy Seafoam Labs website
+        uses: digitalocean/app_action/deploy@v2
+        with:
+          app_name: seafoam-labs-website
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}

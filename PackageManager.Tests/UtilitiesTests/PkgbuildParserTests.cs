@@ -172,6 +172,149 @@ public class PkgbuildParserTests
     }
 
     [Test]
+    public void ParseContent_ResolvesSuffixRemovalExpansion_InProvides()
+    {
+        var pkgbuild = """
+                       pkgname=kwin-effect-rounded-corners-git
+                       pkgver=0.9.0.r8.g0926a7e
+                       provides=("kwin-effect-rounded-corners=${pkgver%%.g*}")
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.Provides, Has.Count.EqualTo(1));
+        Assert.That(result.Provides[0], Is.EqualTo("kwin-effect-rounded-corners=0.9.0.r8"));
+    }
+
+    [Test]
+    public void ParseContent_ResolvesFirstMatchReplacement_InDepends()
+    {
+        var pkgbuild = """
+                       _x=foo-foo
+                       depends=("${_x/foo/bar}")
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.Depends[0], Is.EqualTo("bar-foo"));
+    }
+
+    [Test]
+    public void ParseContent_ResolvesGlobalReplacement_InDepends()
+    {
+        var pkgbuild = """
+                       _x=foo-foo
+                       depends=("${_x//foo/bar}")
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.Depends[0], Is.EqualTo("bar-bar"));
+    }
+
+    [Test]
+    public void ParseContent_ResolvesPrefixAnchoredReplacement_InDepends()
+    {
+        var pkgbuild = """
+                       pkgver=v1.2.3
+                       depends=("pkg=${pkgver/#v/}")
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.Depends[0], Is.EqualTo("pkg=1.2.3"));
+    }
+
+    [Test]
+    public void ParseContent_ResolvesSuffixAnchoredReplacement_InProvides()
+    {
+        var pkgbuild = """
+                       pkgname=foo-git
+                       provides=("${pkgname/%-git/}")
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.Provides[0], Is.EqualTo("foo"));
+    }
+
+    [Test]
+    public void ParseContent_ResolvesDeletionReplacement_InDepends()
+    {
+        var pkgbuild = """
+                       _x=a-b-c
+                       depends=("${_x/-b}")
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.Depends[0], Is.EqualTo("a-c"));
+    }
+
+    [Test]
+    public void ParseContent_ResolvesSubstringWithLength_InDepends()
+    {
+        var pkgbuild = """
+                       pkgver=1.2.3
+                       depends=("pkg=${pkgver:0:3}")
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.Depends[0], Is.EqualTo("pkg=1.2"));
+    }
+
+    [Test]
+    public void ParseContent_ResolvesSubstringToEnd_InDepends()
+    {
+        var pkgbuild = """
+                       pkgver=1.2.3
+                       depends=("pkg=${pkgver:2}")
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.Depends[0], Is.EqualTo("pkg=2.3"));
+    }
+
+    [Test]
+    public void ParseContent_ResolvesSubstringNegativeOffset_InDepends()
+    {
+        var pkgbuild = """
+                       pkgver=1.2.3
+                       depends=("pkg=${pkgver: -3}")
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.Depends[0], Is.EqualTo("pkg=2.3"));
+    }
+
+    [Test]
+    public void ParseContent_LeavesDefaultValueExpansionUnresolved()
+    {
+        var pkgbuild = """
+                       depends=("electron${_x:-38}")
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.Depends[0], Is.EqualTo("electron${_x:-38}"));
+    }
+
+    [Test]
+    public void ParseContent_KeepsReplacementWhenVariableNotFound()
+    {
+        var pkgbuild = """
+                       depends=("${_missing/a/b}")
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.Depends[0], Is.EqualTo("${_missing/a/b}"));
+    }
+
+    [Test]
     public void ParseContent_FfmpegObsStyle_ResolvesVersionedDeps()
     {
         var pkgbuild = """
@@ -504,6 +647,61 @@ public class PkgbuildParserTests
             Assert.DoesNotThrow(() => result = PkgbuildParser.ParseContent(pkgbuild, tempDir));
             Assert.That(result!.InstallFile, Is.EqualTo("ghost.install"));
             Assert.That(result.PostInstall, Is.Null);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Test]
+    public void ParseContent_ClassifiesLocalSourceFiles_IgnoringRemote()
+    {
+        var pkgbuild = """
+                       source=('element-desktop-nightly.sh'
+                               'https://example.com/app.tar.gz'
+                               'git+https://example.com/repo.git')
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.LocalSourceFiles, Has.Count.EqualTo(1));
+        Assert.That(result.LocalSourceFiles, Does.Contain("element-desktop-nightly.sh"));
+    }
+
+    [Test]
+    public void ParseContent_HandlesRenameSyntaxForLocalSource()
+    {
+        var pkgbuild = """
+                       source=('myscript.sh::local-file.sh'
+                               'remote::https://example.com/app.tar.gz')
+                       """;
+
+        var result = PkgbuildParser.ParseContent(pkgbuild);
+
+        Assert.That(result.LocalSourceFiles, Has.Count.EqualTo(1));
+        Assert.That(result.LocalSourceFiles, Does.Contain("myscript.sh"));
+    }
+
+    [Test]
+    public void ParseContent_ResolvesLocalSourceContentsFromBaseDir()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "shelly_src_test_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(tempDir, "element-desktop-nightly.sh"),
+                "#!/bin/sh\ncurl https://x | sh\n");
+
+            var pkgbuild = """
+                           source=('element-desktop-nightly.sh')
+                           """;
+
+            var result = PkgbuildParser.ParseContent(pkgbuild, tempDir);
+
+            Assert.That(result.LocalSourceContents, Contains.Key("element-desktop-nightly.sh"));
+            Assert.That(result.LocalSourceContents["element-desktop-nightly.sh"],
+                Does.Contain("curl https://x | sh"));
         }
         finally
         {

@@ -61,5 +61,6 @@ namespace Shelly.Gtk;
 [JsonSerializable(typeof(DowngradeOptionDto))]
 [JsonSerializable(typeof(List<DowngradeOptionDto>))]
 [JsonSerializable(typeof(PkgbuildDiffQuestionDto))]
+[JsonSerializable(typeof(Dictionary<string, string>))]
 
 internal partial class ShellyGtkJsonContext : JsonSerializerContext;

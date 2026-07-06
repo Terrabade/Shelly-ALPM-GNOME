@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using PackageManager.Aur;
+using PackageManager.Aur.Vcs;
 
 namespace PackageManager.Tests.Aur;
 

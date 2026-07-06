@@ -3,7 +3,7 @@ msgstr ""
 "Project-Id-Version: shelly-ui 2.2.4.1\n"
 "Report-Msgid-Bugs-To: csnyder@seafoamlabs.org\n"
 "POT-Creation-Date: 2026-05-14 18:41-0400\n"
-"PO-Revision-Date: 2026-06-09 16:49-0300\n"
+"PO-Revision-Date: 2026-07-03 13:42-0300\n"
 "Last-Translator: Vinícius Fonseca <viniqf@proton.me>\n"
 "Language-Team: Portuguese (Brazil) <viniqf@proton.me>\n"
 "Language: pt_BR\n"
@@ -1060,6 +1060,33 @@ msgstr "Aparência e comportamento"
 msgid "Icons Enabled"
 msgstr "Habilitar ícones"
 
+#, csharp-format
+msgid "Review PKGBUILD changes for {0}"
+msgstr "Revisar mudanças no PKGBUILD {0}"
+
+msgid ""
+"These commands fetch and execute code outside of shelly and libalpm's "
+"control. Review them before continuing."
+msgstr "Esses comandos buscam e executam código fora do controle do Shelly "
+"e da biblioteca Libalpm. Revise as mudanças antes de continuar."
+
+msgid "Source files"
+msgstr "Arquivos fonte"
+
+msgid "Install Anyway"
+msgstr "Instalar mesmo assim"
+
+#, csharp-format
+msgid "{0} used in {1}"
+msgstr "{0} usados em {1}"
+
+#, csharp-format
+msgid "Security scan completed - {0} warning(s) found."
+msgstr "Scan de segurança concluído - {0} aviso(s) encontrados."
+
+msgid "Security scan completed - no issues found."
+msgstr "Scan de segurança concluído - nenhum problema encontrado."
+
 msgid "Use Symbolic Tray Icon"
 msgstr "Usar ícone de baneja simbólico"
 
@@ -1350,5 +1377,11 @@ msgstr "Revise as mudanças no PKGBUILD antes de continuar"
 
 msgid "Accept Changes"
 msgstr "Aceitar Mudanças"
+
+msgid "Changes"
+msgstr "Mudanças"
+
+msgid "Review Changes"
+msgstr "Revisar Mudanças"
 
 

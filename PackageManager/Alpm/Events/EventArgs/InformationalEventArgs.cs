@@ -1,3 +1,5 @@
+using PackageManager.Alpm.Enums;
+
 namespace PackageManager.Alpm.Events.EventArgs;
 
 public sealed record InformationalEventArgs(

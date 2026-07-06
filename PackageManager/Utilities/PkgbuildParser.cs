@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -17,7 +18,7 @@ public static class PkgbuildParser
         var pkgbuildContent = File.ReadAllText(pkgbuildPath);
         return ParseContent(pkgbuildContent, Path.GetDirectoryName(pkgbuildPath));
     }
-    
+
     public static PkgbuildInfo ParseContent(string pkgbuildContent, string? baseDir = null)
     {
         var vars = BuildVariableDictionary(pkgbuildContent);
@@ -25,6 +26,10 @@ public static class PkgbuildParser
 
         var rawInstall = ResolveOrParse(pkgbuildContent, vars, "install");
         var installFile = rawInstall is null ? null : ResolveString(rawInstall, vars);
+
+        var source = ResolveVariableReferences(pkgbuildContent, vars, ParseArray(pkgbuildContent, "source"));
+        var localSourceFiles = ExtractLocalSourceFiles(source);
+        var localSourceContents = ResolveLocalSourceContents(localSourceFiles, baseDir);
 
         return new PkgbuildInfo
         {
@@ -44,15 +49,96 @@ public static class PkgbuildParser
             Provides = ResolveVariableReferences(pkgbuildContent, vars, ParseArray(pkgbuildContent, "provides")),
             Conflicts = ParseArray(pkgbuildContent, "conflicts"),
             Replaces = ParseArray(pkgbuildContent, "replaces"),
-            Source = ResolveVariableReferences(pkgbuildContent, vars, ParseArray(pkgbuildContent, "source")),
+            Source = source,
             Sha256Sums = ParseArray(pkgbuildContent, "sha256sums"),
             Sha512Sums = ParseArray(pkgbuildContent, "sha512sums"),
             Md5Sums = ParseArray(pkgbuildContent, "md5sums"),
 
             InstallFile = installFile,
             PostInstall = ResolvePostInstall(installFile, baseDir)
-                          ?? ExtractFunctionBody(pkgbuildContent, "post_install")
+                          ?? ExtractFunctionBody(pkgbuildContent, "post_install"),
+
+            LocalSourceFiles = localSourceFiles,
+            LocalSourceContents = localSourceContents
         };
+    }
+
+    private static readonly string[] LocalSourceExtensions =
+    [
+        ".sh", ".bash", ".install", ".patch", ".diff", ".desktop",
+        ".py", ".pl", ".rb", ".service", ".conf", ".cfg", ".hook"
+    ];
+
+    private static List<string> ExtractLocalSourceFiles(List<string> source)
+    {
+        var files = new List<string>();
+        foreach (var entry in source)
+        {
+            var (fileName, location) = SplitSourceEntry(entry);
+            if (IsRemoteSource(location))
+                continue;
+
+            var name = string.IsNullOrWhiteSpace(fileName) ? location : fileName;
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            var ext = Path.GetExtension(name).ToLowerInvariant();
+            if (!LocalSourceExtensions.Contains(ext))
+                continue;
+
+            if (!files.Contains(name))
+                files.Add(name);
+        }
+
+        return files;
+    }
+
+    private static (string fileName, string location) SplitSourceEntry(string entry)
+    {
+        var idx = entry.IndexOf("::", StringComparison.Ordinal);
+        if (idx < 0)
+            return (string.Empty, entry.Trim());
+
+        var name = entry.Substring(0, idx).Trim();
+        var loc = entry.Substring(idx + 2).Trim();
+        return (name, loc);
+    }
+
+    private static bool IsRemoteSource(string location)
+    {
+        return Regex.IsMatch(location,
+            @"^(https?|ftp|ftps|git\+|svn\+|hg\+|bzr\+|git|svn|hg|bzr|rsync|file)(://|\+)",
+            RegexOptions.IgnoreCase)
+            || location.Contains("://");
+    }
+
+    private static Dictionary<string, string> ResolveLocalSourceContents(List<string> localSourceFiles, string? baseDir)
+    {
+        var contents = new Dictionary<string, string>();
+        foreach (var fileName in localSourceFiles)
+        {
+            var resolved = ResolveLocalFile(fileName, baseDir);
+            if (resolved is not null)
+                contents[fileName] = resolved;
+        }
+
+        return contents;
+    }
+
+    private static string? ResolveLocalFile(string fileName, string? baseDir)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+            return null;
+
+        var path = baseDir is null ? fileName : Path.Combine(baseDir, fileName);
+        if (!File.Exists(path))
+        {
+            System.Console.Error.WriteLine(
+                $"[Shelly] Warning: source file not found: {path}");
+            return null;
+        }
+
+        return File.ReadAllText(path);
     }
 
     private static string? ResolvePostInstall(string? installFile, string? baseDir)
@@ -200,6 +286,35 @@ public static class PkgbuildParser
         });
 
 
+        result = Regex.Replace(result, @"\$\{(\w+)(##|#|%%|%)([^}]*)\}", match =>
+        {
+            var varName = match.Groups[1].Value;
+            if (!vars.TryGetValue(varName, out var val))
+                return match.Value;
+            return ApplyParameterExpansion(val, match.Groups[2].Value, match.Groups[3].Value);
+        });
+
+
+        result = Regex.Replace(result, @"\$\{(\w+)/(/|#|%)?([^/}]*)(?:/([^}]*))?\}", match =>
+        {
+            var varName = match.Groups[1].Value;
+            if (!vars.TryGetValue(varName, out var val))
+                return match.Value;
+            return ApplyReplacement(val, match.Groups[2].Value, match.Groups[3].Value, match.Groups[4].Value);
+        });
+
+
+        result = Regex.Replace(result, @"\$\{(\w+):(?:\s*(\d+)|\s+(-\d+))(?::\s*(-?\d+))?\}", match =>
+        {
+            var varName = match.Groups[1].Value;
+            if (!vars.TryGetValue(varName, out var val))
+                return match.Value;
+            var offset = int.Parse(match.Groups[2].Success ? match.Groups[2].Value : match.Groups[3].Value);
+            int? length = match.Groups[4].Success ? int.Parse(match.Groups[4].Value) : null;
+            return ApplySubstring(val, offset, length);
+        });
+
+
         result = Regex.Replace(result, @"\$\{(\w+)\}|\$(\w+)", match =>
         {
             var varName = match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value;
@@ -207,6 +322,101 @@ public static class PkgbuildParser
         });
 
         return result;
+    }
+
+    private static string ApplyParameterExpansion(string value, string op, string glob)
+    {
+        if (string.IsNullOrEmpty(glob))
+            return value;
+
+        var pattern = GlobToRegex(glob);
+
+        switch (op)
+        {
+            case "#":
+                for (var j = 0; j <= value.Length; j++)
+                    if (Regex.IsMatch(value[..j], "^" + pattern + "$"))
+                        return value[j..];
+                return value;
+
+            case "##":
+                for (var j = value.Length; j >= 0; j--)
+                    if (Regex.IsMatch(value[..j], "^" + pattern + "$"))
+                        return value[j..];
+                return value;
+
+            case "%":
+                for (var i = value.Length; i >= 0; i--)
+                    if (Regex.IsMatch(value[i..], "^" + pattern + "$"))
+                        return value[..i];
+                return value;
+
+            case "%%":
+                for (var i = 0; i <= value.Length; i++)
+                    if (Regex.IsMatch(value[i..], "^" + pattern + "$"))
+                        return value[..i];
+                return value;
+
+            default:
+                return value;
+        }
+    }
+
+    private static string ApplyReplacement(string value, string mode, string findGlob, string repl)
+    {
+        if (string.IsNullOrEmpty(findGlob))
+            return value;
+
+        var pattern = GlobToRegex(findGlob);
+        if (mode == "#") pattern = "^" + pattern;
+        else if (mode == "%") pattern = pattern + "$";
+
+        try
+        {
+            var regex = new Regex(pattern);
+            var count = mode == "/" ? int.MaxValue : 1;
+            return regex.Replace(value, _ => repl, count);
+        }
+        catch
+        {
+            return value;
+        }
+    }
+
+    private static string ApplySubstring(string value, int offset, int? length)
+    {
+        var start = offset < 0 ? value.Length + offset : offset;
+        start = System.Math.Clamp(start, 0, value.Length);
+
+        int end;
+        if (length is null)
+            end = value.Length;
+        else if (length < 0)
+            end = value.Length + length.Value;
+        else
+            end = start + length.Value;
+
+        end = System.Math.Clamp(end, start, value.Length);
+        return value[start..end];
+    }
+
+    private static string GlobToRegex(string glob)
+    {
+        var sb = new StringBuilder();
+        foreach (var c in glob)
+        {
+            switch (c)
+            {
+                case '*': sb.Append(".*"); break;
+                case '?': sb.Append('.'); break;
+                default:
+                    if (@"\^$.|+()[]{}".Contains(c))
+                        sb.Append('\\');
+                    sb.Append(c);
+                    break;
+            }
+        }
+        return sb.ToString();
     }
 
 
@@ -323,7 +533,7 @@ public static class PkgbuildParser
     }
 
 
-    
+
     private static List<string> ParseArray(string content, string variableName)
     {
         var result = new List<string>();
@@ -468,10 +678,14 @@ public class PkgbuildInfo
     public List<string> Sha512Sums { get; set; } = new();
     public List<string> Md5Sums { get; set; } = new();
     public Dictionary<string, string> Variables { get; set; } = new();
-    
+
     public string? InstallFile { get; set; }
-    
+
     public string? PostInstall { get; set; }
+
+    public List<string> LocalSourceFiles { get; set; } = new();
+
+    public Dictionary<string, string> LocalSourceContents { get; set; } = new();
 
     public List<ParsedDependency> ParsedDepends
     {

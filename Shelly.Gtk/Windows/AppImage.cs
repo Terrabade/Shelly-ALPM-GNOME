@@ -58,6 +58,8 @@ public sealed class AppImage(
 
     public string[] ListensTo => [DirtyScopes.AppImage, DirtyScopes.Config];
 
+    private List<AppImageDto>? _appImageUpdates;
+
     public void Reload()
     {
         _ = LoadDataAsync();
@@ -156,7 +158,7 @@ public sealed class AppImage(
         const string legacyInstallDir = "/opt/shelly";
         var legacyLocalDbDir = XdgPaths.ShellyCache("appimage-local-meta-store", "appimage-metadata.db");
 
-        var needsMigration =  File.Exists(legacyLocalDbDir);
+        var needsMigration = File.Exists(legacyLocalDbDir);
 
         if (needsMigration)
         {
@@ -191,6 +193,36 @@ public sealed class AppImage(
 
             return false;
         });
+
+        //fire and forget
+        _ = Task.Run(async () =>
+        {
+            _appImageUpdates = await unprivilegedOperationService.GetUpdatesAppImagesAsync();
+
+            Functions.IdleAdd(0, () =>
+            {
+                var index = 0;
+                for (var row = _appListBox.GetFirstChild(); row != null; row = row.GetNextSibling())
+                {
+                    if (row is not ListBoxRow listBoxRow) continue;
+                    var app = _appImages[index++];
+
+                    var update = _appImageUpdates.FirstOrDefault(u => u.Name == app.Name);
+                    if (update == null) continue;
+                    
+                    if (update.Version.Replace("v", "") == app.Version) continue;
+                    
+                    var hbox = listBoxRow.GetChild() as Box;
+                    var vbox = hbox?.GetFirstChild()?.GetNextSibling() as Box;
+                    var versionHBox = vbox?.GetFirstChild()?.GetNextSibling() as Box;
+                    if (versionHBox?.GetLastChild() is not Label badge) continue;
+                    badge.SetText(T("Update Available: {0}", update.Version));
+                    badge.SetVisible(true);
+                }
+
+                return false;
+            });
+        });
     }
 
     private void SetButtonsSensitive(bool sensitive)
@@ -211,42 +243,51 @@ public sealed class AppImage(
 
         var isValid = true;
 
-        if (updateType is AppImageUpdateType.GitHub or AppImageUpdateType.GitLab or AppImageUpdateType.Codeberg
-            or AppImageUpdateType.Forgejo)
+        switch (updateType)
         {
-            if (string.IsNullOrWhiteSpace(updateUrl) || updateUrl.Count(c => c == '/') != 1 ||
-                updateUrl.StartsWith('/') || updateUrl.EndsWith('/'))
+            case AppImageUpdateType.Codeberg:
+            case AppImageUpdateType.GitHub:
+            case AppImageUpdateType.GitLab: 
             {
-                isValid = false;
-                _updateUrlErrorLabel.SetText(T("Invalid format. Use owner/repo (e.g. seafoam-labs/shelly-alpm)"));
-                _updateUrlErrorLabel.SetVisible(true);
-                _updateUrlEntry.AddCssClass("error");
+                if (string.IsNullOrWhiteSpace(updateUrl) || updateUrl.Count(c => c == '/') != 1 ||
+                    updateUrl.StartsWith('/') || updateUrl.EndsWith('/'))
+                {
+                    isValid = false;
+                    _updateUrlErrorLabel.SetText(T("Invalid format. Use owner/repo (e.g. seafoam-labs/shelly-alpm)"));
+                    _updateUrlErrorLabel.SetVisible(true);
+                    _updateUrlEntry.AddCssClass("error");
+                }
+                else
+                {
+                    _updateUrlErrorLabel.SetVisible(false);
+                    _updateUrlEntry.RemoveCssClass("error");
+                }
+
+                break;
             }
-            else
+            case AppImageUpdateType.Forgejo:
+            case AppImageUpdateType.StaticUrl: 
             {
+                if (string.IsNullOrWhiteSpace(updateUrl) || !updateUrl.StartsWith("http"))
+                {
+                    isValid = false;
+                    _updateUrlErrorLabel.SetText(T("Invalid URL. Must start with http:// or https://"));
+                    _updateUrlErrorLabel.SetVisible(true);
+                    _updateUrlEntry.AddCssClass("error");
+                }
+                else
+                {
+                    _updateUrlErrorLabel.SetVisible(false);
+                    _updateUrlEntry.RemoveCssClass("error");
+                }
+
+                break;
+            }
+            case AppImageUpdateType.None:
+            default:
                 _updateUrlErrorLabel.SetVisible(false);
                 _updateUrlEntry.RemoveCssClass("error");
-            }
-        }
-        else if (updateType == AppImageUpdateType.StaticUrl)
-        {
-            if (string.IsNullOrWhiteSpace(updateUrl) || !updateUrl.StartsWith("http"))
-            {
-                isValid = false;
-                _updateUrlErrorLabel.SetText(T("Invalid URL. Must start with http:// or https://"));
-                _updateUrlErrorLabel.SetVisible(true);
-                _updateUrlEntry.AddCssClass("error");
-            }
-            else
-            {
-                _updateUrlErrorLabel.SetVisible(false);
-                _updateUrlEntry.RemoveCssClass("error");
-            }
-        }
-        else
-        {
-            _updateUrlErrorLabel.SetVisible(false);
-            _updateUrlEntry.RemoveCssClass("error");
+                break;
         }
 
         return isValid;
@@ -292,11 +333,21 @@ public sealed class AppImage(
         nameLabel.Xalign = 0;
         vbox.Append(nameLabel);
 
+        var versionHBox = Box.New(Orientation.Horizontal, 6);
         var versionLabel = Label.New(app.Version);
         versionLabel.AddCssClass("caption");
         versionLabel.AddCssClass("dim-label");
         versionLabel.Xalign = 0;
-        vbox.Append(versionLabel);
+        versionHBox.Append(versionLabel);
+
+        var updateLabel = Label.New(string.Empty);
+        updateLabel.SetVisible(false);
+        updateLabel.Valign = Align.Center;
+        updateLabel.AddCssClass("caption");
+        updateLabel.AddCssClass("dim-label");
+        versionHBox.Append(updateLabel);
+
+        vbox.Append(versionHBox);
 
         if (!string.IsNullOrEmpty(app.Description))
         {
@@ -324,19 +375,15 @@ public sealed class AppImage(
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 ".local/share/icons/hicolor/256x256/apps"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".local/share/icons/hicolor/scalable/apps"),
-            "/usr/share/icons/hicolor/256x256/apps",
-            "/usr/share/icons/hicolor/scalable/apps"
+                ".local/share/icons/hicolor/scalable/apps")
         ];
 
-        foreach (var dir in searchDirs)
-        {
-            if (!Directory.Exists(dir)) continue;
-            var matches = Directory.GetFiles(dir, $"{iconName}.*");
-            if (matches.Length > 0) return matches[0];
-        }
-
-        return null;
+        return (from dir in searchDirs
+            where Directory.Exists(dir)
+            select Directory.GetFiles(dir, $"{iconName}.*")
+            into matches
+            where matches.Length > 0
+            select matches[0]).FirstOrDefault();
     }
 
     private void FilterList()
@@ -419,7 +466,7 @@ public sealed class AppImage(
             lockoutService.Hide();
         }
     }
-    
+
 
     private void ShowListPage()
     {

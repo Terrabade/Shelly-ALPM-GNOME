@@ -2,8 +2,8 @@ msgid ""
 msgstr ""
 "Project-Id-Version: shelly-ui 2.2.4.1\n"
 "Report-Msgid-Bugs-To: csnyder@seafoamlabs.org\n"
-"POT-Creation-Date: 2026-06-12 11:40+0000\n"
-"PO-Revision-Date: 2026-06-12 11:41+0000\n"
+"POT-Creation-Date: 2026-07-03 00:26+0000\n"
+"PO-Revision-Date: 2026-07-02 05:31+0000\n"
 "Last-Translator: juliazero <juliazero2@gmail.com>\n"
 "Language-Team: Polish\n"
 "Language: pl\n"
@@ -85,12 +85,6 @@ msgstr "Zarządzaj"
 msgid "Remove"
 msgstr "Usuń"
 
-msgid "Happy pride month!"
-msgstr "Szczęśliwego Miesiąca Dumy!"
-
-msgid "You found Chel's hidden page."
-msgstr "Odkryto stronę Chel."
-
 msgid "Search packages..."
 msgstr "Wyszukaj pakiety..."
 
@@ -142,6 +136,9 @@ msgstr "Pokaż pakiety na liście IgnorePkg z pacman.conf"
 
 msgid "Update Aur Package(s)"
 msgstr "Zaktualizuj pakiet(y) AUR"
+
+msgid "Old Version"
+msgstr "Starsza wersja"
 
 msgid ""
 "Run the --check function during package build (installs checkdepends)\n"
@@ -279,8 +276,11 @@ msgstr "Licencja: -"
 msgid "Summary"
 msgstr "Podsumowanie"
 
-msgid "No description available."
-msgstr "Brak opisu."
+msgid "Show more"
+msgstr "Pokaż więcej"
+
+msgid "App Permissions"
+msgstr "Uprawnienia aplikacji"
 
 msgid "Version History"
 msgstr "Historia wersji"
@@ -312,8 +312,8 @@ msgstr "np. https://flathub.org/repo/flathub.flatpakrepo"
 msgid "Scope"
 msgstr "Zakres"
 
-msgid "Remove Selected"
-msgstr "Usuń wybrane"
+msgid "Show Runtimes"
+msgstr "Pokaż środowiska uruchomieniowe"
 
 msgid "Flatpak Repair"
 msgstr "Naprawa Flatpak"
@@ -417,11 +417,26 @@ msgstr "Usuń lokalne pakiety"
 msgid "Remove Local"
 msgstr "Usuń lokalne pakiety"
 
+msgid "Selected Packages"
+msgstr "Wybrane pakiety"
+
+msgid "0 Selected"
+msgstr "0 wybranych"
+
+msgid "Grid View"
+msgstr "Widok siatki"
+
+msgid "List View"
+msgstr "Widok listy"
+
 msgid "Downgrade Selected"
 msgstr "Obniż wybrane"
 
 msgid "Downgrade selected packages one by one"
 msgstr "Obniżaj wybrane pakiety jeden po drugim"
+
+msgid "Remove Selected"
+msgstr "Usuń wybrane"
 
 msgid "Package Name"
 msgstr "Nazwa pakietu"
@@ -450,7 +465,7 @@ msgid "Install Local Packages"
 msgstr "Zainstaluj pakiety lokalne"
 
 msgid "Install Local"
-msgstr "Zainstaluj lokalne pakiety"
+msgstr "Zainstaluj lokalny pakiet"
 
 msgid "Install Selected"
 msgstr "Zainstaluj wybrane"
@@ -470,9 +485,6 @@ msgstr "Aktualizuj wybrane"
 msgid "Size Difference"
 msgstr "Różnica rozmiaru"
 
-msgid "Old Version"
-msgstr "Starsza wersja"
-
 msgid "Loading Recommended Packages..."
 msgstr "Wczytywanie polecanych pakietów..."
 
@@ -481,6 +493,9 @@ msgstr "Ogólne"
 
 msgid "Enable AUR"
 msgstr "Włącz AUR"
+
+msgid "Language"
+msgstr "Język"
 
 msgid "Enable Flatpak"
 msgstr "Włącz Flatpak"
@@ -536,11 +551,32 @@ msgstr "Wygląd i styl"
 msgid "Icons Enabled"
 msgstr "Ikony pakietów"
 
+msgid ""
+"If enabled, Shelly will use appstream icons in the package list and details "
+"pages."
+msgstr ""
+"Jeśli ta opcja jest włączona, Shelly będzie wyświetlać ikony AppStream na "
+"liście pakietów oraz na stronach szczegółów."
+
 msgid "Use Sidebar Navigation"
 msgstr "Użyj bocznej nawigacji"
 
+msgid ""
+"If enabled, Shelly will use a sidebar vertical navigation instead of the top "
+"bar one."
+msgstr ""
+"Jeśli ta opcja jest włączona, Shelly będzie korzystać z pionowego paska "
+"nawigacyjnego w pasku bocznym zamiast paska nawigacyjnego u góry strony."
+
 msgid "Use Symbolic Tray Icon"
 msgstr "Użyj symbolicznej ikony w zasobniku systemowym"
+
+msgid ""
+"If enabled, Shelly will use a symbolic svg icon instead of the default image "
+"one."
+msgstr ""
+"Jeśli ta opcja jest włączona, Shelly będzie używać symbolicznej ikony SVG "
+"zamiast domyślnej ikony graficznej."
 
 msgid "Tray Icon"
 msgstr "Ikona w zasobniku"
@@ -587,11 +623,21 @@ msgstr "Pobieranie równoległe"
 msgid "Force Database Update"
 msgstr "Wymuś aktualizację bazy danych"
 
+msgid "Force a synchronization of the package database."
+msgstr "Wymuś synchronizację bazy danych pakietów."
+
 msgid "Remove db.lck"
 msgstr "Usuń db.lck"
 
+msgid ""
+"Removes the db.lck file if it was left behind by an interrupted alpm process."
+msgstr "Usuwa plik db.lck, jeśli pozostał on po przerwanym procesie alpm."
+
 msgid "View Pacfiles"
 msgstr "Wyświetl pliki pac"
+
+msgid "View the contents of stored pacfiles."
+msgstr "Wyświetl zawartość zapisanych plików pac."
 
 msgid "Fix Permissions"
 msgstr "Napraw uprawnienia"
@@ -607,6 +653,9 @@ msgstr ""
 msgid "Purify Packages"
 msgstr "Oczyść pakiety"
 
+msgid "Remove corrupted/orphaned packages."
+msgstr "Usuń uszkodzone lub osierocone pakiety."
+
 msgid "View Changelog"
 msgstr "Zobacz dziennik zmian"
 
@@ -617,7 +666,7 @@ msgid "Community fluxer"
 msgstr "Fluxer społecznościowy"
 
 msgid "Sponsor"
-msgstr "Sponsor"
+msgstr "Wesprzyj"
 
 msgid "Welcome to Shelly"
 msgstr "Witaj w Shelly"
@@ -654,7 +703,7 @@ msgstr "Łatwe zarządzanie i konfigurowanie aktualizacji pakietów AppImage."
 msgid ""
 "Show a status icon in your system tray for quick access and notifications."
 msgstr ""
-"Wyświetl ikonę stanu w zasobniku systemowym, aby zapewnić szybki dostęp i "
+"Pokaż ikonę stanu w zasobniku systemowym, aby zapewnić szybki dostęp i "
 "powiadomienia."
 
 msgid "Tray Icon Autostart"
@@ -706,18 +755,6 @@ msgstr "Instalowanie..."
 #, csharp-format
 msgid "Installed {0} Package(s)"
 msgstr "Zainstalowano {0} pakiet(ów)"
-
-msgid "Export AUR install log"
-msgstr "Eksportuj dziennik instalacji AUR"
-
-msgid "Log Files (*.log)"
-msgstr "Pliki dziennika (*.log)"
-
-msgid "Exported AUR install log"
-msgstr "Wyeksportowany dziennik instalacji AUR"
-
-msgid "Failed to export AUR install log"
-msgstr "Nie udało się wyeksportować dziennika instalacji AUR"
 
 msgid "Package Build"
 msgstr "Budowa pakietu"
@@ -816,6 +853,10 @@ msgstr "Codeberg"
 
 msgid "Forgejo"
 msgstr "Forgejo"
+
+#, csharp-format
+msgid "Update Available: {0}"
+msgstr "Dostępna aktualizacja: {0}"
 
 msgid "Invalid URL. Must start with http:// or https://"
 msgstr "Nieprawidłowy adres URL. Musi zaczynać się od http:// lub https://"
@@ -971,34 +1012,6 @@ msgstr "Wiadomości Arch Linux"
 msgid "No news available"
 msgstr "Brak dostępnych wiadomości"
 
-msgid "package"
-msgstr "pakiet"
-
-msgid "packages"
-msgstr "pakiety"
-
-msgid "AUR installation failed"
-msgstr "Instalacja AUR nie powiodła się"
-
-#, csharp-format
-msgid ""
-"Shelly couldn't finish building or installing the selected AUR {0}. Export "
-"the logs and attach them to your report so the team can check whether the "
-"issue came from the PKGBUILD or from Shelly."
-msgstr ""
-"Shelly nie mógł ukończyć budowania ani instalacji wybranego pakietu AUR {0}. "
-"Wyeksportuj dzienniki i dołącz je do zgłoszenia, aby zespół mógł sprawdzić, "
-"czy problem wynika z PKGBUILD-a czy z Shelly."
-
-msgid "Recent output"
-msgstr "Ostatni wynik"
-
-msgid "Close"
-msgstr "Zamknij"
-
-msgid "Export Logs"
-msgstr "Eksportuj dzienniki"
-
 #, csharp-format
 msgid ""
 "Cache directory: {0}\n"
@@ -1052,36 +1065,11 @@ msgstr "Dodaj do listy IgnorePkg"
 msgid "Downgrade"
 msgstr "Obniż wersję"
 
-msgid "Fingerprint Disable Instructions"
-msgstr "Instrukcje wyłączania odcisku palca"
-
-msgid "Disable fingerprint authentication for sudo"
-msgstr "Wyłącz uwierzytelnianie odciskiem palca dla sudo"
-
-msgid "1. Inspect"
-msgstr "1. Przegląd"
-
-msgid "2. Disable for sudo"
-msgstr "2. Wyłącz dla sudo"
-
-msgid "3. Re-enable later"
-msgstr "3. Włącz ponownie później"
-
-msgid "Copy"
-msgstr "Kopiuj"
+msgid "Close"
+msgstr "Zamknij"
 
 msgid "Operation Complete"
 msgstr "Operacja ukończona"
-
-#, csharp-format
-msgid "PKGBUILD Diff - {0}"
-msgstr "Różnica PKGBUILD - {0}"
-
-msgid "Review the PKGBUILD changes before continuing."
-msgstr "Przed kontynuowaniem sprawdź zmiany w pliku PKGBUILD."
-
-msgid "Accept Changes"
-msgstr "Zaakceptuj zmiany"
 
 msgid "Authentication Required"
 msgstr "Wymagane uwierzytelnienie"
@@ -1104,11 +1092,21 @@ msgid "Review PKGBUILD changes for {0}"
 msgstr "Przejrzyj zmiany w PKGBUILD dla {0}"
 
 msgid ""
-"These commands fetch and execute code outside of pacman's control. Review "
-"them before continuing."
+"These commands fetch and execute code outside of shelly and libalpm's "
+"control. Review them before continuing."
 msgstr ""
-"Te polecenia pobierają i wykonują kod poza kontrolą Pacmana. Zapoznaj się z "
-"nimi, zanim przejdziesz dalej."
+"Te polecenia pobierają i wykonują kod poza kontrolą Shelly i Libalpm. "
+"Zapoznaj się z nimi przed kontynuowaniem."
+
+#, csharp-format
+msgid "Warnings ({0})"
+msgstr "Ostrzeżenia ({0})"
+
+msgid "Changes"
+msgstr "Zmiany"
+
+msgid "Review Changes"
+msgstr "Przejrzyj zmiany"
 
 msgid "Install Anyway"
 msgstr "Zainstaluj mimo wszystko"
@@ -1116,6 +1114,13 @@ msgstr "Zainstaluj mimo wszystko"
 #, csharp-format
 msgid "{0} used in {1}"
 msgstr "{0} używane w {1}"
+
+#, csharp-format
+msgid "Security scan completed - {0} warning(s) found."
+msgstr "Skanowanie bezpieczeństwa zakończone — wykryto {0} ostrzeżeń."
+
+msgid "Security scan completed - no issues found."
+msgstr "Skanowanie bezpieczeństwa zakończone – nie wykryto żadnych problemów."
 
 msgid "What's New"
 msgstr "Co nowego"
@@ -1135,18 +1140,8 @@ msgstr "Usuń dane użytkownika i konfigurację"
 msgid "Keep Config?"
 msgstr "Zachować konfigurację?"
 
-msgid "Package installation failed"
-msgstr "Instalacja pakietu nie powiodła się"
-
-#, csharp-format
-msgid ""
-"Shelly couldn't finish building or installing the selected {0}. Export the "
-"logs and attach them to your report so the team can check whether the issue "
-"came from the PKGBUILD or from Shelly."
-msgstr ""
-"Shelly nie mógł ukończyć budowania ani instalacji wybranego pakietu {0}. "
-"Wyeksportuj dzienniki i dołącz je do zgłoszenia, aby zespół mógł sprawdzić, "
-"czy problem wynika z PKGBUILD-a czy z Shelly."
+msgid "Show less"
+msgstr "Pokaż mniej"
 
 msgid "Name and URL are required"
 msgstr "Nazwa i adres URL są wymagane"
@@ -1272,6 +1267,9 @@ msgstr "Usunięto pakiet(y)"
 msgid "Permission Changes"
 msgstr "Zmiany uprawnień"
 
+msgid "<span size='large'>Flatpaks are up to date</span>"
+msgstr "<span size='large'>Pakiety Flatpak są aktualne</span>"
+
 msgid "Updating Flatpak packages..."
 msgstr "Aktualizowanie pakietów Flatpak..."
 
@@ -1282,6 +1280,13 @@ msgstr "Nie udało się zaktualizować pakietów: {0}"
 msgid "Updated all Flatpak(s)"
 msgstr "Zaktualizowano wszystkie pakiety Flatpak"
 
+msgid "Package is already installed"
+msgstr "Pakiet jest już zainstalowany"
+
+#, csharp-format
+msgid "{0} Selected"
+msgstr "{0} wybrano"
+
 msgid "Installed Size"
 msgstr "Rozmiar po instalacji"
 
@@ -1291,20 +1296,14 @@ msgstr "Data kompilacji"
 msgid "Required By"
 msgstr "Wymagane przez"
 
+msgid "View Dependency Graph"
+msgstr "Wyświetl wykres zależności"
+
 msgid "Failed to load packages."
 msgstr "Nie udało się załadować pakietów."
 
 msgid "--- Packages to Upgrade ---"
 msgstr "--- Pakiety do uaktualnienia ---"
-
-msgid "Export Shelly install log"
-msgstr "Eksportuj dziennik instalacji Shelly"
-
-msgid "Exported Shelly install log"
-msgstr "Wyeksportowano dziennik instalacji Shelly"
-
-msgid "Failed to export Shelly install log"
-msgstr "Nie udało się wyeksportować dziennika instalacji Shelly"
 
 msgid "Install Local Package"
 msgstr "Zainstaluj pakiet lokalny"
@@ -1317,6 +1316,9 @@ msgstr "Instalowanie pakietu lokalnego..."
 
 msgid "Installed local package"
 msgstr "Zainstalowano pakiet lokalny"
+
+msgid "Failed to install local package."
+msgstr "Nie udało się zainstalować lokalnego pakietu."
 
 msgid "Install As"
 msgstr "Zainstaluj jako"
@@ -1397,11 +1399,8 @@ msgid ""
 "No recommendations found. Please check your internet connection and try "
 "again."
 msgstr ""
-"Nie znaleziono rekomendacji. Sprawdź połączenie internetowe i spróbuj "
+"Nie znaleziono polecanych pakietów. Sprawdź połączenie internetowe i spróbuj "
 "ponownie."
-
-msgid "Package is already installed"
-msgstr "Pakiet jest już zainstalowany"
 
 msgid "Remove "
 msgstr "Usuń "
@@ -1426,6 +1425,9 @@ msgstr "Usuń uszkodzone pakiety"
 
 msgid "Select AppImage Install Directory"
 msgstr "Wybierz katalog instalacyjny AppImage"
+
+msgid "Restart Shelly to apply the selected language."
+msgstr "Zrestartuj Shelly, aby zastosować wybrany język."
 
 msgid "Select Icon File"
 msgstr "Wybierz plik ikony"
@@ -1461,6 +1463,12 @@ msgstr "Instalowanie flatpak..."
 
 msgid "Reboot required to complete installation."
 msgstr "Do zakończenia instalacji wymagane jest ponowne uruchomienie."
+
+msgid "Missing Starfish"
+msgstr "Brakuje Starfish"
+
+msgid "Installing starfish..."
+msgstr "Instalowanie starfish..."
 
 msgid "Synchronizing databases..."
 msgstr "Synchronizacja baz danych..."
@@ -1538,36 +1546,20 @@ msgstr "Instalacja {0} pakiet(ów) nie powiodła się."
 msgid "Failed to remove packages: {0}"
 msgstr "Nie udało się usunąć pakietów: {0}"
 
-#~ msgid "No packages found."
-#~ msgstr "Nie znaleziono pakietów."
+msgid "Package Statistics"
+msgstr "Statystyki pakietu"
 
-#~ msgid "Displaying Package Build {0}"
-#~ msgstr "Wyświetlanie kompilacji pakietu {0}"
+msgid "Total Aur"
+msgstr "Łącznie pakietów AUR"
 
-#~ msgid "Already installed"
-#~ msgstr "Już zainstalowano"
+msgid "Total Packages"
+msgstr "Łącznie pakietów"
 
-#~ msgid ""
-#~ "Both tray icons must be set for use, if not it will default to standard "
-#~ "shelly icons. Changing tray icons requires a restart of shelly-"
-#~ "notifications."
-#~ msgstr ""
-#~ "Obie ikony w zasobniku muszą być ustawione, w przeciwnym razie zostaną "
-#~ "użyte domyślne ikony Shelly. Zmiana ikon w zasobniku wymaga ponownego "
-#~ "uruchomienia shelly-notifications."
+msgid "Total Flatpak"
+msgstr "Łącznie pakietów Flatpak"
 
-#~ msgid "e.g. repo or https://..."
-#~ msgstr "np. repo lub https://..."
+msgid "Up to date"
+msgstr "Aktualny"
 
-#~ msgid ""
-#~ "Access the Arch User Repository for a vast collection of community-"
-#~ "maintained packages. AUR packages can contain malicious software, so "
-#~ "please use caution when using the AUR."
-#~ msgstr ""
-#~ "Uzyskaj dostęp do repozytorium użytkowników Arch, gdzie znajdziesz bogatą "
-#~ "kolekcję pakietów zarządzanych przez społeczność. Pakiety AUR mogą "
-#~ "zawierać złośliwe oprogramowanie, dlatego zachowaj ostrożność podczas "
-#~ "korzystania z AUR."
-
-#~ msgid "Unable to load package data. You may have a db.lck."
-#~ msgstr "Nie można załadować danych pakietu. Możliwe, że masz plik db.lck."
+msgid "Calculating"
+msgstr "Obliczanie"

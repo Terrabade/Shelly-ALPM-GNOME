@@ -1,7 +1,7 @@
 # Maintainer: Zoey Bauer <zoey.erin.bauer@gmail.com>
 # Maintainer: Caroline Snyder <hirpeng@gmail.com>
 pkgname=shelly-bin
-pkgver=2.3.3.4
+pkgver=2.4.1.2
 pkgrel=1
 pkgdesc="Shelly: A Modern Arch Package Manager (prebuilt binary)"
 arch=('x86_64')
@@ -24,10 +24,13 @@ depends=(
     'dconf'
     'gnupg'
     'zstd'
+    'json-glib'
 )
 optdepends=(
     'flatpak: For supporting flatpak implementation.'
     'fish: Fish shell completions'
+    'zsh: Zsh shell completions'
+    'libstarfish: dependency viewer for arch packages'
 )
 
 source=(
@@ -41,9 +44,9 @@ package() {
   install -Dm755 "$srcdir/shelly-ui" "$pkgdir/usr/bin/shelly-ui"
 
   # Install Shelly-Notifications binary
-  install -Dm755 "$srcdir/Shelly-Notifications" "$pkgdir/usr/bin/shelly-notifications"
+  install -Dm755 "$srcdir/shelly-notifications" "$pkgdir/usr/bin/shelly-notifications"
 
-  # Install Shelly-CLI binary
+  # Install Shelly.Cli binary
   install -Dm755 "$srcdir/shelly" "$pkgdir/usr/bin/shelly"
 
   # Install Shelly.Keys binary
@@ -54,11 +57,12 @@ package() {
 [Desktop Entry]
 Name=Shelly
 Comment=A Modern Arch Package Manager
-Exec=/usr/bin/shelly-ui
+Exec=/usr/bin/shelly-ui %u
 Icon=shelly
 Type=Application
 Categories=System;Utility;
 Keywords=program;software;store;repository;package;add;install;uninstall;remove;update;apps;applications;flatpak;pacman;aur;appimage;
+MimeType=x-scheme-handler/appstream;x-scheme-handler/flatpak+https;
 Terminal=false
 Actions=FlatpakInstall;FlatpakUpdate;FlatpakRemove;
 
@@ -92,6 +96,31 @@ Terminal=false
 NoDisplay=true
 EOF
 
+  # Ensure the polkit directory exists
+  install -m0755 -d "${pkgdir}"/usr/share/polkit-1/actions
+
+  # Install Polkit policy for privileged Shelly CLI execution via pkexec
+  cat <<'EOF' | install -Dm644 /dev/stdin "$pkgdir/usr/share/polkit-1/actions/com.shellyorg.shelly.policy"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>Shelly</vendor>
+  <vendor_url>https://github.com/Seafoam-Labs/Shelly-ALPM</vendor_url>
+  <action id="com.shellyorg.shelly.pkexec.cli">
+    <description>Run Shelly CLI as administrator</description>
+    <message>Run Shelly CLI with administrator privileges.</message>
+    <icon_name>shelly</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/shelly</annotate>
+  </action>
+</policyconfig>
+EOF
+
   # Install icon
   install -Dm644 "$srcdir/Assets/shellylogo.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/shelly.png"
   install -Dm644 "$srcdir/Assets/svg/flatpak-symbolic.svg" "$pkgdir/usr/share/icons/hicolor/symbolic/apps/flatpak-symbolic.svg"
@@ -104,6 +133,9 @@ EOF
 
   # Install fish shell completions
   install -Dm644 "$srcdir/shelly.fish" "$pkgdir/usr/share/fish/vendor_completions.d/shelly.fish"
+
+  # Install zsh shell completions
+  install -Dm644 "$srcdir/_shelly" "$pkgdir/usr/share/zsh/site-functions/_shelly"
 
   # Install translations
 if [ -d "$srcdir/locale" ] && [ -n "$(ls -A "$srcdir/locale" 2>/dev/null)" ]; then

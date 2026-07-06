@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
 using PackageManager.Alpm;
+using PackageManager.Alpm.Interop;
+using PackageManager.Alpm.Package;
 
 namespace PackageManager.Tests.AlpmTests;
 
