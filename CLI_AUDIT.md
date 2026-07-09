@@ -18,7 +18,52 @@ Every `Command.SetAction` lambda ends in `return 0;` and `GlobalSettingsCommand.
 
 Only two paths in the whole CLI return a nonzero code: `flatpak uninstall` for a missing app (`Commands/Flatpak/Remove.cs:80`) and `completions` for an unknown shell. This defeats scripting (`--json` is advertised "for scripting"), CI use, and `set -e` shell usage.
 
-**Recommendation:** change `ExecuteAsync` to return `ValueTask<int>` (or set `Environment.ExitCode`), and adopt a small exit-code contract (0 success, 1 operation failure, 2 usage error, 130 cancelled).
+**Recommendation:** change `ExecuteAsync` to return `ValueTask<int>` (or set `Environment.ExitCode`), and adopt a small exit-code contract (0 success, 1 operation failure, 2 usage error, 130 cancelled). See the deep dive below for how peer package managers define their contracts.
+
+#### Deep dive: this is a live bug in Shelly's own GUI, not just a scripting concern
+
+The GTK app shells out to this CLI and derives success **exclusively from the exit code**:
+
+- `Shelly.Gtk/Services/ProcessExecutor.cs:174` and `:426` — `Success = process.ExitCode == 0`
+- Dozens of GUI call sites branch on that flag: `ShellySearch.cs:496` (`installFailed = !optResult.Success`), `SetupWindow.cs:108`, `CacheCleanerDialog.cs:55`, ~10 sites in `AppImage.cs`, `Settings.cs:844/861/884`, …
+- The `--ui-mode` frame stream does carry `TransactionFailed` events (`Shelly.Cli/UiFrames.cs:19-22`), but nothing in `Shelly.Gtk` consumes them for success/failure — `Services/Wire/EventRouter.cs` routes them for progress display only.
+
+Net effect: when an install/upgrade transaction fails, the CLI prints a red message, exits 0, and **the GUI shows the success path**. Fixing exit codes fixes the GUI for free; conversely, no amount of GUI work fixes it while the CLI reports success.
+
+Two more ironies in the current state:
+
+- **The behavior is inverted relative to convention.** System.CommandLine already returns nonzero for *parse* errors, so `shelly install --bogus-flag` exits 1 while `shelly install <package-that-fails-to-install>` exits 0. Trivial mistakes fail loudly; real failures fail silently.
+- **The propagation plumbing already exists and is wasted.** `RootElevator` faithfully forwards the elevated child's exit code (`Environment.Exit(process.ExitCode)`, `RootElevator.cs:26`), `PacmanKeyRunner` returns the real `pacman-key` exit code, and `Main` returns whatever `InvokeAsync` produces. Every link in the chain forwards the code — the commands just never produce one.
+
+#### What every peer package manager does
+
+There is no mainstream package manager that exits 0 on failure. The documented contracts:
+
+| Tool | Contract (from its man page / docs) |
+|---|---|
+| **pacman** (what Shelly wraps) | "returns zero on success, non-zero on failure." Failed transaction, unresolvable target, and user abort at the confirm prompt all exit 1. |
+| **checkupdates** (pacman-contrib) | Tri-state: 0 = updates available, 2 = no updates, 1 = error. Status bars and cron jobs depend on distinguishing "none" from "failed". |
+| **yay / paru** (closest peers: AUR helpers wrapping pacman) | Propagate pacman's exit code; nonzero on build or transaction failure. |
+| **flatpak** (also wrapped by Shelly) | 0 success, 1 error — Shelly discards this signal today. |
+| **apt-get / apt** | "returns zero on normal operation, decimal 100 on error." User abort at prompt: 1. `unattended-upgrades` and Ansible's `apt` module key off it. |
+| **dnf / yum** | 0 success, 1 error; `dnf check-update` deliberately uses 100 = updates available, 0 = none, 1 = error. |
+| **zypper** | The most elaborate: documented `EXIT CODES` section — 0 success, 1–7 classes of usage/environment error, 8 commit (transaction) failure, plus informational 100–107 (100 = updates available, 102 = reboot required, 105 = aborted by signal…). Explicitly designed "for use in scripts". |
+| **npm / pip / cargo / brew** | Nonzero on any failure — universal across the wider ecosystem. |
+
+The pattern to note: the *baseline* (0 = success, nonzero = failure) is unanimous, and several managers additionally reserve codes to make **"success, but noteworthy state"** scriptable (checkupdates' 2, dnf's 100, zypper's 100–107). Shelly's `check-updates --count` is exactly the kind of command status-bar/cron consumers would use — on Arch, `checkupdates` semantics (2 = no updates) would be the familiar contract to mirror.
+
+Downstream, the whole composition model assumes this: `set -e` / `&&` chains, systemd `ExecStart` failure handling, cron mail-on-failure, CI steps, and config management (Ansible's `pacman`/`apt` modules literally decide `failed:` from `rc != 0`). A Shelly invocation in any of those contexts currently cannot fail.
+
+#### Suggested contract for Shelly
+
+- `0` — success, including "nothing to do" (pacman returns 0 for an up-to-date `-Syu`)
+- `1` — operation/transaction failure (matches pacman, flatpak, yay/paru; also what System.CommandLine already uses for parse errors)
+- `2` — usage/validation errors (no packages specified, conflicting flags) — optional refinement; collapsing into 1 also matches pacman
+- `130` — SIGINT (already implemented)
+- Declining a confirmation prompt: exit 1, matching pacman and apt (both treat user abort as failure, which keeps `shelly upgrade && reboot` safe)
+- `check-updates`: consider adopting `checkupdates`' tri-state (2 = no updates) as a deliberate, documented choice
+
+Mechanically: change `GlobalSettingsCommand.ExecuteAsync`/`ExecuteUiMode` to `ValueTask<int>` and return it from each `SetAction` — ~70 call sites but each edit is trivial, and `UpgradeAll` aggregates its children (nonzero if any step failed). The GTK app needs no changes; its `ExitCode == 0` check starts working the moment the CLI tells the truth.
 
 ### 1.2 `Confirm` auto-confirms on EOF / non-interactive stdin
 `Confirm.Execute` (`Interactions/Confirm.cs`): `Console.ReadLine()` returns `null` when stdin is closed or redirected, which falls into the `IsNullOrWhiteSpace` branch and returns the **default value — `true` for nearly all destructive prompts** (install, remove, update). `shelly install foo </dev/null` proceeds as if confirmed. (`upgrade-all` is the one caller passing `false`.)
