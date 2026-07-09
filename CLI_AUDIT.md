@@ -54,6 +54,16 @@ The pattern to note: the *baseline* (0 = success, nonzero = failure) is unanimou
 
 Downstream, the whole composition model assumes this: `set -e` / `&&` chains, systemd `ExecStart` failure handling, cron mail-on-failure, CI steps, and config management (Ansible's `pacman`/`apt` modules literally decide `failed:` from `rc != 0`). A Shelly invocation in any of those contexts currently cannot fail.
 
+#### Counterargument considered: "nonzero means *program* failure, not *operation* failure"
+
+This position has real precedent — `curl` without `-f` exits 0 on an HTTP 404, GUI apps are "0 unless crashed", Windows `robocopy` uses 0–7 for success variants — but it doesn't transfer to a Unix package manager:
+
+- **"Program failure" already has its own signal space** (termination signals, shell-reserved 126/127). If exit status *also* meant only "malfunctioned", it would be redundant with signals and there would be no machine-readable channel for "did the operation work?" — the only alternative being to parse Shelly's ANSI-colorized prose.
+- **Shell control flow is designed around outcome-in-exit-code**: `if`/`&&`/`set -e` branch on it, and core utilities (`test`, `grep -q`, `cmp -s`, `diff`) exist whose entire output *is* an operation-outcome exit code. POSIX, the GNU Coding Standards, and `sysexits.h` (`EX_UNAVAILABLE`, `EX_TEMPFAIL`) all frame status as success of the *requested task*. `shelly install foo`'s task is that foo ends up installed; correctly reporting that it didn't is not the same as doing it.
+- **The precedents that do behave this way are cautionary tales**: curl's default is such a footgun that `--fail` is boilerplate, and robocopy's scheme forces every CI wrapper to special-case it. Deviating from caller expectations means every caller writes an adapter.
+- **Shelly itself relies on the operation-failure convention upstream**: `PacmanKeyRunner` branches on `pacman-key`'s exit code, `RootElevator` propagates child codes, and the GTK app defines success as `ExitCode == 0`. The CLI demands operation-outcome codes from its dependencies while denying them to its consumers.
+- **The legitimate kernel** — distinguishing failure classes — is conventionally expressed with *multiple nonzero codes* (apt-get's 100, zypper's 1–7 vs 8, grep's 1 vs 2), not by overloading 0. The contract below preserves that distinction. The genuinely debatable cases are only "no results from a query" (0 is fine) and "user declined the prompt" (pacman and apt both chose 1; automation safety agrees).
+
 #### Suggested contract for Shelly
 
 - `0` — success, including "nothing to do" (pacman returns 0 for an up-to-date `-Syu`)
