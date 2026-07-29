@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface domain="shelly-ui">
+  <requires lib="gtk" version="4.0"/>
+  <template class="ShellyPkgbuildReviewDialog" parent="GtkWindow">
+    <property name="title" translatable="yes">Review PKGBUILD changes</property>
+    <property name="modal">true</property>
+    <property name="resizable">true</property>
+    <property name="default-width">720</property>
+    <property name="default-height">560</property>
+    <signal name="close-request" handler="on_close_request" swapped="true"/>
+    <property name="child">
+      <object class="GtkBox">
+        <property name="orientation">vertical</property>
+        <property name="spacing">12</property>
+        <property name="margin-start">16</property>
+        <property name="margin-end">16</property>
+        <property name="margin-top">16</property>
+        <property name="margin-bottom">16</property>
+
+        <child>
+          <object class="GtkLabel" id="heading_label">
+            <property name="xalign">0</property>
+            <property name="wrap">true</property>
+            <style><class name="title-3"/></style>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkNotebook" id="notebook">
+            <property name="vexpand">true</property>
+            <property name="hexpand">true</property>
+            <property name="scrollable">true</property>
+
+            <child>
+              <object class="GtkNotebookPage">
+                <property name="tab-label" translatable="yes">Changes</property>
+                <property name="child">
+                  <object class="GtkFrame">
+                    <child>
+                      <object class="GtkScrolledWindow">
+                        <property name="hscrollbar-policy">automatic</property>
+                        <property name="vscrollbar-policy">automatic</property>
+                        <property name="vexpand">true</property>
+                        <property name="hexpand">true</property>
+                        <child>
+                          <object class="GtkBox" id="diff_box">
+                            <property name="orientation">vertical</property>
+                            <property name="halign">fill</property>
+                            <property name="hexpand">true</property>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                  </object>
+                </property>
+              </object>
+            </child>
+
+            <child>
+              <object class="GtkNotebookPage">
+                <property name="tab-label" translatable="yes">Warnings</property>
+                <property name="child">
+                  <object class="GtkScrolledWindow" id="warnings_page">
+                    <property name="hscrollbar-policy">automatic</property>
+                    <property name="vscrollbar-policy">automatic</property>
+                    <property name="vexpand">true</property>
+                    <property name="hexpand">true</property>
+                    <child>
+                      <object class="GtkBox" id="warnings_box">
+                        <property name="orientation">vertical</property>
+                        <property name="spacing">6</property>
+                        <property name="margin-start">8</property>
+                        <property name="margin-end">8</property>
+                        <property name="margin-top">8</property>
+                        <property name="margin-bottom">8</property>
+                        <child>
+                          <object class="GtkLabel" id="warnings_subtitle">
+                            <property name="label" translatable="yes">These commands fetch and execute code outside of shelly and libalpm's control. Review them before continuing.</property>
+                            <property name="xalign">0</property>
+                            <property name="wrap">true</property>
+                            <style><class name="error"/></style>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                  </object>
+                </property>
+              </object>
+            </child>
+
+            <child>
+              <object class="GtkNotebookPage">
+                <property name="tab-label" translatable="yes">Source Files</property>
+                <property name="child">
+                  <object class="GtkScrolledWindow" id="sources_page">
+                    <property name="hscrollbar-policy">automatic</property>
+                    <property name="vscrollbar-policy">automatic</property>
+                    <property name="vexpand">true</property>
+                    <property name="hexpand">true</property>
+                    <child>
+                      <object class="GtkBox" id="sources_box">
+                        <property name="orientation">vertical</property>
+                        <property name="spacing">6</property>
+                        <property name="margin-start">8</property>
+                        <property name="margin-end">8</property>
+                        <property name="margin-top">8</property>
+                        <property name="margin-bottom">8</property>
+                      </object>
+                    </child>
+                  </object>
+                </property>
+              </object>
+            </child>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkBox">
+            <property name="spacing">8</property>
+            <property name="halign">fill</property>
+            <property name="margin-top">4</property>
+            <property name="margin-bottom">8</property>
+            <child>
+              <object class="GtkImage" id="scan_icon">
+                <property name="icon-name">security-high-symbolic</property>
+                <property name="pixel-size">16</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="scan_label">
+                <property name="xalign">0</property>
+                <property name="wrap">true</property>
+                <style><class name="success"/></style>
+              </object>
+            </child>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkBox">
+            <property name="spacing">8</property>
+            <property name="halign">end</property>
+            <child>
+              <object class="GtkButton" id="cancel_button">
+                <property name="label" translatable="yes">Cancel</property>
+                <signal name="clicked" handler="on_cancel" swapped="true"/>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="proceed_button">
+                <property name="label" translatable="yes">Confirm</property>
+                <signal name="clicked" handler="on_proceed" swapped="true"/>
+                <style><class name="suggested-action"/></style>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </property>
+  </template>
+</interface>

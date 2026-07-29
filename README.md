@@ -17,23 +17,7 @@ Of course all credit and respect goes to [upstream](https://github.com/Seafoam-L
 
 ## About
 
-Shelly is a modern reimagination of the Arch Linux package manager, designed to be a more intuitive and user-friendly
-alternative to `pacman` and `octopi`. Unlike other Arch package managers, Shelly offers a modern, visual interface with
-a focus on
-user experience and ease of use; It **IS NOT** built as a `pacman` wrapper or front-end. It is a complete reimagination
-of how a user
-interacts with their Arch Linux system, providing a more streamlined and intuitive experience.
-
-<details>
-  <summary>Screenshots</summary>
-  <p align="center">
-  Search Standard Packages, AUR, and Flatpak in one place
-
-  <img width="1372" height="1019" alt="image" src="https://github.com/user-attachments/assets/6aa86662-d9f6-4d3c-9164-9df5d05257b3" />
-  <img width="1768" height="1177" alt="image" src="https://github.com/user-attachments/assets/8e9d851b-a3a0-4aaf-b91a-b3b3c3ec7f6d" />
-  <img width="1768" height="1177" alt="image" src="https://github.com/user-attachments/assets/cc2a8d31-e5c9-42d4-ba87-db25e10a1110" />
-  </p>
-</details>
+Shelly is a modern package manager for Arch Linux designed to be a more user-friendly alternative. Offering a visual interface with a focus on user experience and ease of use. Shelly interfaces directly with `libalpm`. It is a complete reimagination of how a user interacts with their Arch Linux system, providing a more intuitive experience.
 
 ## Quick Install
 
@@ -85,62 +69,61 @@ paru -Rns shelly
 - **Package Management**: Supports searching and filtering for, installing, updating, and removing packages.
 - **Repository Management**: Synchronizes with official repositories to keep package lists up to date.
 - **AUR Support**: Integration with the Arch User Repository for a wider range of software.
-- **Flatpak Support**: Manage Flatpak applications alongside native packages.
+- **Optional Flatpak Support**: Install `shelly-flatpak-backend` to manage
+  Flatpak applications alongside native packages without making Flatpak a
+  runtime dependency of the base Shelly package.
 
 ## Roadmap
 
 Upcoming features and development targets:
 
 - **Repository Modification**: Allow modification of supported repositories (In progress).
-- **App Image Support**: Further app image support similar to [](https://github.com/mijorus/gearlever). (In
-  progress)
-- **Package Import**: Allow for import of a previously existing package list to bring the system back to a saved package
-  state. (Not yet started)
-- **Multi Language Support**: Translation layer for supporting languages outside english
 - **Offline Updates**: Similar functionality to pacman-offline script
 - **Layout Customization**: Allow for customization of the individual user experience.
 
 ## Prerequisites
 
 - **Arch Linux** (or an Arch-based distribution)
-- **.NET 10.0 SDK** (for building)
+- **zig 0.16.0** (for building)
+- **vala** (for building)
 - **libalpm** (provided by `pacman`)
 
 #### Optional Prerequisites
-AppLever
-- **Flatpak**: Can be installed via shelly inside settings by turning flatpak on.
+
+- **Flatpak support**: Install both `flatpak` and
+  `shelly-flatpak-backend`. The backend is loaded only for a Flatpak operation.
+  A base-only Shelly installation keeps ALPM, AUR, AppImage, help, version, and
+  completion commands available.
 
 ## Installation
 
 ### Using PKGBUILD
 
-Since Shelly is designed for Arch Linux, you can build and install it using the provided `PKGBUILD`:
+Since Shelly is designed for Arch Linux, you can build and install it using the provided git `PKGBUILD`:
 
 ```bash
-git clone https://github.com/ZoeyErinBauer/Shelly-ALPM.git
+git clone https://github.com/Seafoam-Labs/Shelly-ALPM.git
 cd Shelly-ALPM
+cp PKGBUILD-git PKGBUILD
 makepkg -si
 ```
 
 ### Manual Build
 
-You can also build the project manually using the .NET CLI:
+The native Zig components can be built and tested independently:
 
 ```bash
-dotnet publish Shelly.Gtk/Shelly.Gtk.csproj -c Release -o publish/shelly-ui
-dotnet publish Shelly-CLI/Shelly-CLI.csproj -c Release -o publish/shelly-cli
-dotnet publish Shelly-CLI/Shelly-CLI.csproj -c Release -o publish/shelly-notifications
+(cd Shelly.Flatpak.Backend && zig build integration-test)
+(cd Shelly.PackageManager && zig build test)
+(cd Shelly.Cli.Zig && zig build test)
+(cd Shelly.Ui.Gtk && zig build test)
 ```
 
-alternatively, you can run
+To build both optional configurations and verify their ELF boundaries:
 
 ```bash
-sudo ./local-install.sh
+scripts/test-flatpak-separation.sh
 ```
-
-This will build and perform the functions of install.sh
-
-The binary will be located in the `/opt/shelly` directory.
 
 ## Usage
 
@@ -189,23 +172,30 @@ These are listed on the [Shelly Configuration](https://www.seafoam-labs.org/shel
 
 Shelly is structured into several components:
 
-- **Shelly.Gtk**: The main GUI desktop application.
-- **Shelly-CLI**: Command-line interface for terminal-based package management.
+- **Shelly.Ui.Gtk**: The native GTK4 desktop application.
+- **Shelly.Cli.Zig**: Command-line interface for terminal and UI operations.
+- **Shelly.Flatpak.Backend**: Optional versioned shared library containing all
+  libflatpak/GLib-native implementation details.
 - **Shelly-Notifications**: Tray service to manage notifactions the Shelly-UI.
-- **PackageManager**: The core logic library providing bindings and abstractions for `libalpm`.
-- **PackageManager.Tests**: Comprehensive tests for the package management logic.
+- **Shelly.PackageManager**: Core libalpm/AUR/AppImage logic plus the
+  backend-neutral Flatpak facade and secure loader.
 
 ### Building for Development
 
 ```bash
-dotnet build
+scripts/test-flatpak-separation.sh
 ```
 
 ### Running Tests
 
 ```bash
-dotnet test
+(cd Shelly.Flatpak.Backend && zig build test abi-test parity-test integration-test)
+(cd Shelly.PackageManager && zig build test)
+(cd Shelly.Cli.Zig && zig build test)
 ```
+
+The backend ABI, memory ownership, discovery rules, and version-bump procedure
+are documented in [docs/flatpak-backend-abi.md](docs/flatpak-backend-abi.md).
 
 ### Generate CLI References
 
@@ -216,5 +206,3 @@ dotnet run --file help_compiler.cs
 ## License
 
 This project is licensed under the GPL-3.0 License – see the [LICENSE](LICENSE) file for details.
-
-

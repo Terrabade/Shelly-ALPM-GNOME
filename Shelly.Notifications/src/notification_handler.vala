@@ -22,6 +22,11 @@ public class NotificationHandler : Object {
             register_watchers ();
 
             var hints = new GLib.HashTable<string, GLib.Variant> (str_hash, str_equal);
+            // Attribute notifications to the main Shelly desktop entry so
+            // GNOME and Plasma list us in their notification settings and
+            // apply per-app policy. Must not be the helper's own desktop
+            // file: it is NoDisplay=true, which Plasma's KCM filters out.
+            hints["desktop-entry"] = new Variant.string ("com.shellyorg.shelly");
 
             _last_id = yield proxy.notify ("Shelly",
                 _last_id,
@@ -47,6 +52,18 @@ public class NotificationHandler : Object {
 
         proxy.action_invoked.connect (handle_action_invoked);
         proxy.notification_closed.connect (handle_notification_closed);
+        proxy.activation_token.connect (handle_activation_token);
+    }
+
+    /*
+     * Emitted by the notification server right before ActionInvoked,
+     * carrying the XDG activation token that lets the raised window
+     * take focus on Wayland.
+     */
+    private void handle_activation_token (uint32 id, string token) {
+        if (notification_ids.contains (id) || recently_closed_notification_ids.contains (id)) {
+            AppRunner.set_activation_token (token);
+        }
     }
 
     private void handle_action_invoked (uint32 id, string action_key) {
@@ -61,7 +78,7 @@ public class NotificationHandler : Object {
             return;
         }
 
-        AppRunner.launch_app_if_not_running ();
+        AppRunner.launch_app_if_not_running.begin ();
     }
 
     private void handle_notification_closed (uint32 id, uint32 reason) {

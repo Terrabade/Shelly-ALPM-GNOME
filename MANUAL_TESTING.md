@@ -49,11 +49,27 @@ This document tracks manual testing procedures for Shelly components that requir
 - [ ] AUR package removal works
 
 ### Flatpak Integration
+- [ ] A base-only installation does not install `flatpak` or
+  `shelly-flatpak-backend` as a required dependency
+- [ ] `shelly --help`, `shelly --version`, and completion generation work with
+  no backend installed
+- [ ] A direct Flatpak command explains that `shelly-flatpak-backend` and
+  Flatpak must be installed
+- [ ] `list-updates all` and `upgrade all` warn, skip Flatpak, and continue
+  other selected backends when the backend is missing
+- [ ] Backup warns and exports standard/AUR records without Flatpak records
+  when the backend is missing
+- [ ] Installing `shelly-flatpak-backend` enables Flatpak without rebuilding
+  or reinstalling the base package
+- [ ] An ABI-incompatible backend is rejected with an upgrade-together message
 - [ ] Flatpak packages are listed separately
 - [ ] Flatpak search works correctly
 - [ ] Flatpak installation succeeds
 - [ ] Flatpak updates work
 - [ ] Flatpak removal works
+- [ ] Status and percentage events reach both terminal and `--ui-mode`
+- [ ] Cancelling an in-progress Flatpak transaction stops its native
+  `GCancellable` and reports cancellation once
 
 ### Repository Management
 - [ ] Repository list displays correctly
@@ -82,6 +98,11 @@ This document tracks manual testing procedures for Shelly components that requir
 - [ ] `shelly --help` displays help information
 - [ ] `shelly --version` shows correct version
 - [ ] Command syntax errors show helpful messages
+- [ ] Running `shelly` with no arguments still displays and confirms the combined upgrade plan
+- [ ] `shelly firefox` searches standard repositories and the AUR, while recognized commands and shortcodes retain their normal behavior
+- [ ] Bare-value results count down toward `1`, with the closest match displayed last as `1` and selected by Enter
+- [ ] Entering `0` cancels SearchInstall without starting a transaction
+- [ ] Selecting a standard or AUR result enters the corresponding normal install workflow
 
 ### Package Operations
 - [ ] `shelly search <package>` returns results
@@ -121,6 +142,14 @@ This document tracks manual testing procedures for Shelly components that requir
 
 ### PKGBUILD Installation
 - [ ] `makepkg -si` builds and installs successfully
+- [ ] `shelly` and `shelly-flatpak-backend` can be packaged and installed
+  independently
+- [ ] `/usr/lib/shelly/libshelly-flatpak-backend.so.1` belongs only to the
+  backend package
+- [ ] `readelf -d /usr/bin/shelly` has no `libflatpak.so.0` or
+  `libostree-1.so.1` `NEEDED` entry
+- [ ] The backend has SONAME `libshelly-flatpak-backend.so.1` and a
+  `libflatpak.so.0` `NEEDED` entry
 - [ ] All dependencies are correctly specified
 - [ ] Post-install scripts execute properly
 - [ ] Files are installed to correct locations

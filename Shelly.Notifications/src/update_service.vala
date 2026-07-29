@@ -48,7 +48,7 @@ public class SyncModel {
 public class UpdateService : Object {
 
     private string find_cli () {
-        string[] candidates = { "/usr/bin/shelly", "/usr/local/bin/shelly", "/opt/shelly/shelly" };
+        string[] candidates = { "/usr/bin/shelly" };
         foreach (var p in candidates) {
             if (FileUtils.test (p, FileTest.IS_EXECUTABLE))return p;
         }
@@ -57,7 +57,7 @@ public class UpdateService : Object {
 
     public async SyncModel check_for_updates () throws Error {
         var cli = find_cli ();
-        string[] argv = { cli, "check-updates", "-al", "--json" };
+        string[] argv = { cli, "-P", "--json" };
         stdout.printf ("[shelly-updates] Running: %s check-updates -al --json\n", cli);
 
         var proc = new Subprocess.newv (
@@ -82,7 +82,7 @@ public class UpdateService : Object {
 
     private SyncModel parse_output (string raw) {
         var model = new SyncModel ();
-        if (raw.length == 0)return model;
+        if (raw.length == 0) return model;
 
         var json_start = raw.index_of ("{");
         if (json_start < 0) { stdout.printf ("[shelly-updates] No JSON in output\n"); return model; }
@@ -92,19 +92,19 @@ public class UpdateService : Object {
             parser.load_from_data (raw.substring (json_start));
 
             var root = parser.get_root ();
-            if (root == null || root.get_node_type () != Json.NodeType.OBJECT)return model;
+            if (root == null || root.get_node_type () != Json.NodeType.OBJECT) return model;
             var obj = root.get_object ();
 
             if (obj.has_member ("Packages")) {
                 obj.get_array_member ("Packages").foreach_element ((_, __, node) => {
                     var o = node.get_object ();
                     string? old_v = null;
-                    if (o.has_member ("OldVersion")
-                        && o.get_member ("OldVersion").get_node_type () != Json.NodeType.NULL)
-                        old_v = o.get_string_member ("OldVersion");
+                    if (o.has_member ("CurrentVersion")
+                        && o.get_member ("CurrentVersion").get_node_type () != Json.NodeType.NULL)
+                        old_v = o.get_string_member ("CurrentVersion");
                     model.packages.add (new SyncPackage (
                                                          o.get_string_member ("Name"),
-                                                         o.get_string_member ("Version"),
+                                                         o.get_string_member ("NewVersion"),
                                                          old_v
                     ));
                 });
@@ -114,19 +114,19 @@ public class UpdateService : Object {
                 obj.get_array_member ("Aur").foreach_element ((_, __, node) => {
                     var o = node.get_object ();
                     string? old_v = null;
-                    if (o.has_member ("OldVersion")
-                        && o.get_member ("OldVersion").get_node_type () != Json.NodeType.NULL)
-                        old_v = o.get_string_member ("OldVersion");
+                    if (o.has_member ("Version")
+                        && o.get_member ("Version").get_node_type () != Json.NodeType.NULL)
+                        old_v = o.get_string_member ("Version");
                     model.aur.add (new SyncPackage (
                                                     o.get_string_member ("Name"),
-                                                    o.get_string_member ("Version"),
+                                                    o.get_string_member ("NewVersion"),
                                                     old_v
                     ));
                 });
             }
 
-            if (obj.has_member ("Flatpaks")) {
-                obj.get_array_member ("Flatpaks").foreach_element ((_, __, node) => {
+            if (obj.has_member ("Flatpak")) {
+                obj.get_array_member ("Flatpak").foreach_element ((_, __, node) => {
                     var o = node.get_object ();
                     string? fname = null;
                     if (o.has_member ("Name")
@@ -149,4 +149,5 @@ public class UpdateService : Object {
 
         return model;
     }
+
 }
