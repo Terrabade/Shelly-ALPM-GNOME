@@ -78,17 +78,19 @@ fi
 for recipe in PKGBUILD PKGBUILD-git PKGBUILD-bin PKGBUILD-cli; do
     bash -n "${repo_root}/${recipe}"
 done
-if ! grep -Fq "pkgname=('shelly' 'shelly-flatpak-backend')" \
+# The '(-gnome)?' allows the downstream shelly-gnome fork's package names while
+# still matching upstream's, so these checks stay meaningful in both repos.
+if ! grep -Eq "pkgname=\('shelly(-gnome)?' 'shelly(-gnome)?-flatpak-backend'\)" \
     "${repo_root}/PKGBUILD"; then
     echo "error: PKGBUILD does not declare the base/backend split" >&2
     exit 1
 fi
-if ! grep -Fq 'shelly-flatpak-backend: Flatpak package management support' \
+if ! grep -Eq 'shelly(-gnome)?-flatpak-backend: Flatpak package management support' \
     "${repo_root}/PKGBUILD"; then
     echo "error: the base package does not advertise the optional backend" >&2
     exit 1
 fi
-if ! grep -Fq 'package_shelly-flatpak-backend()' \
+if ! grep -Eq 'package_shelly(-gnome)?-flatpak-backend\(\)' \
     "${repo_root}/PKGBUILD" ||
     ! grep -Fq 'usr/lib/shelly/libshelly-flatpak-backend.so.1' \
     "${repo_root}/PKGBUILD"; then
