@@ -13,7 +13,7 @@ makedepends=('git' 'zig>=0.16' 'clang' 'gettext' 'vala' 'meson' 'ninja' 'flatpak
 # Source tarball from GitHub release
 source=("${pkgbase}-${pkgver}.tar.gz::https://github.com/Terrabade/Shelly-ALPM-GNOME/archive/v${pkgver}.tar.gz")
 
-sha256sums=('SKIP')
+sha256sums=('67999625288d44e95150c50bd3927c54295e85ee4d84a6025574ab3640803cdc')
 _source_dir="Shelly-ALPM-GNOME-${pkgver}"
 
 build() {
