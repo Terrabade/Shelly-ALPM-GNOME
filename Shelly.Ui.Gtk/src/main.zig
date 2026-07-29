@@ -1,6 +1,7 @@
 const std = @import("std");
 const bindings = @import("Shelly_Ui_Gtk");
 const gtk = bindings.gtk;
+const adw = bindings.adw;
 const gio = bindings.gio;
 const gdk = bindings.gdk;
 const glib = bindings.glib;
@@ -21,7 +22,9 @@ pub fn main(init: std.process.Init) void {
 
     IconDownloadService(std.heap.c_allocator, runtime.io);
 
-    const app = gtk.Application.new("com.shellyorg.shelly", .{});
+    // Libadwaita port: AdwApplication initialises libadwaita and makes the UI
+    // follow GNOME's light/dark preference and accent colour.
+    const app = adw.Application.new("com.shellyorg.shelly", .{});
     defer app.unref();
 
     const gapp = gobject.ext.as(gio.Application, app);
@@ -56,8 +59,10 @@ fn tryStopTray(io: std.Io, alloc: std.mem.Allocator) void {
     if (should_stop) _ = tray_service.end(io, alloc);
 }
 
-fn activate(app: *gtk.Application, _: ?*anyopaque) callconv(.c) void {
-    if (gtk.Application.getActiveWindow(app)) |window| {
+fn activate(app: *adw.Application, _: ?*anyopaque) callconv(.c) void {
+    const gtk_app = gobject.ext.as(gtk.Application, app);
+
+    if (gtk.Application.getActiveWindow(gtk_app)) |window| {
         gtk.Window.present(window);
         return;
     }
@@ -81,7 +86,7 @@ fn activate(app: *gtk.Application, _: ?*anyopaque) callconv(.c) void {
 
     tryStartTray(runtime.io, std.heap.c_allocator);
 
-    const window = ShellyWindow.new(app);
+    const window = ShellyWindow.new(gtk_app);
     gtk.Window.present(gobject.ext.as(gtk.Window, window));
 }
 

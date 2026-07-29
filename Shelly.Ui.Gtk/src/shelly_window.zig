@@ -34,6 +34,10 @@ const NavButton = struct {
 pub const ShellyWindow = extern struct {
     parent_instance: Parent,
 
+    // Deliberately GtkApplicationWindow, not AdwApplicationWindow: the latter has
+    // no titlebar area (it expects an AdwHeaderBar inside its content), which would
+    // leave the window with no top bar or window controls. Libadwaita styling,
+    // light/dark and accent colours all come from AdwApplication in main.zig.
     pub const Parent = gtk.ApplicationWindow;
 
     const ICON_SLOT: c_int = 24;

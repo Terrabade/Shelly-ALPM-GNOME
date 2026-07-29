@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) void {
     shelly_ui_gtk.addImport("pango1", gobject.module("pango1"));
     shelly_ui_gtk.addImport("gtk4", gobject.module("gtk4"));
     shelly_ui_gtk.addImport("gdk4", gobject.module("gdk4"));
+    shelly_ui_gtk.addImport("adw1", gobject.module("adw1"));
     shelly_ui_gtk.addImport("ShellyHttp", shelly_http.module("ShellyHttp"));
 
     const options = b.addOptions();
@@ -104,6 +105,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addCSourceFile(.{ .file = resources_c });
     exe.root_module.link_libc = true;
     exe.root_module.linkSystemLibrary("gtk4", .{});
+    exe.root_module.linkSystemLibrary("libadwaita-1", .{});
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
