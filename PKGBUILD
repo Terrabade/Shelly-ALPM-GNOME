@@ -18,7 +18,7 @@ makedepends=('git' 'pkgconf' 'gtk4' 'libadwaita' 'zig>=0.16' 'clang' 'gettext' '
 # stays down to PKGBUILD + .SRCINFO.
 source=("${pkgbase}-${pkgver}.tar.gz::https://github.com/Terrabade/Shelly-ALPM-GNOME/archive/v${pkgver}.tar.gz")
 
-sha256sums=('SKIP')
+sha256sums=('1fc9cf0a7a82c59b7b1a884717bc5522a7a72f92263a0c8156f2cee85aa49ba7')
 # GitHub sanitises '+' to '-' in the archive's root directory, so the extracted
 # tree is Shelly-ALPM-GNOME-3.0.0-9.gnome1 even though the tag is v3.0.0+9.gnome1.
 _source_dir="Shelly-ALPM-GNOME-${pkgver//+/-}"
