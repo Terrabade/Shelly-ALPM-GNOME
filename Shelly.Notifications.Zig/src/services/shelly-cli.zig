@@ -6,6 +6,8 @@ const CheckUpdates = @import("../models/update.zig").CheckUpdates;
 const runtime = @import("../runtime.zig");
 const builtin = @import("builtin");
 
+const log = std.log.scoped(.cli);
+
 pub const CliMessage = struct {
     @"$kind": []const u8 = "",
     Message: []const u8 = "",
@@ -37,7 +39,7 @@ pub const ShellyCli = struct {
         errdefer self.allocator.free(result.stderr);
 
         if (result.term != .exited or result.term.exited != 0) {
-            std.debug.print("failed: term={any} stderr='{s}' stdout='{s}'\n", .{
+            log.err("failed: term={any} stderr='{s}' stdout='{s}'", .{
                 result.term,
                 result.stderr,
                 result.stdout[0..@min(500, result.stdout.len)],

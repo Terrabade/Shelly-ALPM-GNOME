@@ -12,11 +12,13 @@ pub const alpm = struct {
     pub const archive_manager = @import("alpm/archive_manager.zig");
     pub const pacfile_manager = @import("alpm/pacfile_manager.zig");
 
+    pub const InitOptions = manager.InitOptions;
     pub const Manager = manager.Manager;
     pub const TransFlag = bindings.libalpm.TransFlag;
     pub const SigLevel = bindings.libalpm.SigLevel;
     pub const OwnedPackage = bindings.libalpm.OwnedPackage;
     pub const OwnedPackageWithUpdate = bindings.libalpm.OwnedPackageWithUpdate;
+    pub const ReverseDependencyOptions = manager.ReverseDependencyOptions;
     pub const DependencySatisfier = manager.DependencySatisfier;
     pub const RestartReport = manager.RestartReport;
     pub const AffectedProcess = manager.AffectedProcess;
@@ -62,6 +64,11 @@ pub const alpm = struct {
 
 pub const aur = @import("aur/manager.zig");
 
+pub const builder = @import("aur/builder/builder.zig");
+pub const source_pgp_verifier = @import("shared/source_pgp_verifier.zig");
+pub const source_pgp_keyring = @import("shared/source_pgp_keyring.zig");
+pub const package_signer = @import("shared/package_signer.zig");
+
 pub const flatpak = struct {
     pub const manager = @import("flatpak/manager.zig");
     pub const remote_manager = @import("flatpak/remote_manager.zig");
@@ -70,6 +77,7 @@ pub const flatpak = struct {
     pub const events = @import("flatpak/events.zig");
     pub const types = @import("flatpak/types.zig");
     pub const errors = @import("flatpak/errors.zig");
+    pub const eol = @import("flatpak/eol.zig");
 
     pub const Manager = manager.Manager;
     pub const Scope = types.Scope;
@@ -81,6 +89,9 @@ pub const flatpak = struct {
     pub const RemoteRef = types.RemoteRef;
     pub const RunningInstance = types.RunningInstance;
     pub const UnusedDependency = types.UnusedDependency;
+    pub const EolStatus = types.EolStatus;
+    pub const EolRebase = manager.EolRebase;
+    pub const EolDetection = manager.EolDetection;
     pub const RemoteManager = remote_manager.RemoteManager;
     pub const AppstreamManager = appstream_manager.AppstreamManager;
     pub const AppstreamCatalog = types.AppstreamCatalog;
@@ -128,10 +139,14 @@ pub const pkgbuild = struct {
     pub const validation = @import("pkgbuild/shared_validtor.zig");
     pub const homograph_validator = @import("pkgbuild/homograph_validator.zig");
     pub const post_install_validator = @import("pkgbuild/post_install_validator.zig");
+    pub const install_script = @import("pkgbuild/install_script.zig");
+    pub const install_script_scanner = @import("pkgbuild/install_script_scanner.zig");
 
     pub const Parser = parser.PkgbuildParser;
     pub const HomographValidator = homograph_validator.HomographValidator;
     pub const PostInstallValidator = post_install_validator.PostInstallValidator;
+    pub const InstallScript = install_script.Script;
+    pub const InstallScriptScanner = install_script_scanner.InstallScriptScanner;
 };
 
 pub const local = struct {
@@ -153,9 +168,10 @@ pub const local = struct {
 pub const operation = @import("operation_context");
 
 /// Zig 0.16 HTTP client with a compact, VPN-compatible TLS ClientHello.
-pub const HttpClient = @import("shared/http_client.zig");
+pub const HttpClient = @import("ShellyHttp");
 
 pub const shared = struct {
+    pub const archive = @import("archive");
     pub const downloader = @import("shared/downloader.zig");
     pub const list_dictionary = @import("shared/list_dictionary.zig");
     pub const xdg_paths = @import("shared/xdg_paths.zig");
@@ -166,6 +182,7 @@ pub const shared = struct {
     pub const Operation = operation.Operation;
 };
 
+pub const AlpmManagerInitOptions = alpm.InitOptions;
 pub const AlpmManager = alpm.Manager;
 pub const CacheManager = alpm.CacheManager;
 pub const PacfileManager = alpm.PacfileManager;
@@ -182,6 +199,7 @@ pub const OperationKind = operation.OperationKind;
 pub const OperationStatusLevel = operation.StatusLevel;
 pub const OperationCompletionStatus = operation.CompletionStatus;
 pub const OperationQuestion = operation.Question;
+pub const OperationPurpose = operation.QuestionPurpose;
 pub const OperationQuestionRequest = operation.QuestionRequest;
 pub const OperationQuestionResponse = operation.QuestionResponse;
 pub const OperationQuestionKind = operation.QuestionKind;
@@ -190,6 +208,7 @@ pub const OperationQuestionAttachment = operation.QuestionAttachment;
 pub const OperationReviewSeverity = operation.ReviewSeverity;
 pub const OperationReviewFinding = operation.ReviewFinding;
 pub const OperationReviewPayload = operation.ReviewPayload;
+pub const OperationPgpKeyImportPayload = operation.PgpKeyImportPayload;
 pub const OperationTransactionAction = operation.TransactionAction;
 pub const OperationTransactionPackageSource = operation.TransactionPackageSource;
 pub const OperationTransactionPackageRole = operation.TransactionPackageRole;
@@ -280,6 +299,12 @@ test "public library surface exposes package manager APIs" {
     _ = flatpak.FlatpakStatusHandler;
     _ = flatpak.FlatpakProgressHandler;
     _ = flatpak.FlatpakCancellation;
+    _ = flatpak.EolRebase;
+    _ = flatpak.EolDetection;
+    _ = flatpak.eol;
+    _ = FlatpakManager.rebase_flatpak;
+    _ = FlatpakManager.list_eol_flatpak;
+    _ = FlatpakManager.detect_eol_flatpak;
     _ = appimage.UpdateManager;
     _ = appimage.AppImage;
     _ = appimage.AppImageUpdate;
@@ -469,16 +494,24 @@ test {
     _ = @import("flatpak/errors.zig");
     _ = @import("flatpak/remote_manager.zig");
     _ = @import("flatpak/manager.zig");
+    _ = @import("flatpak/eol.zig");
     _ = @import("flatpak/appstream_manager.zig");
     _ = @import("flatpak/appstream_parser.zig");
     _ = @import("flatpak/events.zig");
     _ = @import("appimage/manager.zig");
+    _ = @import("archive");
     _ = @import("shared/downloader.zig");
+    _ = @import("shared/source_pgp_verifier.zig");
+    _ = @import("shared/source_pgp_keyring.zig");
+    _ = @import("shared/package_signer.zig");
     _ = @import("appimage/update_manager.zig");
     _ = @import("pkgbuild/pkgbuild_parser.zig");
     _ = @import("pkgbuild/post_install_validator.zig");
+    _ = @import("pkgbuild/install_script.zig");
+    _ = @import("pkgbuild/install_script_scanner.zig");
     _ = @import("pkgbuild/homograph_validator.zig");
     _ = @import("aur/manager.zig");
+    _ = @import("aur/builder/builder_test.zig");
     _ = @import("local/manager.zig");
     _ = @import("local/file_inspector.zig");
     _ = @import("local/xdg_integration.zig");

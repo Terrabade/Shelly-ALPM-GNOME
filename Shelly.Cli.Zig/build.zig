@@ -63,6 +63,21 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_module_tests.step);
     test_step.dependOn(&run_executable_tests.step);
 
+    const builder_test_module = b.createModule(.{
+        .root_source_file = b.path("src/builder_command_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    builder_test_module.addImport("Zigalpm", zigalpm);
+    builder_test_module.addOptions("build_options", build_options);
+    const builder_tests = b.addTest(.{
+        .name = "builder-command-test",
+        .root_module = builder_test_module,
+        .filters = &.{"makesrcinfo emits clean stdout and never runs lifecycle functions"},
+    });
+    const run_builder_tests = b.addRunArtifact(builder_tests);
+    test_step.dependOn(&run_builder_tests.step);
+
     const native_check_step = b.step("native-check", "Build and test the self-contained native Zig CLI");
     native_check_step.dependOn(b.getInstallStep());
     native_check_step.dependOn(&run_module_tests.step);

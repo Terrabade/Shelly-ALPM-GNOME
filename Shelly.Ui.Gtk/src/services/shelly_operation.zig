@@ -7,6 +7,40 @@ const UpdateType = @import("../models/appimage.zig").UpdateType;
 const builtin = @import("builtin");
 const runtime = @import("runtime.zig");
 
+const log = std.log.scoped(.shelly_operation);
+const proxy_environment_marker = "--proxy-environment-stdin";
+
+const ProxyEnvironmentFrame = struct {
+    @"$kind": []const u8 = "proxy.environment",
+    http_proxy: ?[]const u8 = null,
+    HTTP_PROXY: ?[]const u8 = null,
+    https_proxy: ?[]const u8 = null,
+    HTTPS_PROXY: ?[]const u8 = null,
+    all_proxy: ?[]const u8 = null,
+    ALL_PROXY: ?[]const u8 = null,
+};
+
+fn serializeProxyEnvironment(
+    allocator: std.mem.Allocator,
+    environment: *const std.process.Environ.Map,
+) !?[]u8 {
+    const frame: ProxyEnvironmentFrame = .{
+        .http_proxy = environment.get("http_proxy"),
+        .HTTP_PROXY = environment.get("HTTP_PROXY"),
+        .https_proxy = environment.get("https_proxy"),
+        .HTTPS_PROXY = environment.get("HTTPS_PROXY"),
+        .all_proxy = environment.get("all_proxy"),
+        .ALL_PROXY = environment.get("ALL_PROXY"),
+    };
+    if (frame.http_proxy == null and frame.HTTP_PROXY == null and
+        frame.https_proxy == null and frame.HTTPS_PROXY == null and
+        frame.all_proxy == null and frame.ALL_PROXY == null)
+    {
+        return null;
+    }
+    return try std.json.Stringify.valueAlloc(allocator, frame, .{});
+}
+
 pub const Event = union(enum) {
     info: struct {
         event_type: []const u8,
@@ -253,12 +287,21 @@ pub const ShellyCommands = struct {
         return argv.toOwnedSlice(alloc);
     }
 
-    pub fn install_flatpak(alloc: std.mem.Allocator, names: []const u8, remote: Scope) ![]const []const u8 {
+    pub fn install_flatpak(alloc: std.mem.Allocator, names: []const u8, remote: Scope, remote_name: []const u8) ![]const []const u8 {
+        return install_flatpak_ex(alloc, names, remote, remote_name, false);
+    }
+
+    pub fn install_flatpak_ex(alloc: std.mem.Allocator, names: []const u8, remote: Scope, remote_name: []const u8, is_runtime: bool) ![]const []const u8 {
         var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         try argv.append(alloc, "install");
         try argv.append(alloc, "flatpak");
         if (names.len > 0) try argv.append(alloc, names);
         if (remote == .user) try argv.append(alloc, "--user");
+        if (remote_name.len > 0) {
+            try argv.append(alloc, "--remote");
+            try argv.append(alloc, remote_name);
+        }
+        if (is_runtime) try argv.append(alloc, "--runtime");
         return argv.toOwnedSlice(alloc);
     }
 
@@ -350,7 +393,10 @@ pub const ShellyCommands = struct {
         return argv.toOwnedSlice(alloc);
     }
 
-    pub fn install_appimage(alloc: std.mem.Allocator, path: []const u8) ![]const []const u8 {
+    pub fn install_appimage(
+        alloc: std.mem.Allocator,
+        path: []const u8,
+    ) ![]const []const u8 {
         var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         try argv.append(alloc, "install");
         try argv.append(alloc, "appimage");
@@ -440,32 +486,49 @@ pub const ShellyOperation = struct {
         @memcpy(full[1 .. 1 + args.len], args);
         full[full.len - 1] = "--ui-mode";
 
-        for (full) |arg| {
-            std.debug.print("{s}\n", .{arg});
-        }
-
         return full;
     }
 
     pub fn start(self: *ShellyOperation, args: []const []const u8) !void {
         const full = try self.build_full_argv(args);
         defer self.allocator.free(full);
-        try self.spawn_and_read(full);
+        try self.spawn_and_read(full, null);
     }
 
     pub fn startPrivileged(self: *ShellyOperation, args: []const []const u8) !void {
         const full = try self.build_full_argv(args);
         defer self.allocator.free(full);
-        var withpk = try self.allocator.alloc([]const u8, full.len + 1);
+        const proxy_environment = try serializeProxyEnvironment(self.allocator, runtime.environ_map);
+        defer if (proxy_environment) |json| self.allocator.free(json);
+
+        const marker_count: usize = if (proxy_environment != null) 1 else 0;
+        var withpk = try self.allocator.alloc([]const u8, full.len + 1 + marker_count);
         defer self.allocator.free(withpk);
         withpk[0] = "pkexec";
-        @memcpy(withpk[1..], full);
-        try self.spawn_and_read(withpk);
+        @memcpy(withpk[1 .. 1 + full.len], full);
+        if (proxy_environment != null) withpk[withpk.len - 1] = proxy_environment_marker;
+        try self.spawn_and_read(withpk, proxy_environment);
     }
 
-    fn spawn_and_read(self: *ShellyOperation, argv: []const []const u8) !void {
-        // FIXME: Environment map is not propagated to the child process and has to be set manually when unprivileged.
+    fn spawn_and_read(
+        self: *ShellyOperation,
+        argv: []const []const u8,
+        startup_frame: ?[]const u8,
+    ) !void {
+        if (builtin.mode == .Debug) {
+            if (std.mem.join(self.allocator, " ", argv)) |command| {
+                defer self.allocator.free(command);
+                log.debug("argv: {s}", .{command});
+            } else |_| {
+                log.debug("argv: {d} arguments", .{argv.len});
+            }
+        }
+
+        // pkexec sanitizes the environment. Privileged starts restore only the
+        // proxy variables through the startup frame written below.
         self.child = try std.process.spawn(self.io, .{ .argv = argv, .stdin = .pipe, .stdout = .pipe, .stderr = .ignore, .environ_map = runtime.environ_map });
+        errdefer self.child.kill(self.io);
+        if (startup_frame) |json| try self.writeAnswerFrame(json);
         self.reader = try std.Thread.spawn(.{}, reader_loop, .{self});
     }
 
@@ -500,13 +563,15 @@ pub const ShellyOperation = struct {
             }
         }
 
-        const term = self.child.wait(self.io) catch {
+        const term = self.child.wait(self.io) catch |err| {
+            log.debug("reader_loop: wait error: {t}", .{err});
             post_done(self, 255);
             return;
         };
         const code: u8 = switch (term) {
-            .exited => |c| @intCast(c),
-            else => 255,
+            .exited => |code| code,
+            .signal => |signal| @truncate(128 + @intFromEnum(signal)),
+            .stopped, .unknown => 1,
         };
 
         post_done(self, code);
@@ -787,6 +852,12 @@ fn parseSelection(op: *ShellyOperation, json: []const u8, kind: []const u8) !?*P
             .prompt = qa.dupe(u8, e.value.QuestionText) catch "",
             .options = opts,
         } };
+    } else if (std.mem.eql(u8, kind, "q.provider")) {
+        pending.request = .{ .select_one = .{
+            .question_id = qid,
+            .prompt = qa.dupe(u8, e.value.QuestionText) catch "",
+            .options = opts,
+        } };
     } else {
         pending.request = .{ .select_one = .{
             .question_id = qid,
@@ -870,4 +941,62 @@ test "progress percentages are clamped to the GTK protocol range" {
     try std.testing.expectEqual(@as(i64, 37), clampPercent(37));
     try std.testing.expectEqual(@as(i64, 100), clampPercent(100));
     try std.testing.expectEqual(@as(i64, 100), clampPercent(101));
+}
+
+test "flatpak install argv adds --user only for user scope" {
+    const system_argv = try ShellyCommands.install_flatpak(std.testing.allocator, "org.example.App", .system, "");
+    defer std.testing.allocator.free(system_argv);
+    try std.testing.expectEqualSlices([]const u8, &.{ "install", "flatpak", "org.example.App" }, system_argv);
+
+    const user_argv = try ShellyCommands.install_flatpak(std.testing.allocator, "org.example.App", .user, "");
+    defer std.testing.allocator.free(user_argv);
+    try std.testing.expectEqualSlices([]const u8, &.{ "install", "flatpak", "org.example.App", "--user" }, user_argv);
+}
+
+test "flatpak install argv passes --remote when a remote name is supplied" {
+    const argv = try ShellyCommands.install_flatpak(std.testing.allocator, "org.example.App", .system, "flathub");
+    defer std.testing.allocator.free(argv);
+    try std.testing.expectEqualSlices([]const u8, &.{ "install", "flatpak", "org.example.App", "--remote", "flathub" }, argv);
+
+    const with_user = try ShellyCommands.install_flatpak_ex(std.testing.allocator, "org.example.App", .user, "flathub-beta", false);
+    defer std.testing.allocator.free(with_user);
+    try std.testing.expectEqualSlices([]const u8, &.{ "install", "flatpak", "org.example.App", "--user", "--remote", "flathub-beta" }, with_user);
+}
+
+test "flatpak addon install argv marks addon refs as runtimes" {
+    const argv = try ShellyCommands.install_flatpak_ex(std.testing.allocator, "org.example.App.Plugin", .user, "", true);
+    defer std.testing.allocator.free(argv);
+    try std.testing.expectEqualSlices([]const u8, &.{ "install", "flatpak", "org.example.App.Plugin", "--user", "--runtime" }, argv);
+}
+
+test "appimage install argv relies on the CLI config for the install path" {
+    const argv = try ShellyCommands.install_appimage(std.testing.allocator, "/tmp/NiceApp.AppImage");
+    defer std.testing.allocator.free(argv);
+    try std.testing.expectEqualSlices([]const u8, &.{ "install", "appimage", "/tmp/NiceApp.AppImage" }, argv);
+}
+
+test "proxy environment serialization preserves standard variable names" {
+    var environment = std.process.Environ.Map.init(std.testing.allocator);
+    defer environment.deinit();
+    try environment.put("http_proxy", "http://user:p@ss@proxy.example:443/");
+    try environment.put("HTTPS_PROXY", "http://secure-proxy.example:8080/");
+    try environment.put("ALL_PROXY", "http://fallback.example:3128/");
+    try environment.put("PATH", "/usr/bin");
+
+    const json = (try serializeProxyEnvironment(std.testing.allocator, &environment)).?;
+    defer std.testing.allocator.free(json);
+    var parsed = try std.json.parseFromSlice(ProxyEnvironmentFrame, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("proxy.environment", parsed.value.@"$kind");
+    try std.testing.expectEqualStrings("http://user:p@ss@proxy.example:443/", parsed.value.http_proxy.?);
+    try std.testing.expectEqualStrings("http://secure-proxy.example:8080/", parsed.value.HTTPS_PROXY.?);
+    try std.testing.expectEqualStrings("http://fallback.example:3128/", parsed.value.ALL_PROXY.?);
+}
+
+test "proxy environment serialization is absent without proxy variables" {
+    var environment = std.process.Environ.Map.init(std.testing.allocator);
+    defer environment.deinit();
+    try environment.put("PATH", "/usr/bin");
+    try std.testing.expect(try serializeProxyEnvironment(std.testing.allocator, &environment) == null);
 }

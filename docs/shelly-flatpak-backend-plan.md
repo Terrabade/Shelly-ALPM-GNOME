@@ -230,7 +230,7 @@ Every request should contain:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "operation_id": 42,
   "method": "list_installed",
   "arguments": {}
@@ -241,7 +241,7 @@ Every successful response should contain:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "operation_id": 42,
   "result": {}
 }
@@ -251,7 +251,7 @@ Every failed response should contain a stable error code and a display message:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "operation_id": 42,
   "error": {
     "code": "flatpak.remote_not_found",

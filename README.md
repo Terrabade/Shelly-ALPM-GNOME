@@ -114,6 +114,7 @@ The native Zig components can be built and tested independently:
 
 ```bash
 (cd Shelly.Flatpak.Backend && zig build integration-test)
+(cd Shelly.Http && zig build test)
 (cd Shelly.PackageManager && zig build test)
 (cd Shelly.Cli.Zig && zig build test)
 (cd Shelly.Ui.Gtk && zig build test)
@@ -157,6 +158,13 @@ CLI provides the same core functionality as the UI but in a scriptable, terminal
 
 Full documentation can be viewed on the [Shelly CLI Reference](https://www.seafoam-labs.org/shelly-alpm/docs/cli-reference/) page.
 
+Generate makepkg-compatible SRCINFO from a reviewed PKGBUILD without running
+its build lifecycle:
+
+```bash
+shelly build --makesrcinfo --reviewed PKGBUILD > .SRCINFO
+```
+
 ### CLI Configuration
 
 Shelly-CLI uses a JSON configuration file to customize its behavior. On the first run, it automatically creates a
@@ -176,6 +184,7 @@ Shelly is structured into several components:
 - **Shelly.Cli.Zig**: Command-line interface for terminal and UI operations.
 - **Shelly.Flatpak.Backend**: Optional versioned shared library containing all
   libflatpak/GLib-native implementation details.
+- **Shelly.Http**: Standalone HTTP client with a compatibility TLS implementation.
 - **Shelly-Notifications**: Tray service to manage notifactions the Shelly-UI.
 - **Shelly.PackageManager**: Core libalpm/AUR/AppImage logic plus the
   backend-neutral Flatpak facade and secure loader.
@@ -190,18 +199,13 @@ scripts/test-flatpak-separation.sh
 
 ```bash
 (cd Shelly.Flatpak.Backend && zig build test abi-test parity-test integration-test)
+(cd Shelly.Http && zig build test)
 (cd Shelly.PackageManager && zig build test)
 (cd Shelly.Cli.Zig && zig build test)
 ```
 
 The backend ABI, memory ownership, discovery rules, and version-bump procedure
 are documented in [docs/flatpak-backend-abi.md](docs/flatpak-backend-abi.md).
-
-### Generate CLI References
-
-```bash
-dotnet run --file help_compiler.cs
-```
 
 ## License
 

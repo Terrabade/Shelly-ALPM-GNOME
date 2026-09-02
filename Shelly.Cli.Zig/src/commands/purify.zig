@@ -1,5 +1,6 @@
 const std = @import("std");
 const Zigalpm = @import("Zigalpm");
+const test_support = @import("test_support.zig");
 const output = @import("../output/config.zig");
 const standard_single_pane = @import("../output/standard_single_pane.zig");
 const table = @import("../output/table.zig");
@@ -41,40 +42,98 @@ const Result = struct {
     }
 };
 
-const Runner = struct {
-    data: ?*anyopaque = null,
-    call: *const fn (
-        data: ?*anyopaque,
+const Real = struct {
+    pub fn run(
+        _: Real,
         context: *runtime.RuntimeContext,
         operation_context: *Zigalpm.OperationContext,
         backend: Backend,
         options: Options,
-    ) anyerror!Result,
-};
+    ) !Result {
+        switch (backend) {
+            .standard => {
+                const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{
+                    .use_root = true,
+                    .operation_context = operation_context,
+                });
+                defer manager.deinit();
+                manager.setOperationContext(operation_context);
+                defer manager.setOperationContext(null);
+                const planning = options.plan_only or options.dry_run;
 
-const RunnerAdapter = struct {
-    runner: Runner,
-    backend: Backend,
-    options: Options,
-    result: ?Result = null,
+                if (!planning and options.cache_versions != null) {
+                    const cache_plan = options.cache_plan orelse return PurifyError.CachePlanMissing;
+                    var cache_manager = Zigalpm.alpm.CacheManager.init(
+                        context.allocator,
+                        context.io,
+                        .{
+                            .cache_directory = cache_plan.cache_directory,
+                            .handle = manager.handle,
+                        },
+                    );
+                    cache_manager.setOperationContext(operation_context);
+                    _ = try cache_manager.execute_cache_removal_plan(cache_plan);
+                }
 
-    fn call(
-        data: ?*anyopaque,
-        context: *runtime.RuntimeContext,
-        operation_context: *Zigalpm.OperationContext,
-    ) !void {
-        const self: *RunnerAdapter = @ptrCast(@alignCast(data.?));
-        self.result = try self.runner.call(
-            self.runner.data,
-            context,
-            operation_context,
-            self.backend,
-            self.options,
-        );
+                var result: Result = .{
+                    .targets = try manager.purify(planning, options.orphans, true),
+                    .owns_targets = true,
+                };
+                errdefer result.deinit(context.allocator);
+
+                if (planning) {
+                    if (options.cache_versions) |keep| {
+                        var cache_manager = Zigalpm.alpm.CacheManager.init(
+                            context.allocator,
+                            context.io,
+                            .{
+                                .cache_directory = manager.config.cache_directory,
+                                .handle = manager.handle,
+                            },
+                        );
+                        cache_manager.setOperationContext(operation_context);
+                        var cache_plan = try cache_manager.plan_cache_cleanup(.{
+                            .keep = keep,
+                            .dry_run = options.dry_run,
+                        });
+                        errdefer cache_plan.deinit(context.allocator);
+                        try appendCacheTargets(context.allocator, &result, &cache_plan);
+                        result.cache_plan = cache_plan;
+                    }
+                }
+                return result;
+            },
+            .flatpak => {
+                var manager = Zigalpm.FlatpakManager{ .allocator = context.allocator, .io = context.io };
+                defer manager.deinit();
+                try manager.setOperationContext(operation_context);
+                defer manager.setOperationContext(null) catch {};
+                if (options.plan_only or options.dry_run) {
+                    const dependencies = try manager.list_unused_dependencies();
+                    defer Zigalpm.flatpak.UnusedDependency.deinitSlice(context.allocator, dependencies);
+                    const targets = try context.allocator.alloc([:0]const u8, dependencies.len);
+                    var initialized: usize = 0;
+                    errdefer {
+                        for (targets[0..initialized]) |target| context.allocator.free(target);
+                        context.allocator.free(targets);
+                    }
+                    for (dependencies, targets) |dependency, *target| {
+                        target.* = try std.fmt.allocPrintSentinel(
+                            context.allocator,
+                            "[{s}] {s}",
+                            .{ scopeName(dependency.scope), dependency.reference },
+                            0,
+                        );
+                        initialized += 1;
+                    }
+                    return .{ .targets = targets, .owns_targets = true };
+                }
+                if (!try manager.remove_unused_dependencies()) return PurifyError.BackendFailed;
+                return .{};
+            },
+        }
     }
 };
-
-const real_runner: Runner = .{ .call = runReal };
 
 pub fn dispatch(
     context: *runtime.RuntimeContext,
@@ -88,14 +147,14 @@ pub fn dispatch(
         };
         if (elevated_exit) |exit_code| return exit_code;
     }
-    return dispatchWithRunner(context, invocation, real_runner);
+    return dispatchWithRunner(context, invocation, Real{});
 }
 
 fn dispatchWithRunner(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
-) !?u8 {
+    runner: anytype,
+) anyerror!?u8 {
     const backend = backendForPath(invocation.command.path) orelse return null;
     const options = optionsFor(invocation);
     var plan = buildPlan(context, backend, options, runner) catch |err| {
@@ -123,14 +182,13 @@ fn buildPlan(
     context: *runtime.RuntimeContext,
     backend: Backend,
     options: Options,
-    runner: Runner,
-) !Result {
+    runner: anytype,
+) anyerror!Result {
     var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
     defer operation_context.deinit();
     var plan_options = options;
     plan_options.plan_only = true;
-    return runner.call(
-        runner.data,
+    return runner.run(
         context,
         &operation_context,
         backend,
@@ -199,8 +257,8 @@ fn executeWithRunner(
     invocation: *const parser.Invocation,
     backend: Backend,
     options: Options,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     if (invocation.globals.ui_mode)
         return executeUi(context, invocation, backend, options, runner);
     if (invocation.globals.json and invocation.globals.no_confirm)
@@ -213,19 +271,38 @@ fn executeStandard(
     invocation: *const parser.Invocation,
     backend: Backend,
     options: Options,
-    runner: Runner,
-) !u8 {
-    var adapter: RunnerAdapter = .{
-        .runner = runner,
-        .backend = backend,
-        .options = options,
+    runner: anytype,
+) anyerror!u8 {
+    const RunnerAdapter = struct {
+        runner: @TypeOf(runner),
+        backend: Backend,
+        options: Options,
+        result: ?Result = null,
+
+        pub fn run(
+            self: *@This(),
+            runtime_context: *runtime.RuntimeContext,
+            operation_context: *Zigalpm.OperationContext,
+            _: *const parser.Invocation,
+        ) !void {
+            self.result = try self.runner.run(
+                runtime_context,
+                operation_context,
+                self.backend,
+                self.options,
+            );
+        }
     };
+    var adapter: RunnerAdapter = .{ .runner = runner, .backend = backend, .options = options };
     defer if (adapter.result) |*result| result.deinit(context.allocator);
     const succeeded = try standard_single_pane.output(
         context,
         openingMessage(backend, options),
         invocation.globals.no_confirm,
-        .{ .data = &adapter, .call = RunnerAdapter.call },
+        &adapter,
+        invocation,
+        null,
+        null,
     );
     if (!succeeded) return 1;
     if (adapter.result == null) return 1;
@@ -237,8 +314,8 @@ fn executeQuiet(
     invocation: *const parser.Invocation,
     backend: Backend,
     options: Options,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
     context.attachTransactionLog(&operation_context);
     defer operation_context.deinit();
@@ -247,8 +324,7 @@ fn executeQuiet(
         defer operation_context.setQuestionHandler(null);
     }
 
-    var result = runner.call(
-        runner.data,
+    var result = runner.run(
         context,
         &operation_context,
         backend,
@@ -266,8 +342,8 @@ fn executeUi(
     invocation: *const parser.Invocation,
     backend: Backend,
     options: Options,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
     context.attachTransactionLog(&operation_context);
     defer operation_context.deinit();
@@ -288,8 +364,7 @@ fn executeUi(
     try output.writeAlpmInfoFrame(context, "TransactionStart", openingMessage(backend, options));
     try ui_operation.flush(context);
 
-    var result = runner.call(
-        runner.data,
+    var result = runner.run(
         context,
         &operation_context,
         backend,
@@ -307,100 +382,6 @@ fn executeUi(
     try output.writeAlpmInfoFrame(context, "TransactionDone", successMessage(backend, options));
     try ui_operation.flush(context);
     return if (reporter.failed()) 1 else 0;
-}
-
-fn runReal(
-    _: ?*anyopaque,
-    context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
-    backend: Backend,
-    options: Options,
-) !Result {
-    switch (backend) {
-        .standard => {
-            const manager = try Zigalpm.AlpmManager.init(
-                context.allocator,
-                context.environ,
-                null,
-                true,
-                null,
-            );
-            defer manager.deinit();
-            manager.setOperationContext(operation_context);
-            defer manager.setOperationContext(null);
-            const planning = options.plan_only or options.dry_run;
-
-            if (!planning and options.cache_versions != null) {
-                const cache_plan = options.cache_plan orelse return PurifyError.CachePlanMissing;
-                var cache_manager = Zigalpm.alpm.CacheManager.init(
-                    context.allocator,
-                    context.io,
-                    .{
-                        .cache_directory = cache_plan.cache_directory,
-                        .handle = manager.handle,
-                    },
-                );
-                cache_manager.setOperationContext(operation_context);
-                _ = try cache_manager.execute_cache_removal_plan(cache_plan);
-            }
-
-            var result: Result = .{
-                .targets = try manager.purify(planning, options.orphans, true),
-                .owns_targets = true,
-            };
-            errdefer result.deinit(context.allocator);
-
-            if (planning) {
-                if (options.cache_versions) |keep| {
-                    var cache_manager = Zigalpm.alpm.CacheManager.init(
-                        context.allocator,
-                        context.io,
-                        .{
-                            .cache_directory = manager.config.cache_directory,
-                            .handle = manager.handle,
-                        },
-                    );
-                    cache_manager.setOperationContext(operation_context);
-                    var cache_plan = try cache_manager.plan_cache_cleanup(.{
-                        .keep = keep,
-                        .dry_run = options.dry_run,
-                    });
-                    errdefer cache_plan.deinit(context.allocator);
-                    try appendCacheTargets(context.allocator, &result, &cache_plan);
-                    result.cache_plan = cache_plan;
-                }
-            }
-            return result;
-        },
-        .flatpak => {
-            var manager = Zigalpm.FlatpakManager{ .allocator = context.allocator, .io = context.io };
-            defer manager.deinit();
-            try manager.setOperationContext(operation_context);
-            defer manager.setOperationContext(null) catch {};
-            if (options.plan_only or options.dry_run) {
-                const dependencies = try manager.list_unused_dependencies();
-                defer Zigalpm.flatpak.UnusedDependency.deinitSlice(context.allocator, dependencies);
-                const targets = try context.allocator.alloc([:0]const u8, dependencies.len);
-                var initialized: usize = 0;
-                errdefer {
-                    for (targets[0..initialized]) |target| context.allocator.free(target);
-                    context.allocator.free(targets);
-                }
-                for (dependencies, targets) |dependency, *target| {
-                    target.* = try std.fmt.allocPrintSentinel(
-                        context.allocator,
-                        "[{s}] {s}",
-                        .{ scopeName(dependency.scope), dependency.reference },
-                        0,
-                    );
-                    initialized += 1;
-                }
-                return .{ .targets = targets, .owns_targets = true };
-            }
-            if (!try manager.remove_unused_dependencies()) return PurifyError.BackendFailed;
-            return .{};
-        },
-    }
 }
 
 fn appendCacheTargets(
@@ -499,11 +480,9 @@ fn writePlan(
     for (targets, rows) |target, *row|
         row.* = try storage.allocator().dupe([]const u8, &.{target});
     try table.write(
-        context.allocator,
-        context.stdout,
+        context,
         &.{"Package"},
         rows,
-        output.supportsAnsi(context),
     );
 }
 
@@ -687,63 +666,44 @@ test "purify long forms and shortcodes route with standard modifiers" {
 }
 
 test "purify confirmation is default deny" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
     var stdin = std.Io.Reader.fixed("maybe\nyes\n");
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdin = &stdin,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    tc.context.stdin = &stdin;
 
-    try std.testing.expect(try confirmPurify(&context));
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, stdout.writer.buffered(), "(y/N)"));
+    try std.testing.expect(try confirmPurify(&tc.context));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, tc.stdout.writer.buffered(), "(y/N)"));
 
-    stdout.writer.end = 0;
+    tc.stdout.writer.end = 0;
     var declined = std.Io.Reader.fixed("\n");
-    context.stdin = &declined;
-    try std.testing.expect(!try confirmPurify(&context));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Operation cancelled.") != null);
+    tc.context.stdin = &declined;
+    try std.testing.expect(!try confirmPurify(&tc.context));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Operation cancelled.") != null);
 }
 
 test "destructive purify shows its plan before confirmation and mutates only after acceptance" {
     const spec = @import("../cli/spec.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "purify", "standard", "--orphans", "--cache",
     });
     var stdin = std.Io.Reader.fixed("n\n");
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdin = &stdin,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    tc.context.stdin = &stdin;
     const Capture = struct {
         plan_calls: usize = 0,
         mutation_calls: usize = 0,
 
-        fn run(
-            data: ?*anyopaque,
+        pub fn run(
+            self: *@This(),
             runtime_context: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             _: Backend,
             options: Options,
         ) !Result {
-            const self: *@This() = @ptrCast(@alignCast(data.?));
             if (options.plan_only) {
                 self.plan_calls += 1;
                 try std.testing.expect(options.orphans);
@@ -769,59 +729,48 @@ test "destructive purify shows its plan before confirmation and mutates only aft
         }
     };
     var capture: Capture = .{};
-    const runner: Runner = .{ .data = &capture, .call = Capture.run };
 
     try std.testing.expectEqual(
         @as(?u8, 0),
-        try dispatchWithRunner(&context, &outcome.dispatch, runner),
+        try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture),
     );
     try std.testing.expectEqual(@as(usize, 1), capture.plan_calls);
     try std.testing.expectEqual(@as(usize, 0), capture.mutation_calls);
-    const declined_output = stdout.writer.buffered();
+    const declined_output = tc.stdout.writer.buffered();
     const plan_index = std.mem.indexOf(u8, declined_output, "cached-one").?;
     const prompt_index = std.mem.indexOf(u8, declined_output, "Proceed with purify?").?;
     try std.testing.expect(plan_index < prompt_index);
 
-    stdout.writer.end = 0;
+    tc.stdout.writer.end = 0;
     var accepted = std.Io.Reader.fixed("yes\n");
-    context.stdin = &accepted;
+    tc.context.stdin = &accepted;
     capture = .{};
     try std.testing.expectEqual(
         @as(?u8, 0),
-        try dispatchWithRunner(&context, &outcome.dispatch, runner),
+        try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture),
     );
     try std.testing.expectEqual(@as(usize, 1), capture.plan_calls);
     try std.testing.expectEqual(@as(usize, 1), capture.mutation_calls);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Transaction complete") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Transaction complete") != null);
 }
 
 test "empty purify plans skip confirmation and backend mutation" {
     const spec = @import("../cli/spec.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{ "purify", "flatpak" });
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "purify", "flatpak" });
     const Capture = struct {
         calls: usize = 0,
 
-        fn run(
-            data: ?*anyopaque,
+        pub fn run(
+            self: *@This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             _: Backend,
             options: Options,
         ) !Result {
-            const self: *@This() = @ptrCast(@alignCast(data.?));
             self.calls += 1;
             try std.testing.expect(options.plan_only);
             return .{};
@@ -831,42 +780,32 @@ test "empty purify plans skip confirmation and backend mutation" {
 
     try std.testing.expectEqual(
         @as(?u8, 0),
-        try dispatchWithRunner(&context, &outcome.dispatch, .{ .data = &capture, .call = Capture.run }),
+        try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture),
     );
     try std.testing.expectEqual(@as(usize, 1), capture.calls);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "No packages found") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Proceed with purify?") == null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "No packages found") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Proceed with purify?") == null);
 }
 
 test "no-confirm JSON emits one plan before quiet execution" {
     const spec = @import("../cli/spec.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "purify", "standard", "--json", "--no-confirm",
     });
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
     const Capture = struct {
         calls: usize = 0,
 
-        fn run(
-            data: ?*anyopaque,
+        pub fn run(
+            self: *@This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             _: Backend,
             options: Options,
         ) !Result {
-            const self: *@This() = @ptrCast(@alignCast(data.?));
             self.calls += 1;
             return if (options.plan_only)
                 .{ .targets = &.{"bad-cache.pkg.tar.zst"} }
@@ -878,38 +817,28 @@ test "no-confirm JSON emits one plan before quiet execution" {
 
     try std.testing.expectEqual(
         @as(?u8, 0),
-        try dispatchWithRunner(&context, &outcome.dispatch, .{ .data = &capture, .call = Capture.run }),
+        try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture),
     );
-    try std.testing.expectEqualStrings("[\"bad-cache.pkg.tar.zst\"]\n", stdout.writer.buffered());
+    try std.testing.expectEqualStrings("[\"bad-cache.pkg.tar.zst\"]\n", tc.stdout.writer.buffered());
     try std.testing.expectEqual(@as(usize, 2), capture.calls);
 }
 
 test "routes purify backends and preserves standard result formats" {
     const spec = @import("../cli/spec.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
     const Capture = struct {
         calls: usize = 0,
 
-        fn run(
-            data: ?*anyopaque,
+        pub fn run(
+            self: *@This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             backend: Backend,
             options: Options,
         ) !Result {
-            const self: *@This() = @ptrCast(@alignCast(data.?));
             self.calls += 1;
             if (options.plan_only) {
                 if (backend == .standard) {
@@ -922,52 +851,42 @@ test "routes purify backends and preserves standard result formats" {
         }
     };
     var capture: Capture = .{};
-    const runner: Runner = .{ .data = &capture, .call = Capture.run };
 
-    var outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    var outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "purify", "standard", "--dry-run", "--orphans", "--json",
     });
     try std.testing.expectEqual(
         @as(?u8, 0),
-        try dispatchWithRunner(&context, &outcome.dispatch, runner),
+        try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture),
     );
     try std.testing.expectEqualStrings(
         "[\"orphan-one\",\"bad-cache.pkg.tar.zst\"]\n",
-        stdout.writer.buffered(),
+        tc.stdout.writer.buffered(),
     );
 
-    stdout.writer.end = 0;
-    outcome = try parser.parse(arena.allocator(), &manifest, &.{ "purify", "flatpak", "--no-confirm" });
+    tc.stdout.writer.end = 0;
+    outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "purify", "flatpak", "--no-confirm" });
     try std.testing.expectEqual(
         @as(?u8, 0),
-        try dispatchWithRunner(&context, &outcome.dispatch, runner),
+        try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture),
     );
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Transaction complete") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "runtime/org.example.Platform") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Transaction complete") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "runtime/org.example.Platform") != null);
     try std.testing.expectEqual(@as(usize, 3), capture.calls);
 }
 
 test "purify UI emits result and transaction frames" {
     const spec = @import("../cli/spec.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "purify", "standard", "--ui-mode", "--dry-run",
     });
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
     const Success = struct {
-        fn run(
-            _: ?*anyopaque,
+        pub fn run(
+            _: @This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             _: Backend,
@@ -979,9 +898,9 @@ test "purify UI emits result and transaction frames" {
 
     try std.testing.expectEqual(
         @as(?u8, 0),
-        try dispatchWithRunner(&context, &outcome.dispatch, .{ .call = Success.run }),
+        try dispatchWithRunner(&tc.context, &outcome.dispatch, Success{}),
     );
-    const rendered = stdout.writer.buffered();
+    const rendered = tc.stdout.writer.buffered();
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, rendered, "[JSON]"));
 
     var iterator = std.mem.splitSequence(u8, rendered, "[JSON]");
@@ -991,7 +910,7 @@ test "purify UI emits result and transaction frames" {
         const end = std.mem.indexOf(u8, framed, "[/JSON]") orelse continue;
         const encoded = framed[0..end];
         const size = try std.base64.standard.Decoder.calcSizeForSlice(encoded);
-        const decoded = try arena.allocator().alloc(u8, size);
+        const decoded = try tc.arena.allocator().alloc(u8, size);
         try std.base64.standard.Decoder.decode(decoded, encoded);
         if (std.mem.indexOf(u8, decoded, "[\"orphan-one\"]") != null) found_targets = true;
     }
@@ -1000,44 +919,34 @@ test "purify UI emits result and transaction frames" {
 
 test "purify UI presents the plan before a compatible confirmation frame" {
     const spec = @import("../cli/spec.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "purify", "flatpak", "--ui-mode",
     });
     const response_json = "{\"$kind\":\"a.yesno\",\"QuestionId\":\"1\",\"Accept\":true}";
     const encoded_size = std.base64.standard.Encoder.calcSize(response_json.len);
-    const encoded = try arena.allocator().alloc(u8, encoded_size);
+    const encoded = try tc.arena.allocator().alloc(u8, encoded_size);
     const encoded_response = std.base64.standard.Encoder.encode(encoded, response_json);
     const response_frame = try std.fmt.allocPrint(
-        arena.allocator(),
+        tc.arena.allocator(),
         "[JSON]{s}[/JSON]\n",
         .{encoded_response},
     );
     var stdin = std.Io.Reader.fixed(response_frame);
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdin = &stdin,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    tc.context.stdin = &stdin;
     const Capture = struct {
         mutation_calls: usize = 0,
 
-        fn run(
-            data: ?*anyopaque,
+        pub fn run(
+            self: *@This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             _: Backend,
             options: Options,
         ) !Result {
-            const self: *@This() = @ptrCast(@alignCast(data.?));
             if (options.plan_only)
                 return .{ .targets = &.{"[user] runtime/org.example.Platform/x86_64/stable"} };
             self.mutation_calls += 1;
@@ -1049,14 +958,14 @@ test "purify UI presents the plan before a compatible confirmation frame" {
     try std.testing.expectEqual(
         @as(?u8, 0),
         try dispatchWithRunner(
-            &context,
+            &tc.context,
             &outcome.dispatch,
-            .{ .data = &capture, .call = Capture.run },
+            &capture,
         ),
     );
     try std.testing.expectEqual(@as(usize, 1), capture.mutation_calls);
 
-    var iterator = std.mem.splitSequence(u8, stdout.writer.buffered(), "[JSON]");
+    var iterator = std.mem.splitSequence(u8, tc.stdout.writer.buffered(), "[JSON]");
     _ = iterator.next();
     var frame_index: usize = 0;
     var plan_index: ?usize = null;
@@ -1065,7 +974,7 @@ test "purify UI presents the plan before a compatible confirmation frame" {
         const end = std.mem.indexOf(u8, framed, "[/JSON]") orelse continue;
         const payload = framed[0..end];
         const size = try std.base64.standard.Decoder.calcSizeForSlice(payload);
-        const decoded = try arena.allocator().alloc(u8, size);
+        const decoded = try tc.arena.allocator().alloc(u8, size);
         try std.base64.standard.Decoder.decode(decoded, payload);
         if (std.mem.indexOf(u8, decoded, "runtime/org.example.Platform") != null)
             plan_index = frame_index;
@@ -1081,23 +990,14 @@ test "purify UI presents the plan before a compatible confirmation frame" {
 
 test "purify backend failures return nonzero" {
     const spec = @import("../cli/spec.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{ "purify", "flatpak" });
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "purify", "flatpak" });
     const Failure = struct {
-        fn run(
-            _: ?*anyopaque,
+        pub fn run(
+            _: @This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             _: Backend,
@@ -1109,6 +1009,6 @@ test "purify backend failures return nonzero" {
 
     try std.testing.expectEqual(
         @as(?u8, 1),
-        try dispatchWithRunner(&context, &outcome.dispatch, .{ .call = Failure.run }),
+        try dispatchWithRunner(&tc.context, &outcome.dispatch, Failure{}),
     );
 }

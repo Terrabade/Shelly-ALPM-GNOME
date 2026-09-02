@@ -1,5 +1,6 @@
 const std = @import("std");
 const Zigalpm = @import("Zigalpm");
+const test_support = @import("test_support.zig");
 const config_manager = @import("../config/manager.zig");
 const config_model = @import("../config/model.zig");
 const output = @import("../output/config.zig");
@@ -15,33 +16,38 @@ const standard_command_path = "shelly sync standard";
 const appimage_command_path = "shelly sync appimage";
 const flatpak_command_path = "shelly sync flatpak";
 
-const Runner = struct {
-    data: ?*anyopaque = null,
-    call: *const fn (
-        data: ?*anyopaque,
+const Standard = struct {
+    pub fn run(
+        _: Standard,
         context: *runtime.RuntimeContext,
         operation_context: *Zigalpm.OperationContext,
         invocation: *const parser.Invocation,
-    ) anyerror!void,
-};
-
-const StandardRunnerAdapter = struct {
-    runner: Runner,
-    invocation: *const parser.Invocation,
-
-    fn call(
-        data: ?*anyopaque,
-        context: *runtime.RuntimeContext,
-        operation_context: *Zigalpm.OperationContext,
     ) !void {
-        const self: *StandardRunnerAdapter = @ptrCast(@alignCast(data.?));
-        try self.runner.call(self.runner.data, context, operation_context, self.invocation);
+        return runRealStandardSync(context, operation_context, invocation);
     }
 };
 
-const real_standard_runner: Runner = .{ .call = runRealStandardSync };
-const real_appimage_runner: Runner = .{ .call = runRealAppImageSync };
-const real_flatpak_runner: Runner = .{ .call = runRealFlatpakSync };
+const AppImage = struct {
+    pub fn run(
+        _: AppImage,
+        context: *runtime.RuntimeContext,
+        operation_context: *Zigalpm.OperationContext,
+        invocation: *const parser.Invocation,
+    ) !void {
+        return runRealAppImageSync(context, operation_context, invocation);
+    }
+};
+
+const Flatpak = struct {
+    pub fn run(
+        _: Flatpak,
+        context: *runtime.RuntimeContext,
+        operation_context: *Zigalpm.OperationContext,
+        invocation: *const parser.Invocation,
+    ) !void {
+        return runRealFlatpakSync(context, operation_context, invocation);
+    }
+};
 
 pub fn dispatch(
     context: *runtime.RuntimeContext,
@@ -56,6 +62,10 @@ pub fn dispatch(
         if (flatpakRemoteValidationFailure(invocation)) |message|
             return try reportValidationFailure(context, invocation, message);
     }
+    if (is_appimage) {
+        if (appImageValidationFailure(invocation)) |message|
+            return try reportValidationFailure(context, invocation, message);
+    }
 
     const system_remote_mutation = is_flatpak and isFlatpakRemoteMutation(invocation) and
         booleanOption(invocation, "--system", true);
@@ -67,23 +77,19 @@ pub fn dispatch(
         if (elevated_exit) |exit_code| return exit_code;
     }
 
-    return try executeWithRunner(
-        context,
-        invocation,
-        if (is_standard)
-            real_standard_runner
-        else if (is_appimage)
-            real_appimage_runner
-        else
-            real_flatpak_runner,
-    );
+    if (is_standard)
+        return try executeWithRunner(context, invocation, Standard{})
+    else if (is_appimage)
+        return try executeWithRunner(context, invocation, AppImage{})
+    else
+        return try executeWithRunner(context, invocation, Flatpak{});
 }
 
 fn executeWithRunner(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     return if (invocation.globals.ui_mode)
         executeUi(context, invocation, runner)
     else
@@ -93,14 +99,16 @@ fn executeWithRunner(
 fn executeStandard(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
-) !u8 {
-    var adapter: StandardRunnerAdapter = .{ .runner = runner, .invocation = invocation };
+    runner: anytype,
+) anyerror!u8 {
     const succeeded = try standard_single_pane.output(
         context,
         openingMessage(invocation),
         invocation.globals.no_confirm,
-        .{ .data = &adapter, .call = StandardRunnerAdapter.call },
+        runner,
+        invocation,
+        null,
+        null,
     );
     return if (succeeded) 0 else 1;
 }
@@ -108,62 +116,24 @@ fn executeStandard(
 fn executeUi(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
-) !u8 {
-    var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
-    context.attachTransactionLog(&operation_context);
-    defer operation_context.deinit();
-    if (invocation.globals.no_confirm) {
-        operation_context.setQuestionHandler(.{ .function = ui_operation.acceptQuestionDefaults });
-        defer operation_context.setQuestionHandler(null);
-    }
-    var reporter: ui_operation.Reporter = .{ .context = context };
-    const event_subscription = try operation_context.subscribe(.{
-        .function = ui_operation.Reporter.handle,
-        .data = &reporter,
-    });
-    defer _ = operation_context.unsubscribe(event_subscription);
-
-    try output.writeAlpmInfoFrame(context, "TransactionStart", openingMessage(invocation));
-    try ui_operation.flush(context);
-
-    runner.call(runner.data, context, &operation_context, invocation) catch |err| {
-        if (Zigalpm.flatpak.errors.unavailableMessage(err)) |message| {
-            try output.writeErrorFrame(context, message);
-            try output.writeAlpmInfoFrame(context, "TransactionFailed", "Sync failed.");
-            try ui_operation.flush(context);
-            return 1;
-        }
-        const message = try std.fmt.allocPrint(context.allocator, "Sync failed: {t}", .{err});
-        defer context.allocator.free(message);
-        try output.writeErrorFrame(context, message);
-        try output.writeAlpmInfoFrame(context, "TransactionFailed", "Sync failed.");
-        try ui_operation.flush(context);
-        return 1;
-    };
-
-    try output.writeAlpmInfoFrame(
-        context,
-        "TransactionDone",
-        successMessage(invocation),
-    );
-    try ui_operation.flush(context);
-    return if (reporter.failed()) 1 else 0;
+    runner: anytype,
+) anyerror!u8 {
+    return ui_operation.runTransaction(context, invocation, .{
+        .opening = openingMessage(invocation),
+        .success_message = successMessage(invocation),
+        .failure_message = "Sync failed.",
+        .failure_label = "Sync failed",
+        .question_mode = .accept_defaults,
+        .report_flatpak_unavailable = true,
+    }, runner);
 }
 
 fn runRealStandardSync(
-    _: ?*anyopaque,
     context: *runtime.RuntimeContext,
     operation_context: *Zigalpm.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
-    const manager = try Zigalpm.AlpmManager.init(
-        context.allocator,
-        context.environ,
-        null,
-        true,
-        null,
-    );
+    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
@@ -172,11 +142,22 @@ fn runRealStandardSync(
 }
 
 fn runRealAppImageSync(
-    _: ?*anyopaque,
     context: *runtime.RuntimeContext,
     operation_context: *Zigalpm.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
+    if (elevation.isRoot()) {
+        const args = try appimageSyncArgs(context.allocator, invocation);
+        defer context.allocator.free(args);
+        if (try elevation.runAsInvokingUser(context, args)) |exit_code| {
+            if (exit_code != 0) return error.AppImageMetadataSyncFailed;
+            return;
+        }
+        // A direct root invocation has no user to re-launch as. In that
+        // case, continue with root's own user-scoped AppImage store; only
+        // return early when a child was actually launched above.
+    }
+
     const configure_updates = optionEnabled(invocation, "--configure-updates") or
         invocation.positionals.len == 3;
     if (optionEnabled(invocation, "--configure-updates") and invocation.positionals.len != 3)
@@ -271,7 +252,6 @@ fn runRealAppImageSync(
 }
 
 fn runRealFlatpakSync(
-    _: ?*anyopaque,
     context: *runtime.RuntimeContext,
     operation_context: *Zigalpm.OperationContext,
     invocation: *const parser.Invocation,
@@ -358,6 +338,27 @@ fn optionEnabled(invocation: *const parser.Invocation, name: []const u8) bool {
     return false;
 }
 
+fn appimageSyncArgs(
+    allocator: std.mem.Allocator,
+    invocation: *const parser.Invocation,
+) ![]const []const u8 {
+    var args: std.ArrayList([]const u8) = .empty;
+    errdefer args.deinit(allocator);
+    try args.appendSlice(allocator, &.{ "sync", "appimage" });
+    if (invocation.globals.no_confirm)
+        try args.append(allocator, "--no-confirm");
+    if (invocation.globals.json)
+        try args.append(allocator, "--json");
+    if (invocation.globals.ui_mode)
+        try args.append(allocator, "--ui-mode");
+    if (optionEnabled(invocation, "--configure-updates"))
+        try args.append(allocator, "--configure-updates");
+    if (optionEnabled(invocation, "--prerelease"))
+        try args.append(allocator, "--prerelease");
+    for (invocation.positionals) |positional| try args.append(allocator, positional);
+    return args.toOwnedSlice(allocator);
+}
+
 fn optionValue(invocation: *const parser.Invocation, name: []const u8) ?[]const u8 {
     for (invocation.options) |option| {
         if (std.mem.eql(u8, option.name, name)) return option.value;
@@ -411,6 +412,24 @@ fn flatpakRemoteValidationFailure(invocation: *const parser.Invocation) ?[]const
     }
     if (hasOption(invocation, "--remote-url") or hasOption(invocation, "--gpg-verify"))
         return "Flatpak remote remove cannot use --remote-url or --gpg-verify.";
+    return null;
+}
+
+fn appImageValidationFailure(invocation: *const parser.Invocation) ?[]const u8 {
+    const configure_updates = optionEnabled(invocation, "--configure-updates") or
+        invocation.positionals.len == 3;
+    if (!configure_updates or invocation.positionals.len != 3) return null;
+
+    const update_type = parseAppImageUpdateType(invocation.positionals[2]) orelse return null;
+    Zigalpm.appimage.UpdateManager.validate_update_configuration(
+        invocation.positionals[1],
+        update_type,
+    ) catch return switch (update_type) {
+        .forgejo => "Invalid Forgejo URL. Use http(s)://host/owner/repo or http(s)://host/owner/repo/releases.",
+        .github, .gitlab, .codeberg => "Invalid repository. Use owner/repo.",
+        .static_url => "Invalid static update URL. Use an http:// or https:// URL.",
+        .none => "Invalid AppImage update configuration.",
+    };
     return null;
 }
 
@@ -494,101 +513,79 @@ fn emitAppImageInfo(operation_context: *Zigalpm.OperationContext, message: []con
 }
 
 test "sync forwards force and applies no-confirm through the shared operation context" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "sync",
         "--force",
         "--no-confirm",
     });
     try std.testing.expect(outcome == .dispatch);
 
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
-    const Capture = struct { force: bool = false, no_confirm: bool = false };
-    var capture: Capture = .{};
-    const runner: Runner = .{
-        .data = &capture,
-        .call = struct {
-            fn run(
-                data: ?*anyopaque,
-                runtime_context: *runtime.RuntimeContext,
-                operation_context: *Zigalpm.OperationContext,
-                invocation: *const parser.Invocation,
-            ) !void {
-                const observed: *Capture = @ptrCast(@alignCast(data.?));
-                observed.force = optionEnabled(invocation, "--force");
-                var operation = operation_context.begin(.{ .backend = .alpm, .kind = .sync });
-                defer operation.finish(.success);
-                var response = try operation.ask(.{ .kind = .confirmation, .prompt = "Continue?" });
-                defer response.deinit(runtime_context.allocator);
-                observed.no_confirm = response.response == .accepted;
-            }
-        }.run,
-    };
+    const Capture = struct {
+        force: bool = false,
+        no_confirm: bool = false,
 
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
+        pub fn run(
+            self: *@This(),
+            runtime_context: *runtime.RuntimeContext,
+            operation_context: *Zigalpm.OperationContext,
+            invocation: *const parser.Invocation,
+        ) !void {
+            self.force = optionEnabled(invocation, "--force");
+            var operation = operation_context.begin(.{ .backend = .alpm, .kind = .sync });
+            defer operation.finish(.success);
+            var response = try operation.ask(.{ .kind = .confirmation, .prompt = "Continue?" });
+            defer response.deinit(runtime_context.allocator);
+            self.no_confirm = response.response == .accepted;
+        }
+    };
+    var capture: Capture = .{};
+
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, &capture));
     try std.testing.expect(capture.force);
     try std.testing.expect(capture.no_confirm);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), ":: Synchronizing package databases...") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), ":: Transaction complete.") != null);
-    try std.testing.expectEqual(@as(usize, 0), stderr.writer.buffered().len);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), ":: Synchronizing package databases...") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), ":: Transaction complete.") != null);
+    try std.testing.expectEqual(@as(usize, 0), tc.stderr.writer.buffered().len);
 }
 
 test "Flatpak sync uses the AppStream path and standard non-UI lifecycle" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{ "sync", "flatpak" });
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "sync", "flatpak" });
     try std.testing.expect(outcome == .dispatch);
 
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
-    const Capture = struct { called: bool = false, force: bool = true };
-    var capture: Capture = .{};
-    const runner: Runner = .{
-        .data = &capture,
-        .call = struct {
-            fn run(
-                data: ?*anyopaque,
-                _: *runtime.RuntimeContext,
-                operation_context: *Zigalpm.OperationContext,
-                invocation: *const parser.Invocation,
-            ) !void {
-                const observed: *Capture = @ptrCast(@alignCast(data.?));
-                observed.called = true;
-                observed.force = optionEnabled(invocation, "--force");
-                var operation = operation_context.begin(.{ .backend = .flatpak, .kind = .update });
-                defer operation.finish(.success);
-                operation.status(.success, "Flatpak AppStream catalog updated", "flatpak.appstream.updated", null);
-            }
-        }.run,
-    };
+    const Capture = struct {
+        called: bool = false,
+        force: bool = true,
 
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
+        pub fn run(
+            self: *@This(),
+            _: *runtime.RuntimeContext,
+            operation_context: *Zigalpm.OperationContext,
+            invocation: *const parser.Invocation,
+        ) !void {
+            self.called = true;
+            self.force = optionEnabled(invocation, "--force");
+            var operation = operation_context.begin(.{ .backend = .flatpak, .kind = .update });
+            defer operation.finish(.success);
+            operation.status(.success, "Flatpak AppStream catalog updated", "flatpak.appstream.updated", null);
+        }
+    };
+    var capture: Capture = .{};
+
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, &capture));
     try std.testing.expect(capture.called);
     try std.testing.expect(!capture.force);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), ":: Synchronizing Flatpak AppStream metadata...") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Flatpak AppStream catalog updated") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), ":: Transaction complete.") != null);
-    try std.testing.expectEqual(@as(usize, 0), stderr.writer.buffered().len);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), ":: Synchronizing Flatpak AppStream metadata...") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Flatpak AppStream catalog updated") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), ":: Transaction complete.") != null);
+    try std.testing.expectEqual(@as(usize, 0), tc.stderr.writer.buffered().len);
 }
 
 test "Flatpak remote sync parses add and remove scopes and defaults" {
@@ -659,10 +656,11 @@ test "Flatpak remote sync validates operation-specific options" {
 }
 
 test "Flatpak remote sync uses the shared transaction lifecycle" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "sync",
         "flatpak",
         "remote",
@@ -673,97 +671,72 @@ test "Flatpak remote sync uses the shared transaction lifecycle" {
         "--system",
         "false",
     });
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
+    const Capture = struct {
+        called: bool = false,
+
+        pub fn run(
+            self: *@This(),
+            _: *runtime.RuntimeContext,
+            operation_context: *Zigalpm.OperationContext,
+            invocation: *const parser.Invocation,
+        ) !void {
+            self.called = true;
+            try std.testing.expect(isFlatpakRemoteOperation(invocation, "add"));
+            var operation = operation_context.begin(.{
+                .backend = .flatpak,
+                .kind = .configure,
+                .subject = invocation.positionals[2],
+            });
+            defer operation.finish(.success);
+            operation.status(.success, "Flatpak remote added", "flatpak.remote.added", null);
+        }
     };
-    const Capture = struct { called: bool = false };
     var capture: Capture = .{};
-    const runner: Runner = .{
-        .data = &capture,
-        .call = struct {
-            fn run(
-                data: ?*anyopaque,
-                _: *runtime.RuntimeContext,
-                operation_context: *Zigalpm.OperationContext,
-                invocation: *const parser.Invocation,
-            ) !void {
-                const observed: *Capture = @ptrCast(@alignCast(data.?));
-                observed.called = true;
-                try std.testing.expect(isFlatpakRemoteOperation(invocation, "add"));
-                var operation = operation_context.begin(.{
-                    .backend = .flatpak,
-                    .kind = .configure,
-                    .subject = invocation.positionals[2],
-                });
-                defer operation.finish(.success);
-                operation.status(.success, "Flatpak remote added", "flatpak.remote.added", null);
-            }
-        }.run,
-    };
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, &capture));
     try std.testing.expect(capture.called);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Adding Flatpak remote") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Flatpak remote added") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Adding Flatpak remote") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Flatpak remote added") != null);
 }
 
 test "AppImage sync routes long and shortcode forms with an optional package" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
 
-    var outcome = try parser.parse(arena.allocator(), &manifest, &.{ "sync", "appimage", "Editor" });
+    var outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "sync", "appimage", "Editor" });
     try std.testing.expect(outcome == .dispatch);
     try std.testing.expectEqualStrings(appimage_command_path, outcome.dispatch.command.path);
     try std.testing.expectEqualStrings("Editor", outcome.dispatch.positionals[0]);
 
     const translation = try @import("../cli/shortcodes.zig").translate(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "-Yi", "Editor" },
     );
-    outcome = try parser.parse(arena.allocator(), &manifest, translation.arguments().?);
+    outcome = try parser.parse(tc.arena.allocator(), &manifest, translation.arguments().?);
     try std.testing.expect(outcome == .dispatch);
     try std.testing.expectEqualStrings(appimage_command_path, outcome.dispatch.command.path);
     try std.testing.expectEqualStrings("Editor", outcome.dispatch.positionals[0]);
 
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
+    const Capture = struct {
+        package: ?[]const u8 = null,
+
+        pub fn run(
+            self: *@This(),
+            _: *runtime.RuntimeContext,
+            operation_context: *Zigalpm.OperationContext,
+            invocation: *const parser.Invocation,
+        ) !void {
+            self.package = invocation.positionals[0];
+            emitAppImageInfo(operation_context, "Selected AppImage metadata synchronized.");
+        }
     };
-    const Capture = struct { package: ?[]const u8 = null };
     var capture: Capture = .{};
-    const runner: Runner = .{
-        .data = &capture,
-        .call = struct {
-            fn run(
-                data: ?*anyopaque,
-                _: *runtime.RuntimeContext,
-                operation_context: *Zigalpm.OperationContext,
-                invocation: *const parser.Invocation,
-            ) !void {
-                const observed: *Capture = @ptrCast(@alignCast(data.?));
-                observed.package = invocation.positionals[0];
-                emitAppImageInfo(operation_context, "Selected AppImage metadata synchronized.");
-            }
-        }.run,
-    };
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, &capture));
     try std.testing.expectEqualStrings("Editor", capture.package.?);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Synchronizing AppImage metadata") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Selected AppImage metadata synchronized") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Synchronizing AppImage metadata") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Selected AppImage metadata synchronized") != null);
 }
 
 test "AppImage sync accepts the update URL overload and compatibility shortcode" {
@@ -801,7 +774,36 @@ test "AppImage sync accepts the update URL overload and compatibility shortcode"
     try std.testing.expect(optionEnabled(&outcome.dispatch, "--prerelease"));
 }
 
-test "real AppImage runner persists update URL type and prerelease policy" {
+test "AppImage configuration validation accepts Forgejo release pages and rejects unrelated paths" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const manifest = try spec.Manifest.load(arena.allocator());
+
+    var outcome = try parser.parse(arena.allocator(), &manifest, &.{
+        "sync",
+        "appimage",
+        "Editor",
+        "https://git.eden-emu.dev/eden-ci/nightly/releases",
+        "Forgejo",
+    });
+    try std.testing.expect(outcome == .dispatch);
+    try std.testing.expect(appImageValidationFailure(&outcome.dispatch) == null);
+
+    outcome = try parser.parse(arena.allocator(), &manifest, &.{
+        "sync",
+        "appimage",
+        "Editor",
+        "https://git.eden-emu.dev/eden-ci/nightly/actions",
+        "Forgejo",
+    });
+    try std.testing.expect(outcome == .dispatch);
+    try std.testing.expectEqualStrings(
+        "Invalid Forgejo URL. Use http(s)://host/owner/repo or http(s)://host/owner/repo/releases.",
+        appImageValidationFailure(&outcome.dispatch).?,
+    );
+}
+
+test "real AppImage runner persists and normalizes Forgejo release-page URLs" {
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
     var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
@@ -842,21 +844,102 @@ test "real AppImage runner persists update URL type and prerelease policy" {
 
     const manifest = try spec.Manifest.load(allocator);
     const outcome = try parser.parse(allocator, &manifest, &.{
-        "sync", "appimage", "Editor", "owner/repository", "GitHub", "--prerelease",
+        "sync",
+        "appimage",
+        "Editor",
+        "https://git.eden-emu.dev/eden-ci/nightly/releases",
+        "Forgejo",
+        "--prerelease",
     });
     try std.testing.expectEqual(
         @as(u8, 0),
-        try executeWithRunner(&context, &outcome.dispatch, real_appimage_runner),
+        try executeWithRunner(&context, &outcome.dispatch, AppImage{}),
     );
 
     const app_images = try appimage_manager.getAppImagesFromLocalDb();
     defer appimage_manager.freeAppImages(app_images);
     try std.testing.expectEqual(@as(usize, 1), app_images.len);
-    try std.testing.expectEqual(Zigalpm.appimage.UpdateType.github, app_images[0].update_type);
-    try std.testing.expectEqualStrings("owner", app_images[0].repo_owner.?);
-    try std.testing.expectEqualStrings("repository", app_images[0].repo_name.?);
+    try std.testing.expectEqual(Zigalpm.appimage.UpdateType.forgejo, app_images[0].update_type);
+    try std.testing.expectEqualStrings(
+        "https://git.eden-emu.dev/eden-ci/nightly",
+        app_images[0].update_url,
+    );
+    try std.testing.expect(app_images[0].repo_owner == null);
+    try std.testing.expect(app_images[0].repo_name == null);
     try std.testing.expect(app_images[0].allow_prerelease);
     try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Successfully configured updates for Editor") != null);
+}
+
+test "real AppImage runner rejects invalid Forgejo paths without reporting success" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_length = try temporary.dir.realPath(std.testing.io, &path_buffer);
+    const root = path_buffer[0..path_length];
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const home = try std.fs.path.join(allocator, &.{ root, "home" });
+    const install_directory = try std.fs.path.join(allocator, &.{ home, ".local", "bin" });
+    const local_db_path = try std.fs.path.join(allocator, &.{ root, "shelly", "appimage-metadata-v2.db" });
+    try std.Io.Dir.cwd().createDirPath(std.testing.io, install_directory);
+
+    var environment = std.process.Environ.Map.init(allocator);
+    try environment.put("HOME", home);
+    try environment.put("XDG_CONFIG_HOME", root);
+    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer stdout.deinit();
+    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer stderr.deinit();
+    var context: runtime.RuntimeContext = .{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+        .environment = &environment,
+    };
+    var appimage_manager = Zigalpm.AppImageManager{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .environ = context.environ,
+        .install_directory = install_directory,
+        .local_db_path = local_db_path,
+    };
+    defer appimage_manager.deinit();
+    try appimage_manager.addAppImageToLocalDb(.{
+        .name = "Editor",
+        .update_url = "https://old.example/owner/repository",
+        .update_type = .forgejo,
+    });
+
+    const manifest = try spec.Manifest.load(allocator);
+    const outcome = try parser.parse(allocator, &manifest, &.{
+        "sync",
+        "appimage",
+        "Editor",
+        "https://git.eden-emu.dev/eden-ci/nightly/actions",
+        "Forgejo",
+    });
+    try std.testing.expectEqual(
+        @as(u8, 1),
+        try executeWithRunner(&context, &outcome.dispatch, AppImage{}),
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, stdout.writer.buffered(), "InvalidAppImageUpdateConfiguration") != null,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, stdout.writer.buffered(), "Successfully configured updates") == null,
+    );
+
+    const app_images = try appimage_manager.getAppImagesFromLocalDb();
+    defer appimage_manager.freeAppImages(app_images);
+    try std.testing.expectEqual(@as(usize, 1), app_images.len);
+    try std.testing.expectEqual(Zigalpm.appimage.UpdateType.forgejo, app_images[0].update_type);
+    try std.testing.expectEqualStrings(
+        "https://old.example/owner/repository",
+        app_images[0].update_url,
+    );
 }
 
 test "real AppImage runner reports a missing install directory without failing" {
@@ -890,7 +973,7 @@ test "real AppImage runner reports a missing install directory without failing" 
 
     try std.testing.expectEqual(
         @as(u8, 0),
-        try executeWithRunner(&context, &outcome.dispatch, real_appimage_runner),
+        try executeWithRunner(&context, &outcome.dispatch, AppImage{}),
     );
     try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "directory does not exist. No AppImages to sync") != null);
 }
@@ -958,70 +1041,50 @@ test "sync flushes its initial status before starting the backend" {
         .stdout = &stdout.interface,
         .stderr = &stderr.writer,
     };
-    const Capture = struct { writer: *TrackingWriter, initial_status_was_flushed: bool = false };
-    var capture: Capture = .{ .writer = &stdout };
-    const runner: Runner = .{
-        .data = &capture,
-        .call = struct {
-            fn run(data: ?*anyopaque, _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: *const parser.Invocation) !void {
-                const observed: *Capture = @ptrCast(@alignCast(data.?));
-                observed.initial_status_was_flushed = observed.writer.flush_count > 0;
-            }
-        }.run,
-    };
+    const Capture = struct {
+        writer: *TrackingWriter,
+        initial_status_was_flushed: bool = false,
 
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
+        pub fn run(self: *@This(), _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: *const parser.Invocation) !void {
+            self.initial_status_was_flushed = self.writer.flush_count > 0;
+        }
+    };
+    var capture: Capture = .{ .writer = &stdout };
+
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, &capture));
     try std.testing.expect(capture.initial_status_was_flushed);
 }
 
 test "sync reports backend failures and returns a failure exit code" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{ "sync", "standard" });
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "sync", "standard" });
     try std.testing.expect(outcome == .dispatch);
 
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
-    const runner: Runner = .{ .call = struct {
-        fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: *const parser.Invocation) !void {
+    const Failure = struct {
+        pub fn run(_: @This(), _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: *const parser.Invocation) !void {
             return error.TestSyncFailure;
         }
-    }.run };
+    };
 
-    try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&context, &outcome.dispatch, runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "error: TestSyncFailure") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), ":: Transaction failed.") != null);
-    try std.testing.expectEqual(@as(usize, 0), stderr.writer.buffered().len);
+    try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&tc.context, &outcome.dispatch, Failure{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "error: TestSyncFailure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), ":: Transaction failed.") != null);
+    try std.testing.expectEqual(@as(usize, 0), tc.stderr.writer.buffered().len);
 }
 
 test "sync UI mode emits transaction frames" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{ "sync", "standard", "--ui-mode" });
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "sync", "standard", "--ui-mode" });
     try std.testing.expect(outcome == .dispatch);
 
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
-    const runner: Runner = .{ .call = struct {
-        fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, operation_context: *Zigalpm.OperationContext, _: *const parser.Invocation) !void {
+    const Download = struct {
+        pub fn run(_: @This(), _: *runtime.RuntimeContext, operation_context: *Zigalpm.OperationContext, _: *const parser.Invocation) !void {
             var operation = operation_context.begin(.{
                 .backend = .download,
                 .kind = .download,
@@ -1030,9 +1093,37 @@ test "sync UI mode emits transaction frames" {
             defer operation.finish(.success);
             operation.progress(.{ .bytes_completed = 50, .bytes_total = 100 });
         }
-    }.run };
+    };
 
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
-    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, stdout.writer.buffered(), "[JSON]"));
-    try std.testing.expectEqual(@as(usize, 0), stderr.writer.buffered().len);
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, Download{}));
+    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, tc.stdout.writer.buffered(), "[JSON]"));
+    try std.testing.expectEqual(@as(usize, 0), tc.stderr.writer.buffered().len);
+}
+
+test "appimage sync relaunch forwards positionals and configure-updates options" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const manifest = try spec.Manifest.load(arena.allocator());
+
+    const plain_outcome = try parser.parse(arena.allocator(), &manifest, &.{
+        "sync", "appimage", "Editor",
+    });
+    try std.testing.expect(plain_outcome == .dispatch);
+    const plain_args = try appimageSyncArgs(std.testing.allocator, &plain_outcome.dispatch);
+    defer std.testing.allocator.free(plain_args);
+    const expected_plain = [_][]const u8{ "sync", "appimage", "Editor" };
+    try std.testing.expectEqualSlices([]const u8, &expected_plain, plain_args);
+
+    const full_outcome = try parser.parse(arena.allocator(), &manifest, &.{
+        "sync",   "appimage",                            "--no-confirm", "--configure-updates", "--prerelease",
+        "Editor", "https://example.com/Editor.AppImage", "github",
+    });
+    try std.testing.expect(full_outcome == .dispatch);
+    const full_args = try appimageSyncArgs(std.testing.allocator, &full_outcome.dispatch);
+    defer std.testing.allocator.free(full_args);
+    const expected_full = [_][]const u8{
+        "sync",   "appimage",                            "--no-confirm", "--configure-updates", "--prerelease",
+        "Editor", "https://example.com/Editor.AppImage", "github",
+    };
+    try std.testing.expectEqualSlices([]const u8, &expected_full, full_args);
 }

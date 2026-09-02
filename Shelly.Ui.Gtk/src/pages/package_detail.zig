@@ -227,6 +227,8 @@ pub const PackageDetail = extern struct {
         if (package.BuildDate.len > 0) add_spec_row(p.spec_box, translations._("Build Date"), package.BuildDate);
         if (package.InstallReason.len > 0) add_spec_row(p.spec_box, translations._("Install Reason"), package.InstallReason);
 
+        if (package.Url) |u| if (u.len > 0) add_url_spec_row(p.spec_box, translations._("URL"), u);
+
         clear_box(p.sections_box);
         const alloc = (p.arena orelse return).allocator();
 
@@ -234,9 +236,15 @@ pub const PackageDetail = extern struct {
         add_spec_list(p.spec_box, alloc, translations._("Provides"), package.Provides);
         add_spec_list(p.spec_box, alloc, translations._("Conflicts"), package.Conflicts);
 
-        add_list_section(p.sections_box, self, translations._("Depends"), package.Depends);
-        add_list_section(p.sections_box, self, translations._("Optional Depends"), package.OptDepends);
-        add_list_section(p.sections_box, self, translations._("Required By"), package.RequiredBy);
+        add_list_section(p.sections_box, self, translations._("Depends"), package.Depends, null);
+        add_list_section(
+            p.sections_box,
+            self,
+            translations._("Optional Depends"),
+            package.OptDepends,
+            package.OptDependsInstalled,
+        );
+        add_list_section(p.sections_box, self, translations._("Required By"), package.RequiredBy, null);
     }
 
     fn add_spec_row(box: *gtk.Box, label: []const u8, value: []const u8) void {
@@ -257,6 +265,29 @@ pub const PackageDetail = extern struct {
         gtk.Label.setXalign(val, 1);
         gtk.Label.setEllipsize(val, .end);
         gtk.Widget.addCssClass(val.as(gtk.Widget), "spec-value");
+        gtk.Box.append(row, val.as(gtk.Widget));
+        gtk.Box.append(box, row.as(gtk.Widget));
+    }
+
+    fn add_url_spec_row(box: *gtk.Box, label: []const u8, value: []const u8) void {
+        var lbuf: [64]u8 = undefined;
+        const row = gtk.Box.new(.horizontal, 8);
+        gtk.Widget.setMarginTop(row.as(gtk.Widget), 10);
+        gtk.Widget.setMarginBottom(row.as(gtk.Widget), 10);
+        gtk.Widget.addCssClass(row.as(gtk.Widget), "spec-row");
+        const key = gtk.Label.new(c_string.cstr(&lbuf, label));
+        gtk.Widget.setHalign(key.as(gtk.Widget), .start);
+        gtk.Label.setXalign(key, 0);
+        gtk.Widget.addCssClass(key.as(gtk.Widget), "dim-label");
+        gtk.Box.append(row, key.as(gtk.Widget));
+        var mbuf: [256]u8 = undefined;
+        const markup = std.fmt.bufPrintZ(&mbuf, "<a href=\"{s}\">{s}</a>", .{ value, value }) catch return;
+        const val = gtk.Label.new(null);
+        gtk.Label.setMarkup(val, markup);
+        gtk.Widget.setHalign(val.as(gtk.Widget), .end);
+        gtk.Widget.setHexpand(val.as(gtk.Widget), 1);
+        gtk.Label.setXalign(val, 1);
+        gtk.Label.setEllipsize(val, .end);
         gtk.Box.append(row, val.as(gtk.Widget));
         gtk.Box.append(box, row.as(gtk.Widget));
     }
@@ -297,7 +328,13 @@ pub const PackageDetail = extern struct {
         gtk.Box.append(box, row.as(gtk.Widget));
     }
 
-    fn add_list_section(box: *gtk.Box, page: *PackageDetail, title: []const u8, items: []const []const u8) void {
+    fn add_list_section(
+        box: *gtk.Box,
+        page: *PackageDetail,
+        title: []const u8,
+        items: []const []const u8,
+        installed_states: ?[]const bool,
+    ) void {
         if (items.len == 0) return;
 
         var buf: [64]u8 = undefined;
@@ -309,8 +346,12 @@ pub const PackageDetail = extern struct {
         const list = gtk.Box.new(.vertical, 0);
         gtk.Widget.setMarginStart(list.as(gtk.Widget), 8);
 
-        for (items) |item| {
+        for (items, 0..) |item, index| {
             const dep_name = strip_version(item);
+            const is_installed = if (installed_states) |states|
+                index < states.len and states[index]
+            else
+                false;
 
             const navigable = std.mem.indexOf(u8, dep_name, ".so") == null and dep_name.len > 0;
 
@@ -322,25 +363,33 @@ pub const PackageDetail = extern struct {
                 var ibuf: [256]u8 = undefined;
                 const lbl = gtk.Label.new(c_string.cstr(&ibuf, item));
                 gtk.Widget.setHalign(lbl.as(gtk.Widget), .start);
+                gtk.Widget.setHexpand(lbl.as(gtk.Widget), 1);
                 gtk.Label.setXalign(lbl, 0);
                 gtk.Label.setEllipsize(lbl, .end);
                 gtk.Widget.addCssClass(lbl.as(gtk.Widget), "spec-value");
-                gtk.Button.setChild(row_btn, lbl.as(gtk.Widget));
+                const row_content = gtk.Box.new(.horizontal, 8);
+                gtk.Box.append(row_content, lbl.as(gtk.Widget));
+                append_installed_indicator(row_content, is_installed);
+                gtk.Button.setChild(row_btn, row_content.as(gtk.Widget));
                 const name_owned = std.heap.c_allocator.dupeZ(u8, dep_name) catch continue;
                 gobject.Object.setDataFull(row_btn.as(gobject.Object), "dep-name", name_owned.ptr, &free_dep_name);
                 gobject.Object.setData(row_btn.as(gobject.Object), "page", page);
                 _ = gtk.Button.signals.clicked.connect(row_btn, ?*anyopaque, &on_dep_clicked, null, .{});
                 gtk.Box.append(list, row_btn.as(gtk.Widget));
             } else {
+                const row = gtk.Box.new(.horizontal, 8);
                 var ibuf: [256]u8 = undefined;
                 const lbl = gtk.Label.new(c_string.cstr(&ibuf, item));
                 gtk.Widget.setHalign(lbl.as(gtk.Widget), .start);
+                gtk.Widget.setHexpand(lbl.as(gtk.Widget), 1);
                 gtk.Label.setXalign(lbl, 0);
                 gtk.Label.setEllipsize(lbl, .end);
                 gtk.Widget.addCssClass(lbl.as(gtk.Widget), "spec-value");
                 gtk.Widget.addCssClass(lbl.as(gtk.Widget), "dim-label");
                 gtk.Widget.addCssClass(lbl.as(gtk.Widget), "dep-row-static");
-                gtk.Box.append(list, lbl.as(gtk.Widget));
+                gtk.Box.append(row, lbl.as(gtk.Widget));
+                append_installed_indicator(row, is_installed);
+                gtk.Box.append(list, row.as(gtk.Widget));
             }
         }
 
@@ -357,6 +406,13 @@ pub const PackageDetail = extern struct {
         }
 
         gtk.Box.append(box, expander.as(gtk.Widget));
+    }
+
+    fn append_installed_indicator(row: *gtk.Box, installed: bool) void {
+        if (!installed) return;
+        const icon = gtk.Image.newFromIconName("object-select-symbolic");
+        gtk.Widget.setTooltipText(icon.as(gtk.Widget), translations._("Installed"));
+        gtk.Box.append(row, icon.as(gtk.Widget));
     }
 
     fn free_dep_name(ptr: ?*anyopaque) callconv(.c) void {

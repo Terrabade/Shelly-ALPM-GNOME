@@ -30,7 +30,7 @@ pub const AurPage = extern struct {
         list_store: *gio.ListStore,
         selection: *gtk.SingleSelection,
         search_entry: *gtk.SearchEntry,
-        installed_toggle: *gtk.ToggleButton,
+        installed_toggle: *gtk.CheckButton,
         install_button: *gtk.Button,
         grid_overlay: *gtk.Overlay,
         loading_box: *gtk.Box,
@@ -136,13 +136,24 @@ pub const AurPage = extern struct {
         p.aur_detail = detail;
         gtk.Revealer.setChild(p.detail_revealer, detail.as(gtk.Widget));
 
+        attachSorter(p.check_column, sorters.boolSorter(AurPackageObject, &AurPackageObject.isSelected));
         attachSorter(p.name_column, sorters.stringSorter(AurPackageObject, &AurPackageObject.getName));
         attachSorter(p.version_column, sorters.stringSorter(AurPackageObject, &AurPackageObject.getVersion));
         attachSorter(p.votes_column, sorters.numericSorter(AurPackageObject, &AurPackageObject.getNumVotes));
         attachSorter(p.popularity_column, sorters.numericSorter(AurPackageObject, &AurPackageObject.getPopularity));
 
+        const group = gio.SimpleActionGroup.new();
+        const action = gio.SimpleAction.new("focus", null);
+        _ = gio.SimpleAction.signals.activate.connect(action, *Self, &onFocusSearch, self, .{});
+        gio.ActionMap.addAction(group.as(gio.ActionMap), action.as(gio.Action));
+        gtk.Widget.insertActionGroup(self.as(gtk.Widget), "search", group.as(gio.ActionGroup));
+
         self.update_selection_ui();
         support.connectLifecycle(Self, self);
+    }
+
+    fn onFocusSearch(_: *gio.SimpleAction, _: ?*glib.Variant, self: *Self) callconv(.c) void {
+        _ = gtk.Widget.grabFocus(self.priv().search_entry.as(gtk.Widget));
     }
 
     fn dispose(self: *Self) callconv(.c) void {
@@ -264,7 +275,7 @@ pub const AurPage = extern struct {
             fn setup(_: *gtk.SignalListItemFactory, item: *gobject.Object, _: ?*anyopaque) callconv(.c) void {
                 const cell = gobject.ext.cast(gtk.ColumnViewCell, item) orelse return;
                 const label = gtk.Label.new("");
-                gtk.Widget.setHalign(label.as(gtk.Widget), .end);
+                gtk.Widget.setHalign(label.as(gtk.Widget), .start);
                 gtk.ColumnViewCell.setChild(cell, label.as(gtk.Widget));
             }
             fn bind(_: *gtk.SignalListItemFactory, item: *gobject.Object, _: ?*anyopaque) callconv(.c) void {
@@ -600,7 +611,11 @@ pub const AurPage = extern struct {
     }
 
     fn post_result(page: *Self, packages: []AurPackage, arena: *std.heap.ArenaAllocator, generation: u64) void {
-        const result = std.heap.c_allocator.create(LoadResult) catch return;
+        const result = std.heap.c_allocator.create(LoadResult) catch {
+            arena.deinit();
+            std.heap.c_allocator.destroy(arena);
+            return;
+        };
         result.* = .{
             .page = page,
             .packages = packages,
@@ -698,7 +713,7 @@ pub const AurPage = extern struct {
         const p = self.priv();
 
         if (p.installed_mode) {
-            gtk.ToggleButton.setActive(p.installed_toggle, 0);
+            gtk.CheckButton.setActive(p.installed_toggle, 0);
         }
 
         const text = self.search_text();
@@ -719,7 +734,7 @@ pub const AurPage = extern struct {
 
     fn on_installed_toggled(self: *Self) callconv(.c) void {
         const p = self.priv();
-        p.installed_mode = gtk.ToggleButton.getActive(p.installed_toggle) != 0;
+        p.installed_mode = gtk.CheckButton.getActive(p.installed_toggle) != 0;
 
         if (p.installed_mode) {
             self.start_load(.installed);

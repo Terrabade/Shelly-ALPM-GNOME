@@ -41,6 +41,10 @@ pub fn init(
     const base: std.Io.Dir = .cwd();
 
     try keydir.ensureKeyringDir(base, io, keyring_path);
+    // GnuPG selects its public-key storage format on first use. Match
+    // pacman-key by creating pubring.gpg before invoking GnuPG so libalpm can
+    // read the resulting keyring directly.
+    try keyfiles.ensureAlpmKeyringFiles(base, io, keyring_path);
 
     const gpg_cli: gpg.Gpg = .{ .io = io, .homedir = keyring_path };
 

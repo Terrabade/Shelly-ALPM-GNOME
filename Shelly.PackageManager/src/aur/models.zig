@@ -25,6 +25,8 @@ pub const Package = struct {
     groups: ?[][]u8 = null,
     licenses: ?[][]u8 = null,
     keywords: ?[][]u8 = null,
+    required_by: ?[][]const u8 = null,
+    optional_for: ?[][]const u8 = null,
     explicit: bool = false,
 
     pub fn deinit(self: *Package, allocator: std.mem.Allocator) void {
@@ -45,6 +47,8 @@ pub const Package = struct {
         freeStringList(allocator, self.groups);
         freeStringList(allocator, self.licenses);
         freeStringList(allocator, self.keywords);
+        freeConstStringList(allocator, self.required_by);
+        freeConstStringList(allocator, self.optional_for);
         self.* = undefined;
     }
 
@@ -254,6 +258,13 @@ fn freeOptional(allocator: std.mem.Allocator, value: ?[]u8) void {
 }
 
 fn freeStringList(allocator: std.mem.Allocator, list: ?[][]u8) void {
+    if (list) |items| {
+        for (items) |item| allocator.free(item);
+        allocator.free(items);
+    }
+}
+
+fn freeConstStringList(allocator: std.mem.Allocator, list: ?[][]const u8) void {
     if (list) |items| {
         for (items) |item| allocator.free(item);
         allocator.free(items);

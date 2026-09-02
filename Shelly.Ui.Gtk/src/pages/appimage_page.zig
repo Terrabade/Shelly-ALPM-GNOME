@@ -20,6 +20,49 @@ const appimage_icon = @import("../helpers/appimage_icon.zig");
 const c_string = @import("../helpers/c_string.zig");
 const translations = @import("../helpers/translations.zig");
 
+fn uriComponentText(component: std.Uri.Component) []const u8 {
+    return switch (component) {
+        .raw => |value| value,
+        .percent_encoded => |value| value,
+    };
+}
+
+fn isValidHttpUrl(value: []const u8) bool {
+    const uri = std.Uri.parse(value) catch return false;
+    return (std.ascii.eqlIgnoreCase(uri.scheme, "http") or
+        std.ascii.eqlIgnoreCase(uri.scheme, "https")) and uri.host != null;
+}
+
+fn isValidForgejoRepositoryUrl(value: []const u8) bool {
+    const uri = std.Uri.parse(value) catch return false;
+    if (!std.ascii.eqlIgnoreCase(uri.scheme, "http") and
+        !std.ascii.eqlIgnoreCase(uri.scheme, "https"))
+    {
+        return false;
+    }
+    if (uri.host == null or uri.user != null or uri.password != null or
+        uri.query != null or uri.fragment != null)
+    {
+        return false;
+    }
+
+    const host = uriComponentText(uri.host.?);
+    var path = uriComponentText(uri.path);
+    if (host.len == 0 or path.len == 0 or path[0] != '/') return false;
+    if (path.len > 1 and path[path.len - 1] == '/') path = path[0 .. path.len - 1];
+    if (std.mem.count(u8, path, "/") == 3 and std.mem.endsWith(u8, path, "/releases"))
+        path = path[0 .. path.len - "/releases".len];
+    if (std.mem.count(u8, path, "/") != 2) return false;
+
+    const owner_and_repo = path[1..];
+    const separator = std.mem.indexOfScalar(u8, owner_and_repo, '/') orelse return false;
+    const owner = owner_and_repo[0..separator];
+    const repo = owner_and_repo[separator + 1 ..];
+    return owner.len > 0 and repo.len > 0 and
+        !std.mem.eql(u8, owner, ".") and !std.mem.eql(u8, owner, "..") and
+        !std.mem.eql(u8, repo, ".") and !std.mem.eql(u8, repo, "..");
+}
+
 pub const AppImagePage = extern struct {
     parent_instance: Parent,
 
@@ -61,6 +104,7 @@ pub const AppImagePage = extern struct {
         apps: []AppImage = &.{},
         updates: []AppImageUpdate = &.{},
         arena: ?*std.heap.ArenaAllocator = null,
+        updates_arena: ?*std.heap.ArenaAllocator = null,
         selected_index: ?usize = null,
         generation: u64 = 0,
         loaded: bool = false,
@@ -68,9 +112,15 @@ pub const AppImagePage = extern struct {
         var offset: c_int = 0;
     };
 
-    const LoadResult = struct {
+    const AppsResult = struct {
         page: *Self,
         apps: []AppImage,
+        arena: *std.heap.ArenaAllocator,
+        generation: u64,
+    };
+
+    const UpdatesResult = struct {
+        page: *Self,
         updates: []AppImageUpdate,
         arena: *std.heap.ArenaAllocator,
         generation: u64,
@@ -121,29 +171,46 @@ pub const AppImagePage = extern struct {
         gtk.DropDown.setModel(p.update_type_drop, type_strings.as(gio.ListModel));
         type_strings.as(gobject.Object).unref();
 
+        _ = gobject.Object.signals.notify.connect(
+            p.update_type_drop.as(gobject.Object),
+            *Self,
+            &on_update_type_changed,
+            self,
+            .{ .detail = "selected" },
+        );
+
         const drop_target = gtk.DropTarget.new(gio.File.getGObjectType(), .{ .copy = true });
         _ = gtk.DropTarget.signals.drop.connect(drop_target, *Self, &on_file_drop, self, .{});
         _ = gtk.DropTarget.signals.enter.connect(drop_target, *Self, &on_drag_enter, self, .{});
         _ = gtk.DropTarget.signals.leave.connect(drop_target, *Self, &on_drag_leave, self, .{});
         gtk.Widget.addController(p.scrolled_list.as(gtk.Widget), drop_target.as(gtk.EventController));
 
+        const group = gio.SimpleActionGroup.new();
+        const action = gio.SimpleAction.new("focus", null);
+        _ = gio.SimpleAction.signals.activate.connect(action, *Self, &onFocusSearch, self, .{});
+        gio.ActionMap.addAction(group.as(gio.ActionMap), action.as(gio.Action));
+        gtk.Widget.insertActionGroup(self.as(gtk.Widget), "search", group.as(gio.ActionGroup));
+
         support.connectLifecycle(Self, self);
         _ = gtk.ListBox.signals.row_activated.connect(p.app_list, *Self, &onRowActivated, self, .{});
+    }
+
+    fn onFocusSearch(_: *gio.SimpleAction, _: ?*glib.Variant, self: *Self) callconv(.c) void {
+        _ = gtk.Widget.grabFocus(self.priv().search_entry.as(gtk.Widget));
     }
 
     pub fn onMap(self: *Self) void {
         const p = self.priv();
         if (p.loaded) return;
         p.loaded = true;
-        p.generation += 1;
-        const thread = std.Thread.spawn(.{}, load_worker, .{ self, p.generation }) catch return;
-        thread.detach();
+        self.reload();
     }
 
     pub fn onUnmap(self: *Self) void {
         const p = self.priv();
         if (!p.loaded) return;
         p.loaded = false;
+        p.generation += 1;
 
         gtk.ListBox.removeAll(p.app_list);
 
@@ -151,6 +218,11 @@ pub const AppImagePage = extern struct {
             a.deinit();
             std.heap.c_allocator.destroy(a);
             p.arena = null;
+        }
+        if (p.updates_arena) |a| {
+            a.deinit();
+            std.heap.c_allocator.destroy(a);
+            p.updates_arena = null;
         }
         p.apps = &.{};
         p.updates = &.{};
@@ -165,43 +237,70 @@ pub const AppImagePage = extern struct {
     }
 
     fn load_worker(page: *Self, generation: u64) void {
-        const arena_ptr = std.heap.c_allocator.create(std.heap.ArenaAllocator) catch return;
-        arena_ptr.* = std.heap.ArenaAllocator.init(std.heap.c_allocator);
-        const alloc = arena_ptr.allocator();
-
-        var threaded: std.Io.Threaded = .init(alloc, .{});
+        var threaded: std.Io.Threaded = .init(std.heap.c_allocator, .{});
         defer threaded.deinit();
 
-        const cli = ShellyCli{ .allocator = alloc, .io = threaded.io() };
-        const apps = cli.get_appimages() catch |err| {
-            std.debug.print("get_appimages failed: {t}\n", .{err});
-            arena_ptr.deinit();
-            std.heap.c_allocator.destroy(arena_ptr);
+        const apps_arena = std.heap.c_allocator.create(std.heap.ArenaAllocator) catch return;
+        apps_arena.* = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+        {
+            const cli = ShellyCli{ .allocator = apps_arena.allocator(), .io = threaded.io() };
+            const apps = cli.get_appimages() catch |err| {
+                std.debug.print("get_appimages failed: {t}\n", .{err});
+                apps_arena.deinit();
+                std.heap.c_allocator.destroy(apps_arena);
+                return;
+            };
+            post_apps_result(page, apps.value, apps_arena, generation);
+        }
+
+        const updates_arena = std.heap.c_allocator.create(std.heap.ArenaAllocator) catch return;
+        updates_arena.* = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+        const cli = ShellyCli{ .allocator = updates_arena.allocator(), .io = threaded.io() };
+        const updates = cli.get_appimage_updates() catch {
+            updates_arena.deinit();
+            std.heap.c_allocator.destroy(updates_arena);
             return;
         };
-
-        var updates: []AppImageUpdate = &.{};
-        if (cli.get_appimage_updates()) |u| {
-            updates = u.value;
-        } else |_| {}
-
-        post_result(page, apps.value, updates, arena_ptr, generation);
+        if (updates.value.len == 0) {
+            updates_arena.deinit();
+            std.heap.c_allocator.destroy(updates_arena);
+            return;
+        }
+        post_updates_result(page, updates.value, updates_arena, generation);
     }
 
-    fn post_result(page: *Self, apps: []AppImage, updates: []AppImageUpdate, arena: *std.heap.ArenaAllocator, generation: u64) void {
-        const result = std.heap.c_allocator.create(LoadResult) catch return;
+    fn post_apps_result(page: *Self, apps: []AppImage, arena: *std.heap.ArenaAllocator, generation: u64) void {
+        const result = std.heap.c_allocator.create(AppsResult) catch {
+            arena.deinit();
+            std.heap.c_allocator.destroy(arena);
+            return;
+        };
         result.* = .{
             .page = page,
             .apps = apps,
+            .arena = arena,
+            .generation = generation,
+        };
+        _ = glib.idleAdd(&onLoadAppsComplete, result);
+    }
+
+    fn post_updates_result(page: *Self, updates: []AppImageUpdate, arena: *std.heap.ArenaAllocator, generation: u64) void {
+        const result = std.heap.c_allocator.create(UpdatesResult) catch {
+            arena.deinit();
+            std.heap.c_allocator.destroy(arena);
+            return;
+        };
+        result.* = .{
+            .page = page,
             .updates = updates,
             .arena = arena,
             .generation = generation,
         };
-        _ = glib.idleAdd(&onLoadComplete, result);
+        _ = glib.idleAdd(&onLoadUpdatesComplete, result);
     }
 
-    fn onLoadComplete(data: ?*anyopaque) callconv(.c) c_int {
-        const result: *LoadResult = @ptrCast(@alignCast(data.?));
+    fn onLoadAppsComplete(data: ?*anyopaque) callconv(.c) c_int {
+        const result: *AppsResult = @ptrCast(@alignCast(data.?));
         const self = result.page;
         const p = self.priv();
         if (result.generation != p.generation) {
@@ -215,24 +314,58 @@ pub const AppImagePage = extern struct {
             old.deinit();
             std.heap.c_allocator.destroy(old);
         }
+
+        if (p.updates_arena) |old| {
+            old.deinit();
+            std.heap.c_allocator.destroy(old);
+            p.updates_arena = null;
+        }
+
+        p.updates = &.{};
         p.arena = result.arena;
         p.apps = result.apps;
-        p.updates = result.updates;
         std.heap.c_allocator.destroy(result);
 
         gtk.ListBox.removeAll(p.app_list);
         for (p.apps, 0..) |*app, i| {
             const row = make_app_row(app, i);
             gtk.ListBox.append(p.app_list, row);
-            if (findUpdateFor(p.updates, app)) |update| {
-                var buf: [128]u8 = undefined;
-                const text = std.fmt.bufPrintSentinel(&buf, "{s}: {s}", .{ translations._("Update Available"), update.Version }, 0) catch continue;
-                set_row_update_badge(row, text);
-            }
         }
 
         gtk.Widget.setVisible(p.drop_zone, @intFromBool(p.apps.len == 0));
         apply_search_filter(self);
+        return 0;
+    }
+
+    fn onLoadUpdatesComplete(data: ?*anyopaque) callconv(.c) c_int {
+        const result: *UpdatesResult = @ptrCast(@alignCast(data.?));
+        const self = result.page;
+        const p = self.priv();
+        if (result.generation != p.generation) {
+            result.arena.deinit();
+            std.heap.c_allocator.destroy(result.arena);
+            std.heap.c_allocator.destroy(result);
+            return 0;
+        }
+
+        if (p.updates_arena) |old| {
+            old.deinit();
+            std.heap.c_allocator.destroy(old);
+        }
+        p.updates_arena = result.arena;
+        p.updates = result.updates;
+        std.heap.c_allocator.destroy(result);
+
+        var i: usize = 0;
+        var maybe_child = gtk.Widget.getFirstChild(p.app_list.as(gtk.Widget));
+        while (maybe_child) |child| : (maybe_child = gtk.Widget.getNextSibling(child)) {
+            if (i >= p.apps.len) break;
+            defer i += 1;
+            const update = findUpdateFor(p.updates, &p.apps[i]) orelse continue;
+            var buf: [128]u8 = undefined;
+            const text = std.fmt.bufPrintSentinel(&buf, "{s}: {s}", .{ translations._("Update Available"), update.Version }, 0) catch continue;
+            set_row_update_badge(child, text);
+        }
         return 0;
     }
 
@@ -404,15 +537,23 @@ pub const AppImagePage = extern struct {
 
         gtk.DropDown.setSelected(p.update_type_drop, @intFromEnum(app.UpdateType));
 
-        if (app.RepoOwner != null and app.RepoName != null) {
-            const text = std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ app.RepoOwner.?, app.RepoName.? }, 0) catch "";
-            gtk.Editable.setText(p.update_url_entry.as(gtk.Editable), text);
-        } else {
-            gtk.Editable.setText(p.update_url_entry.as(gtk.Editable), c_string.cstr(&buf, app.UpdateURl));
+        switch (app.UpdateType) {
+            .GitHub, .GitLab, .Codeberg => {
+                const text = if (app.RepoOwner != null and app.RepoName != null)
+                    std.fmt.bufPrintSentinel(&buf, "{s}/{s}", .{ app.RepoOwner.?, app.RepoName.? }, 0) catch ""
+                else
+                    "";
+                gtk.Editable.setText(p.update_url_entry.as(gtk.Editable), text);
+            },
+            .StaticUrl, .Forgejo => {
+                gtk.Editable.setText(p.update_url_entry.as(gtk.Editable), c_string.cstr(&buf, app.UpdateURl));
+            },
+            .None => gtk.Editable.setText(p.update_url_entry.as(gtk.Editable), ""),
         }
 
         gtk.Widget.setVisible(p.update_url_error.as(gtk.Widget), 0);
         gtk.Widget.removeCssClass(p.update_url_entry.as(gtk.Widget), "error");
+        update_strategy_controls(self);
 
         gtk.CheckButton.setActive(p.prerelease_check, @intFromBool(app.AllowPrerelease));
         gtk.Editable.setText(p.install_path_entry.as(gtk.Editable), if (app.Path) |path| c_string.cstr(&buf, path) else "");
@@ -429,16 +570,39 @@ pub const AppImagePage = extern struct {
         gtk.Widget.setVisible(p.list_view, 1);
     }
 
+    fn selectedUpdateType(p: *Private) UpdateType {
+        const selected = gtk.DropDown.getSelected(p.update_type_drop);
+        if (selected <= @intFromEnum(UpdateType.Forgejo)) {
+            return @enumFromInt(@as(u8, @intCast(selected)));
+        }
+        return .None;
+    }
+
+    fn update_strategy_controls(self: *Self) void {
+        const p = self.priv();
+        const is_none = selectedUpdateType(p) == .None;
+        const sensitive: c_int = if (is_none) 0 else 1;
+
+        gtk.Widget.setSensitive(p.update_url_entry.as(gtk.Widget), sensitive);
+        gtk.Widget.setSensitive(p.prerelease_check.as(gtk.Widget), sensitive);
+
+        if (is_none) {
+            gtk.Editable.setText(p.update_url_entry.as(gtk.Editable), "");
+            gtk.Widget.setVisible(p.update_url_error.as(gtk.Widget), 0);
+            gtk.Widget.removeCssClass(p.update_url_entry.as(gtk.Widget), "error");
+        }
+    }
+
+    fn on_update_type_changed(_: *gobject.Object, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
+        update_strategy_controls(self);
+    }
+
     fn validateUpdateConfig(self: *Self) bool {
         const p = self.priv();
         const text = std.mem.span(gtk.Editable.getText(p.update_url_entry.as(gtk.Editable)));
         const trimmed = std.mem.trim(u8, text, &std.ascii.whitespace);
 
-        const selected = gtk.DropDown.getSelected(p.update_type_drop);
-        const update_type: UpdateType = if (selected <= @intFromEnum(UpdateType.Forgejo))
-            @enumFromInt(@as(u8, @intCast(selected)))
-        else
-            .None;
+        const update_type = selectedUpdateType(p);
 
         var error_text: ?[:0]const u8 = null;
         switch (update_type) {
@@ -451,9 +615,14 @@ pub const AppImagePage = extern struct {
                     error_text = translations._("Invalid format. Use owner/repo (e.g. seafoam-labs/shelly-alpm)");
                 }
             },
-            .Forgejo, .StaticUrl => {
-                if (!std.ascii.startsWithIgnoreCase(trimmed, "http")) {
+            .StaticUrl => {
+                if (!isValidHttpUrl(trimmed)) {
                     error_text = translations._("Invalid URL. Must start with http:// or https://");
+                }
+            },
+            .Forgejo => {
+                if (!isValidForgejoRepositoryUrl(trimmed)) {
+                    error_text = translations._("Invalid Forgejo URL. Use http(s)://host/owner/repo or http(s)://host/owner/repo/releases");
                 }
             },
         }
@@ -620,15 +789,17 @@ pub const AppImagePage = extern struct {
 
         if (!validateUpdateConfig(self)) return;
 
-        const text = std.mem.span(gtk.Editable.getText(p.update_url_entry.as(gtk.Editable)));
-        const selected = gtk.DropDown.getSelected(p.update_type_drop);
-        const update_type: UpdateType = if (selected <= @intFromEnum(UpdateType.Forgejo))
-            @enumFromInt(@as(u8, @intCast(selected)))
-        else
-            .None;
+        const text = std.mem.trim(
+            u8,
+            std.mem.span(gtk.Editable.getText(p.update_url_entry.as(gtk.Editable))),
+            &std.ascii.whitespace,
+        );
+        const update_type = selectedUpdateType(p);
         const prerelease = gtk.CheckButton.getActive(p.prerelease_check) != 0;
 
-        const argv = ShellyCommands.configure_appimage(std.heap.c_allocator, app.Name, text, update_type, prerelease) catch return;
+        const url: []const u8 = if (update_type == .None) "" else text;
+
+        const argv = ShellyCommands.configure_appimage(std.heap.c_allocator, app.Name, url, update_type, prerelease) catch return;
         defer std.heap.c_allocator.free(argv);
 
         var names: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -776,4 +947,31 @@ test "AppImagePage.contains_ignore_case matches substrings case-insensitively" {
     try std.testing.expect(AppImagePage.contains_ignore_case("OBS Studio", "studio"));
     try std.testing.expect(!AppImagePage.contains_ignore_case("Krita", "obs"));
     try std.testing.expect(!AppImagePage.contains_ignore_case("Krita", "krita-longer"));
+}
+
+test "Forgejo update validation accepts repository and release-page URLs" {
+    try std.testing.expect(isValidForgejoRepositoryUrl(
+        "https://git.eden-emu.dev/eden-ci/nightly",
+    ));
+    try std.testing.expect(isValidForgejoRepositoryUrl(
+        "https://git.eden-emu.dev/eden-ci/nightly/",
+    ));
+    try std.testing.expect(isValidForgejoRepositoryUrl(
+        "https://git.eden-emu.dev/eden-ci/nightly/releases",
+    ));
+    try std.testing.expect(isValidForgejoRepositoryUrl(
+        "https://git.eden-emu.dev/eden-ci/nightly/releases/",
+    ));
+}
+
+test "Forgejo update validation rejects unrelated and incomplete paths" {
+    try std.testing.expect(!isValidForgejoRepositoryUrl(
+        "https://git.eden-emu.dev/eden-ci/nightly/actions",
+    ));
+    try std.testing.expect(!isValidForgejoRepositoryUrl(
+        "https://git.eden-emu.dev/eden-ci",
+    ));
+    try std.testing.expect(!isValidForgejoRepositoryUrl(
+        "git.eden-emu.dev/eden-ci/nightly",
+    ));
 }

@@ -1,9 +1,13 @@
 const std = @import("std");
 const Zigalpm = @import("Zigalpm");
+const test_support = @import("test_support.zig");
 const install = @import("install.zig");
 const parser = @import("../cli/parser.zig");
 const output = @import("../output/config.zig");
+const colors = @import("../output/colors.zig");
+const format = @import("../output/format.zig");
 const runtime = @import("../runtime/context.zig");
+const aur_url = @import("../config/aur_url.zig");
 
 const command_path = "shelly";
 const maximum_results = 10;
@@ -21,6 +25,7 @@ pub const Candidate = struct {
     repository: []const u8 = "",
     popularity: f64 = 0,
     score: u16 = 0,
+    is_installed: bool = false,
 };
 
 const DiscoveryResult = struct {
@@ -30,26 +35,27 @@ const DiscoveryResult = struct {
 };
 
 const Discoverer = struct {
-    data: ?*anyopaque = null,
-    call: *const fn (
-        data: ?*anyopaque,
+    fn call(
+        _: @This(),
         context: *runtime.RuntimeContext,
         query: []const u8,
-    ) anyerror!DiscoveryResult,
+        aur_base: []const u8,
+    ) !DiscoveryResult {
+        return discoverReal(context, query, aur_base);
+    }
 };
 
 const Installer = struct {
-    data: ?*anyopaque = null,
-    call: *const fn (
-        data: ?*anyopaque,
+    fn call(
+        _: @This(),
         context: *runtime.RuntimeContext,
         candidate: Candidate,
         no_confirm: bool,
-    ) anyerror!u8,
+        aur_override: ?[]const u8,
+    ) !u8 {
+        return installReal(context, candidate, no_confirm, aur_override);
+    }
 };
-
-const real_discoverer: Discoverer = .{ .call = discoverReal };
-const real_installer: Installer = .{ .call = installReal };
 
 pub fn dispatch(
     context: *runtime.RuntimeContext,
@@ -57,15 +63,15 @@ pub fn dispatch(
 ) !?u8 {
     if (!std.mem.eql(u8, invocation.command.path, command_path) or invocation.positionals.len == 0)
         return null;
-    return try executeWith(context, invocation, real_discoverer, real_installer);
+    return try executeWith(context, invocation, Discoverer{}, Installer{});
 }
 
 fn executeWith(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    discoverer: Discoverer,
-    installer: Installer,
-) !u8 {
+    discoverer: anytype,
+    installer: anytype,
+) anyerror!u8 {
     if (invocation.globals.ui_mode or invocation.globals.json) {
         try context.stderr.writeAll(
             "Interactive package selection does not support --ui-mode or --json; use an explicit search command.\n",
@@ -80,7 +86,10 @@ fn executeWith(
         return 1;
     }
 
-    const discovery = discoverer.call(discoverer.data, context, query) catch |err| {
+    const aur_base = try aur_url.resolveFor(context, invocation);
+    const aur_override: ?[]const u8 = aur_base;
+
+    const discovery = discoverer.call(context, query, aur_base) catch |err| {
         try context.stderr.print("Package search failed: {t}\n", .{err});
         return 1;
     };
@@ -110,16 +119,16 @@ fn executeWith(
         try context.stdout.writeAll("Installation cancelled.\n");
         return 0;
     };
-    return installer.call(installer.data, context, candidates[index], invocation.globals.no_confirm) catch |err| {
+    return installer.call(context, candidates[index], invocation.globals.no_confirm, aur_override) catch |err| {
         try context.stderr.print("Unable to start installation: {t}\n", .{err});
         return 1;
     };
 }
 
 fn discoverReal(
-    _: ?*anyopaque,
     context: *runtime.RuntimeContext,
     query: []const u8,
+    aur_base: []const u8,
 ) !DiscoveryResult {
     var candidates: std.ArrayList(Candidate) = .empty;
     const standard_error: ?anyerror = error_value: {
@@ -127,7 +136,7 @@ fn discoverReal(
         break :error_value null;
     };
     const aur_error: ?anyerror = error_value: {
-        discoverAur(context, query, &candidates) catch |err| break :error_value err;
+        discoverAur(context, query, &candidates, aur_base) catch |err| break :error_value err;
         break :error_value null;
     };
     return .{
@@ -145,9 +154,7 @@ fn discoverStandard(
     const manager = try Zigalpm.AlpmManager.init(
         context.allocator,
         context.environ,
-        null,
-        false,
-        null,
+        .{ .use_root = false },
     );
     defer manager.deinit();
     const packages = try manager.get_available_packages();
@@ -163,6 +170,7 @@ fn discoverStandard(
             .version = try context.allocator.dupe(u8, package.version() orelse ""),
             .description = try context.allocator.dupe(u8, description),
             .repository = try context.allocator.dupe(u8, package.repository() orelse ""),
+            .is_installed = manager.is_package_installed(name),
         });
     }
 }
@@ -171,14 +179,17 @@ fn discoverAur(
     context: *runtime.RuntimeContext,
     query: []const u8,
     candidates: *std.ArrayList(Candidate),
+    aur_base: []const u8,
 ) !void {
     if (query.len < 2) return;
-    const manager = try Zigalpm.AurManager.init(context.allocator, context.environ, .{});
+    const manager = try Zigalpm.AurManager.init(context.allocator, context.environ, .{
+        .aur_git_base_url = aur_base,
+    });
     defer manager.deinit();
 
     const packages = try manager.searchPackages(query);
     defer Zigalpm.aur.models.Package.deinitSlice(context.allocator, packages);
-    try appendAurPackages(context.allocator, candidates, packages, query);
+    try appendAurPackages(context.allocator, candidates, packages, query, manager.alpm);
     if (packages.len != 0) return;
 
     const suggestions = manager.aur_client.suggest(query) catch return;
@@ -189,7 +200,7 @@ fn discoverAur(
     for (suggestions) |suggestion| try names.append(context.allocator, suggestion);
     var response = manager.aur_client.getInfo(names.items) catch return;
     defer response.deinit(context.allocator);
-    try appendAurPackages(context.allocator, candidates, response.results, query);
+    try appendAurPackages(context.allocator, candidates, response.results, query, manager.alpm);
 }
 
 fn appendAurPackages(
@@ -197,16 +208,20 @@ fn appendAurPackages(
     candidates: *std.ArrayList(Candidate),
     packages: []const Zigalpm.aur.models.Package,
     query: []const u8,
+    manager: *Zigalpm.AlpmManager,
 ) !void {
     for (packages) |package| {
         const description = package.description orelse "";
         if (matchScore(package.name, description, query) == 0) continue;
+        const name_z = try allocator.dupeZ(u8, package.name);
+        defer allocator.free(name_z);
         try appendUnique(allocator, candidates, .{
             .source = .aur,
             .name = try allocator.dupe(u8, package.name),
             .version = try allocator.dupe(u8, package.version),
             .description = try allocator.dupe(u8, description),
             .popularity = package.popularity,
+            .is_installed = manager.is_package_installed(name_z),
         });
     }
 }
@@ -334,7 +349,7 @@ fn promptSelection(
     for (candidates, 0..) |candidate, index| {
         const number = candidates.len - index;
         const most_likely = index + 1 == candidates.len;
-        if (most_likely and use_color) try context.stdout.writeAll("\x1b[32m");
+        if (most_likely and use_color) try context.stdout.writeAll(colors.colorCode(.highlight));
         try context.stdout.print("{d}) {s} — ", .{ number, candidate.name });
         switch (candidate.source) {
             .standard => try context.stdout.writeAll("standard"),
@@ -344,7 +359,8 @@ fn promptSelection(
         if (candidate.description.len > 0)
             try context.stdout.print(" — {s}", .{truncate(candidate.description, 80)});
         if (most_likely) try context.stdout.writeAll(" [Most likely match]");
-        if (most_likely and use_color) try context.stdout.writeAll("\x1b[0m");
+        if (candidate.is_installed) try context.stdout.writeAll(" [Installed]");
+        if (most_likely and use_color) try context.stdout.writeAll(colors.reset);
         try context.stdout.writeByte('\n');
     }
     try context.stdout.writeAll("0) Cancel\n");
@@ -365,10 +381,10 @@ fn promptSelection(
 }
 
 fn installReal(
-    _: ?*anyopaque,
     context: *runtime.RuntimeContext,
     candidate: Candidate,
     no_confirm: bool,
+    aur_override: ?[]const u8,
 ) !u8 {
     const target = if (candidate.source == .standard and candidate.repository.len > 0)
         try std.fmt.allocPrint(context.allocator, "{s}/{s}", .{ candidate.repository, candidate.name })
@@ -378,7 +394,7 @@ fn installReal(
         context,
         if (candidate.source == .standard) .standard else .aur,
         &.{target},
-        .{ .no_confirm = no_confirm },
+        .{ .no_confirm = no_confirm, .aur_url = aur_override },
     );
 }
 
@@ -419,7 +435,7 @@ fn orderIgnoreCase(left: []const u8, right: []const u8) std.math.Order {
 }
 
 fn truncate(value: []const u8, maximum: usize) []const u8 {
-    return if (value.len <= maximum) value else value[0..maximum];
+    return format.truncate(value, maximum);
 }
 
 test "candidate preparation puts the closest standard match last" {
@@ -483,11 +499,12 @@ test "fuzzy score handles insertion and transposition typos" {
 }
 
 test "no-confirm installs the final closest candidate and preserves partial results" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try @import("../cli/spec.zig").Manifest.load(arena.allocator());
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try @import("../cli/spec.zig").Manifest.load(tc.arena.allocator());
     const outcome = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "demo", "--no-confirm" },
     );
@@ -497,13 +514,29 @@ test "no-confirm installs the final closest candidate and preserves partial resu
         installed_name: ?[]const u8 = null,
         source: ?Source = null,
         no_confirm: bool = false,
+        aur_override: ?[]const u8 = null,
+
+        fn call(
+            self: *@This(),
+            _: *runtime.RuntimeContext,
+            candidate: Candidate,
+            no_confirm: bool,
+            aur_override: ?[]const u8,
+        ) !u8 {
+            self.installed_name = candidate.name;
+            self.source = candidate.source;
+            self.no_confirm = no_confirm;
+            self.aur_override = aur_override;
+            return 23;
+        }
     };
     var capture: Capture = .{};
-    const discoverer: Discoverer = .{ .call = struct {
-        fn discover(
-            _: ?*anyopaque,
+    const FakeDiscoverer = struct {
+        fn call(
+            _: @This(),
             _: *runtime.RuntimeContext,
             query: []const u8,
+            _: []const u8,
         ) !DiscoveryResult {
             try std.testing.expectEqualStrings("demo", query);
             return .{
@@ -514,38 +547,15 @@ test "no-confirm installs the final closest candidate and preserves partial resu
                 .aur_error = error.Timeout,
             };
         }
-    }.discover };
-    const installer: Installer = .{ .data = &capture, .call = struct {
-        fn run(
-            data: ?*anyopaque,
-            _: *runtime.RuntimeContext,
-            candidate: Candidate,
-            no_confirm: bool,
-        ) !u8 {
-            const observed: *Capture = @ptrCast(@alignCast(data.?));
-            observed.installed_name = candidate.name;
-            observed.source = candidate.source;
-            observed.no_confirm = no_confirm;
-            return 23;
-        }
-    }.run };
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
     };
 
     try std.testing.expectEqual(
         @as(u8, 23),
-        try executeWith(&context, &outcome.dispatch, discoverer, installer),
+        try executeWith(&tc.context, &outcome.dispatch, FakeDiscoverer{}, &capture),
     );
     try std.testing.expectEqualStrings("demo", capture.installed_name.?);
     try std.testing.expectEqual(Source.standard, capture.source.?);
     try std.testing.expect(capture.no_confirm);
-    try std.testing.expect(std.mem.indexOf(u8, stderr.writer.buffered(), "warning: AUR package search failed") != null);
+    try std.testing.expectEqualStrings(aur_url.default_base, capture.aur_override.?);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stderr.writer.buffered(), "warning: AUR package search failed") != null);
 }

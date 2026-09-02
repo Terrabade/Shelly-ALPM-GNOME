@@ -20,6 +20,14 @@ pub const PackageDirectiveError = error{
 pub const IgnorePackageError = PackageDirectiveError;
 pub const HoldPackageError = PackageDirectiveError;
 
+pub const RepositoryError = error{
+    InvalidRepositoryName,
+    DuplicateRepository,
+    ConfigReadFailed,
+    ConfigWriteFailed,
+    OutOfMemory,
+};
+
 inline fn sig(level: SigLevel) u32 {
     return @bitCast(level.to_sig_level());
 }
@@ -316,6 +324,65 @@ pub const Configuration = struct {
         return null;
     }
 
+    /// Adds a repository to the configuration and appends its `[name]` section
+    /// to the config file. `sig_level` and `usage` are raw config strings such
+    /// as "Required DatabaseOptional" and "Sync Search"; empty strings omit the
+    /// directive and keep the `Repository` defaults.
+    pub fn add_repository(
+        config: *Config,
+        io: Io,
+        scratch_allocator: Allocator,
+        config_path: []const u8,
+        name: []const u8,
+        servers: []const []const u8,
+        sig_level: []const u8,
+        usage: []const u8,
+    ) RepositoryError!void {
+        const normalized = normalize_repository_name(name) orelse
+            return RepositoryError.InvalidRepositoryName;
+        if (find_repository(config, normalized) != null)
+            return RepositoryError.DuplicateRepository;
+
+        const arena_allocator = config.arena.allocator();
+        var repository = Repository{ .name = try arena_allocator.dupe(u8, normalized) };
+        for (servers) |server| {
+            const trimmed = std.mem.trim(u8, server, " \t\r\n");
+            if (trimmed.len == 0) continue;
+            try repository.servers.append(arena_allocator, try arena_allocator.dupe(u8, trimmed));
+        }
+        if (sig_level.len != 0) repository.sig_level = parse_signature_level(sig_level);
+        if (usage.len != 0) repository.usage = parse_usage(usage);
+
+        try config.repositories.append(arena_allocator, repository);
+        try rewrite_add_repository(io, scratch_allocator, config_path, repository, sig_level, usage);
+    }
+
+    /// Removes every repository named `name` from the configuration and deletes
+    /// its section from the config file. Unknown names leave everything untouched.
+    pub fn remove_repository(
+        config: *Config,
+        io: Io,
+        scratch_allocator: Allocator,
+        config_path: []const u8,
+        name: []const u8,
+    ) RepositoryError!void {
+        const normalized = normalize_repository_name(name) orelse
+            return RepositoryError.InvalidRepositoryName;
+
+        var changed = false;
+        var index: usize = 0;
+        while (index < config.repositories.items.len) {
+            if (std.mem.eql(u8, config.repositories.items[index].name, normalized)) {
+                _ = config.repositories.orderedRemove(index);
+                changed = true;
+            } else {
+                index += 1;
+            }
+        }
+
+        if (changed) try rewrite_remove_repository(io, scratch_allocator, config_path, normalized);
+    }
+
     fn rewrite_ignore_packages(
         config: *const Config,
         io: Io,
@@ -354,13 +421,108 @@ pub const Configuration = struct {
         package_names: []const [:0]const u8,
     ) PackageDirectiveError!void {
         const contents = Io.Dir.cwd().readFileAlloc(io, config_path, allocator, .unlimited) catch |err| switch (err) {
-            error.OutOfMemory => return PackageDirectiveError.OutOfMemory,
-            else => return PackageDirectiveError.ConfigReadFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.ConfigReadFailed,
         };
         defer allocator.free(contents);
 
-        var lines: std.ArrayList([]const u8) = .empty;
+        var lines = try split_lines(allocator, contents);
         defer lines.deinit(allocator);
+
+        const section = find_section(lines.items, "options");
+        const first_directive_line = find_directive_line(lines.items, section, directive);
+
+        var unique_names: std.ArrayList([:0]const u8) = .empty;
+        defer unique_names.deinit(allocator);
+        for (package_names) |package_name| {
+            if (package_name.len == 0 or contains_package_name(unique_names.items, package_name)) continue;
+            try unique_names.append(allocator, package_name);
+        }
+
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(allocator);
+
+        var insert_index = lines.items.len;
+        if (first_directive_line) |line_index| {
+            insert_index = line_index;
+        } else if (section.start) |start| {
+            insert_index = start + 1;
+        }
+
+        try append_lines_skipping_directives(&output, allocator, lines.items[0..insert_index], 0, section, directive);
+        if (section.start == null) try append_config_line(&output, allocator, "[options]");
+        try append_package_directive_line(&output, allocator, directive, unique_names.items);
+        try append_lines_skipping_directives(&output, allocator, lines.items[insert_index..], insert_index, section, directive);
+
+        try write_config_file(io, config_path, output.items);
+    }
+
+    fn rewrite_add_repository(
+        io: Io,
+        allocator: Allocator,
+        config_path: []const u8,
+        repository: Repository,
+        sig_level: []const u8,
+        usage: []const u8,
+    ) RepositoryError!void {
+        const contents = Io.Dir.cwd().readFileAlloc(io, config_path, allocator, .unlimited) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.ConfigReadFailed,
+        };
+        defer allocator.free(contents);
+
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(allocator);
+
+        try output.appendSlice(allocator, contents);
+        if (contents.len != 0 and contents[contents.len - 1] != '\n') {
+            try output.append(allocator, '\n');
+        }
+        try append_repository_section(&output, allocator, repository.name, repository.servers.items, sig_level, usage);
+        try write_config_file(io, config_path, output.items);
+    }
+
+    fn rewrite_remove_repository(
+        io: Io,
+        allocator: Allocator,
+        config_path: []const u8,
+        name: []const u8,
+    ) RepositoryError!void {
+        const contents = Io.Dir.cwd().readFileAlloc(io, config_path, allocator, .unlimited) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return error.ConfigReadFailed,
+        };
+        defer allocator.free(contents);
+
+        var lines = try split_lines(allocator, contents);
+        defer lines.deinit(allocator);
+
+        const section = find_section(lines.items, name);
+        const start = section.start orelse return;
+
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(allocator);
+
+        // Track where the trailing run of blank lines begins so blanks left
+        // behind by removing the final section can be dropped.
+        var trailing_blank_start: ?usize = null;
+        for (lines.items, 0..) |line, index| {
+            if (index >= start and index < section.end) continue;
+            if (std.mem.trim(u8, line, " \t").len == 0) {
+                if (trailing_blank_start == null) trailing_blank_start = output.items.len;
+            } else {
+                trailing_blank_start = null;
+            }
+            try append_config_line(&output, allocator, line);
+        }
+        if (trailing_blank_start) |length| output.items.len = length;
+
+        try write_config_file(io, config_path, output.items);
+    }
+
+    fn split_lines(allocator: Allocator, contents: []const u8) Allocator.Error!std.ArrayList([]const u8) {
+        var lines: std.ArrayList([]const u8) = .empty;
+        errdefer lines.deinit(allocator);
 
         var line_start: usize = 0;
         while (line_start < contents.len) {
@@ -371,88 +533,73 @@ pub const Configuration = struct {
             line_start = if (newline) |position| position + 1 else contents.len;
         }
 
-        var options_start: ?usize = null;
-        var options_end = lines.items.len;
-        for (lines.items, 0..) |line, index| {
-            const name = config_section_name(line) orelse continue;
-            if (options_start == null) {
-                if (equalIgnoreCase(name, "options")) options_start = index;
+        return lines;
+    }
+
+    const Section = struct {
+        start: ?usize,
+        end: usize,
+
+        fn contains_line(self: Section, line_index: usize) bool {
+            const start = self.start orelse return false;
+            return line_index > start and line_index < self.end;
+        }
+    };
+
+    /// Finds the line range of the `[name]` section. `end` is the index of the
+    /// next section header, or `lines.len` when the section runs to EOF.
+    fn find_section(lines: []const []const u8, name: []const u8) Section {
+        var section = Section{ .start = null, .end = lines.len };
+        for (lines, 0..) |line, index| {
+            const section_name = config_section_name(line) orelse continue;
+            if (section.start == null) {
+                if (equalIgnoreCase(section_name, name)) section.start = index;
             } else {
-                options_end = index;
+                section.end = index;
                 break;
             }
         }
+        return section;
+    }
 
-        var first_directive_line: ?usize = null;
-        if (options_start) |start| {
-            for (lines.items[start + 1 .. options_end], start + 1..) |line, index| {
-                if (is_package_directive_line(line, directive)) {
-                    first_directive_line = index;
-                    break;
-                }
-            }
+    fn find_directive_line(
+        lines: []const []const u8,
+        section: Section,
+        directive: []const u8,
+    ) ?usize {
+        const start = section.start orelse return null;
+        for (lines[start + 1 .. section.end], start + 1..) |line, index| {
+            if (is_package_directive_line(line, directive)) return index;
         }
+        return null;
+    }
 
-        var normalized_names: std.ArrayList([:0]const u8) = .empty;
-        defer normalized_names.deinit(allocator);
-        for (package_names) |package_name| {
-            if (package_name.len == 0 or contains_package_name(normalized_names.items, package_name)) continue;
-            try normalized_names.append(allocator, package_name);
-        }
-
-        var rewritten: std.ArrayList(u8) = .empty;
-        defer rewritten.deinit(allocator);
-
-        for (lines.items, 0..) |line, index| {
-            if (options_start) |start| {
-                const in_options = index > start and index < options_end;
-                if (in_options and is_package_directive_line(line, directive)) {
-                    if (first_directive_line.? == index) {
-                        try append_package_directive_line(
-                            &rewritten,
-                            allocator,
-                            directive,
-                            normalized_names.items,
-                        );
-                    }
-                    continue;
-                }
-            }
-
-            try append_config_line(&rewritten, allocator, line);
-            if (options_start != null and first_directive_line == null and options_start.? == index) {
-                try append_package_directive_line(
-                    &rewritten,
-                    allocator,
-                    directive,
-                    normalized_names.items,
-                );
-            }
-        }
-
-        if (options_start == null) {
-            try append_config_line(&rewritten, allocator, "[options]");
-            try append_package_directive_line(
-                &rewritten,
-                allocator,
-                directive,
-                normalized_names.items,
-            );
-        }
-
+    fn write_config_file(io: Io, config_path: []const u8, contents: []const u8) error{ConfigWriteFailed}!void {
         var file = Io.Dir.cwd().createFile(io, config_path, .{}) catch
-            return PackageDirectiveError.ConfigWriteFailed;
+            return error.ConfigWriteFailed;
         defer file.close(io);
 
         var write_buffer: [4096]u8 = undefined;
         var writer = file.writer(io, &write_buffer);
-        writer.interface.writeAll(rewritten.items) catch return PackageDirectiveError.ConfigWriteFailed;
-        writer.interface.flush() catch return PackageDirectiveError.ConfigWriteFailed;
+        writer.interface.writeAll(contents) catch return error.ConfigWriteFailed;
+        writer.interface.flush() catch return error.ConfigWriteFailed;
     }
 
     fn normalize_package_name(package_name: []const u8) ?[]const u8 {
         const normalized = std.mem.trim(u8, package_name, " \t\r\n");
         return if (normalized.len == 0) null else normalized;
+    }
+
+    fn normalize_repository_name(name: []const u8) ?[]const u8 {
+        const normalized = std.mem.trim(u8, name, " \t\r\n");
+        if (normalized.len == 0 or equalIgnoreCase(normalized, "options")) return null;
+        for (normalized) |character| {
+            switch (character) {
+                '[', ']', ' ', '\t', '\r', '\n' => return null,
+                else => {},
+            }
+        }
+        return normalized;
     }
 
     fn contains_package_name(package_names: []const [:0]const u8, needle: []const u8) bool {
@@ -489,9 +636,23 @@ pub const Configuration = struct {
         output: *std.ArrayList(u8),
         allocator: Allocator,
         line: []const u8,
-    ) IgnorePackageError!void {
+    ) Allocator.Error!void {
         try output.appendSlice(allocator, line);
         try output.append(allocator, '\n');
+    }
+
+    fn append_lines_skipping_directives(
+        output: *std.ArrayList(u8),
+        allocator: Allocator,
+        lines: []const []const u8,
+        start_index: usize,
+        section: Section,
+        directive: []const u8,
+    ) PackageDirectiveError!void {
+        for (lines, start_index..) |line, index| {
+            if (section.contains_line(index) and is_package_directive_line(line, directive)) continue;
+            try append_config_line(output, allocator, line);
+        }
     }
 
     fn append_package_directive_line(
@@ -514,6 +675,33 @@ pub const Configuration = struct {
             try output.appendSlice(allocator, package_name);
         }
         try output.append(allocator, '\n');
+    }
+
+    fn append_repository_section(
+        output: *std.ArrayList(u8),
+        allocator: Allocator,
+        name: []const u8,
+        servers: []const []const u8,
+        sig_level: []const u8,
+        usage: []const u8,
+    ) Allocator.Error!void {
+        try output.append(allocator, '[');
+        try output.appendSlice(allocator, name);
+        try output.append(allocator, ']');
+        try output.append(allocator, '\n');
+
+        if (sig_level.len != 0) {
+            try output.appendSlice(allocator, "SigLevel = ");
+            try append_config_line(output, allocator, sig_level);
+        }
+        if (usage.len != 0) {
+            try output.appendSlice(allocator, "Usage = ");
+            try append_config_line(output, allocator, usage);
+        }
+        for (servers) |server| {
+            try output.appendSlice(allocator, "Server = ");
+            try append_config_line(output, allocator, server);
+        }
     }
 
     pub fn parse(gpa: Allocator, io: Io, path: []const u8) Allocator.Error!Config {
@@ -1065,4 +1253,317 @@ test "hold package mutations rewrite HoldPkg and preserve shelly" {
         "[options]\nArchitecture = auto\nHoldPkg = shelly\n",
         rewritten,
     );
+}
+
+test "add_repository appends a repository section to the config file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const config_path = try std.fmt.allocPrint(
+        testing.allocator,
+        ".zig-cache/tmp/{s}/pacman.conf",
+        .{tmp.sub_path},
+    );
+    defer testing.allocator.free(config_path);
+
+    const original =
+        \\[options]
+        \\Architecture = auto
+    ;
+    var file = try Io.Dir.cwd().createFile(testing.io, config_path, .{});
+    try file.writeStreamingAll(testing.io, original);
+    file.close(testing.io);
+
+    var config = try Configuration.parse_string(testing.allocator, testing.io, original);
+    defer config.deinitialize();
+
+    try Configuration.add_repository(
+        &config,
+        testing.io,
+        testing.allocator,
+        config_path,
+        "core",
+        &.{ "https://mirror.a/$repo/os/$arch", " https://mirror.b/$repo/os/$arch " },
+        "Required DatabaseOptional",
+        "Sync Search",
+    );
+
+    const rewritten = try Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        config_path,
+        testing.allocator,
+        .unlimited,
+    );
+    defer testing.allocator.free(rewritten);
+    try testing.expectEqualStrings(
+        "[options]\n" ++
+            "Architecture = auto\n" ++
+            "[core]\n" ++
+            "SigLevel = Required DatabaseOptional\n" ++
+            "Usage = Sync Search\n" ++
+            "Server = https://mirror.a/$repo/os/$arch\n" ++
+            "Server = https://mirror.b/$repo/os/$arch\n",
+        rewritten,
+    );
+
+    const repository = Configuration.find_repository(&config, "core") orelse return error.TestFailed;
+    try testing.expectEqual(@as(usize, 2), repository.servers.items.len);
+    try testing.expectEqualStrings("https://mirror.b/$repo/os/$arch", repository.servers.items[1]);
+    try testing.expectEqual(Configuration.parse_signature_level("Required DatabaseOptional"), repository.sig_level);
+    try testing.expectEqual(usageBit(.sync) | usageBit(.search), repository.usage);
+}
+
+test "add_repository rejects duplicate and invalid repository names" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const config_path = try std.fmt.allocPrint(
+        testing.allocator,
+        ".zig-cache/tmp/{s}/pacman.conf",
+        .{tmp.sub_path},
+    );
+    defer testing.allocator.free(config_path);
+
+    const original = "[options]\n";
+    var file = try Io.Dir.cwd().createFile(testing.io, config_path, .{});
+    try file.writeStreamingAll(testing.io, original);
+    file.close(testing.io);
+
+    var config = try Configuration.parse_string(testing.allocator, testing.io, original);
+    defer config.deinitialize();
+
+    try Configuration.add_repository(
+        &config,
+        testing.io,
+        testing.allocator,
+        config_path,
+        " core ",
+        &.{"https://mirror.a/core"},
+        "",
+        "",
+    );
+
+    try testing.expectError(
+        RepositoryError.DuplicateRepository,
+        Configuration.add_repository(
+            &config,
+            testing.io,
+            testing.allocator,
+            config_path,
+            "core",
+            &.{"https://mirror.b/core"},
+            "",
+            "",
+        ),
+    );
+
+    const invalid_names = [_][]const u8{ "", "   ", "options", "OPTIONS", "core repo", "co[re" };
+    for (invalid_names) |invalid_name| {
+        try testing.expectError(
+            RepositoryError.InvalidRepositoryName,
+            Configuration.add_repository(
+                &config,
+                testing.io,
+                testing.allocator,
+                config_path,
+                invalid_name,
+                &.{"https://mirror.a/core"},
+                "",
+                "",
+            ),
+        );
+    }
+
+    try testing.expectEqual(@as(usize, 1), config.repositories.items.len);
+
+    const rewritten = try Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        config_path,
+        testing.allocator,
+        .unlimited,
+    );
+    defer testing.allocator.free(rewritten);
+    try testing.expectEqualStrings(
+        "[options]\n[core]\nServer = https://mirror.a/core\n",
+        rewritten,
+    );
+}
+
+test "add_repository omits empty siglevel and usage directives" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const config_path = try std.fmt.allocPrint(
+        testing.allocator,
+        ".zig-cache/tmp/{s}/pacman.conf",
+        .{tmp.sub_path},
+    );
+    defer testing.allocator.free(config_path);
+
+    const original = "[options]\n";
+    var file = try Io.Dir.cwd().createFile(testing.io, config_path, .{});
+    try file.writeStreamingAll(testing.io, original);
+    file.close(testing.io);
+
+    var config = try Configuration.parse_string(testing.allocator, testing.io, original);
+    defer config.deinitialize();
+
+    try Configuration.add_repository(
+        &config,
+        testing.io,
+        testing.allocator,
+        config_path,
+        "extra",
+        &.{" https://mirror.a/extra "},
+        "",
+        "",
+    );
+
+    const rewritten = try Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        config_path,
+        testing.allocator,
+        .unlimited,
+    );
+    defer testing.allocator.free(rewritten);
+    try testing.expectEqualStrings(
+        "[options]\n[extra]\nServer = https://mirror.a/extra\n",
+        rewritten,
+    );
+
+    const repository = Configuration.find_repository(&config, "extra") orelse return error.TestFailed;
+    try testing.expectEqual(sig(.{ .use_default = true }), repository.sig_level);
+    try testing.expectEqual(@as(u32, 0), repository.usage);
+    try testing.expectEqualStrings("https://mirror.a/extra", repository.servers.items[0]);
+}
+
+test "remove_repository deletes only the matching section" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const config_path = try std.fmt.allocPrint(
+        testing.allocator,
+        ".zig-cache/tmp/{s}/pacman.conf",
+        .{tmp.sub_path},
+    );
+    defer testing.allocator.free(config_path);
+
+    const original =
+        \\[options]
+        \\Architecture = auto
+        \\
+        \\[core]
+        \\Server = https://mirror.a/core
+        \\
+        \\[extra]
+        \\Server = https://mirror.a/extra
+        \\
+    ;
+    var file = try Io.Dir.cwd().createFile(testing.io, config_path, .{});
+    try file.writeStreamingAll(testing.io, original);
+    file.close(testing.io);
+
+    var config = try Configuration.parse_string(testing.allocator, testing.io, original);
+    defer config.deinitialize();
+
+    try Configuration.remove_repository(
+        &config,
+        testing.io,
+        testing.allocator,
+        config_path,
+        "core",
+    );
+
+    const after_first = try Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        config_path,
+        testing.allocator,
+        .unlimited,
+    );
+    defer testing.allocator.free(after_first);
+    try testing.expectEqualStrings(
+        "[options]\n" ++
+            "Architecture = auto\n" ++
+            "\n" ++
+            "[extra]\n" ++
+            "Server = https://mirror.a/extra\n",
+        after_first,
+    );
+    try testing.expect(Configuration.find_repository(&config, "core") == null);
+    try testing.expect(Configuration.find_repository(&config, "extra") != null);
+
+    try Configuration.remove_repository(
+        &config,
+        testing.io,
+        testing.allocator,
+        config_path,
+        "extra",
+    );
+
+    const after_second = try Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        config_path,
+        testing.allocator,
+        .unlimited,
+    );
+    defer testing.allocator.free(after_second);
+    try testing.expectEqualStrings(
+        "[options]\nArchitecture = auto\n",
+        after_second,
+    );
+    try testing.expectEqual(@as(usize, 0), config.repositories.items.len);
+}
+
+test "remove_repository is a no-op for unknown repositories" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const config_path = try std.fmt.allocPrint(
+        testing.allocator,
+        ".zig-cache/tmp/{s}/pacman.conf",
+        .{tmp.sub_path},
+    );
+    defer testing.allocator.free(config_path);
+
+    const original =
+        \\[options]
+        \\[core]
+        \\Server = https://mirror.a/core
+        \\
+    ;
+    var file = try Io.Dir.cwd().createFile(testing.io, config_path, .{});
+    try file.writeStreamingAll(testing.io, original);
+    file.close(testing.io);
+
+    var config = try Configuration.parse_string(testing.allocator, testing.io, original);
+    defer config.deinitialize();
+
+    try Configuration.remove_repository(
+        &config,
+        testing.io,
+        testing.allocator,
+        config_path,
+        "missing",
+    );
+    try testing.expectError(
+        RepositoryError.InvalidRepositoryName,
+        Configuration.remove_repository(
+            &config,
+            testing.io,
+            testing.allocator,
+            config_path,
+            "options",
+        ),
+    );
+
+    try testing.expectEqual(@as(usize, 1), config.repositories.items.len);
+
+    const rewritten = try Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        config_path,
+        testing.allocator,
+        .unlimited,
+    );
+    defer testing.allocator.free(rewritten);
+    try testing.expectEqualStrings(original, rewritten);
 }

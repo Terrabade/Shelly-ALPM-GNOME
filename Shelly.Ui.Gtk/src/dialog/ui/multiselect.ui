@@ -53,12 +53,34 @@
                     <property name="label" translatable="yes">Confirm</property>
                     <signal name="clicked" handler="on_confirm" swapped="true"/>
                     <style><class name="suggested-action"/></style>
+                    <child>
+                      <object class="GtkShortcutController">
+                        <property name="scope">managed</property>
+                        <child>
+                          <object class="GtkShortcut">
+                            <property name="trigger">Return|KP_Enter</property>
+                            <property name="action">activate</property>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
                   </object>
                 </child>
                 <child>
                   <object class="GtkButton" id="cancel_button">
                     <property name="label" translatable="yes">Skip</property>
                     <signal name="clicked" handler="on_cancel" swapped="true"/>
+                    <child>
+                      <object class="GtkShortcutController">
+                        <property name="scope">managed</property>
+                        <child>
+                          <object class="GtkShortcut">
+                            <property name="trigger">Escape</property>
+                            <property name="action">activate</property>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
                   </object>
                 </child>
               </object>

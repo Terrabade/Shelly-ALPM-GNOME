@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface domain="shelly-ui">
+  <requires lib="gtk" version="4.0"/>
+  <template class="ShellyPolkitDialog" parent="GtkBox">
+    <property name="hexpand">true</property>
+    <property name="vexpand">true</property>
+    <property name="halign">center</property>
+    <property name="valign">center</property>
+    <child>
+      <object class="GtkFrame">
+        <property name="halign">center</property>
+        <property name="valign">center</property>
+        <property name="width-request">420</property>
+        <style>
+          <class name="lockout-card"/>
+        </style>
+        <child>
+          <object class="GtkBox">
+            <property name="orientation">vertical</property>
+            <property name="spacing">20</property>
+            <property name="margin-start">30</property>
+            <property name="margin-end">30</property>
+            <property name="margin-top">20</property>
+            <property name="margin-bottom">20</property>
+            <child>
+              <object class="GtkLabel" id="title_label">
+                <property name="wrap">true</property>
+                <property name="justify">center</property>
+                <property name="label" translatable="yes">polkit is required</property>
+                <style>
+                  <class name="title-2"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="message_label">
+                <property name="wrap">true</property>
+                <property name="justify">center</property>
+                <property name="max-width-chars">40</property>
+                <property name="use-markup">true</property>
+                <property name="label" translatable="yes">Shelly's GUI needs &lt;b&gt;polkit&lt;/b&gt; installed and running to authorize privileged actions, but it wasn't found on the system bus.
+
+Install and enable it, then retry.
+
+&lt;a href="https://www.seafoam-labs.org/shelly-alpm/docs/polkit/"&gt;seafoam-labs.org/shelly-alpm/docs/polkit&lt;/a&gt;</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkBox">
+                <property name="spacing">12</property>
+                <property name="halign">center</property>
+                <property name="margin-top">12</property>
+                <child>
+                  <object class="GtkButton" id="close_button">
+                    <property name="label" translatable="yes">Close</property>
+                    <property name="receives-default">true</property>
+                    <signal name="clicked" handler="on_close" swapped="true"/>
+                    <style><class name="suggested-action"/></style>
+                    <child>
+                      <object class="GtkShortcutController">
+                        <property name="scope">managed</property>
+                        <child>
+                          <object class="GtkShortcut">
+                            <property name="trigger">Return|KP_Enter|Escape</property>
+                            <property name="action">activate</property>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </template>
+</interface>

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Zigalpm = @import("Zigalpm");
+const test_support = @import("test_support.zig");
 const output = @import("../output/config.zig");
 const standard_single_pane = @import("../output/standard_single_pane.zig");
 const table = @import("../output/table.zig");
@@ -28,51 +29,67 @@ const CandidateSet = struct {
     }
 };
 
-const Runner = struct {
-    data: ?*anyopaque = null,
-    discover: *const fn (
-        data: ?*anyopaque,
+const Real = struct {
+    fn discover(
+        _: Real,
         context: *runtime.RuntimeContext,
         operation_context: *Zigalpm.OperationContext,
         package_name: []const u8,
-    ) anyerror!CandidateSet,
-    install: *const fn (
-        data: ?*anyopaque,
+    ) !CandidateSet {
+        const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
+        defer manager.deinit();
+        manager.setOperationContext(operation_context);
+        defer manager.setOperationContext(null);
+
+        const package_name_z = try context.allocator.dupeZ(u8, package_name);
+        defer context.allocator.free(package_name_z);
+        const installed = try manager.get_single_installed_package(package_name_z) orelse
+            return DowngradeError.PackageNotInstalled;
+
+        var archive = Zigalpm.alpm.ArchiveManager.init(context.allocator, context.io, .{});
+        defer archive.deinit();
+        archive.setOperationContext(operation_context);
+        defer archive.setOperationContext(null);
+        return .{
+            .candidates = try archive.find_candidates(
+                manager,
+                package_name,
+                installed.version(),
+            ),
+            .owns_candidates = true,
+        };
+    }
+
+    fn install(
+        _: Real,
         context: *runtime.RuntimeContext,
         operation_context: *Zigalpm.OperationContext,
         candidate: *const Zigalpm.alpm.DowngradeCandidate,
-    ) anyerror!void,
-    ignore: *const fn (
-        data: ?*anyopaque,
+    ) !void {
+        const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
+        defer manager.deinit();
+        manager.setOperationContext(operation_context);
+        defer manager.setOperationContext(null);
+
+        var archive = Zigalpm.alpm.ArchiveManager.init(context.allocator, context.io, .{});
+        defer archive.deinit();
+        archive.setOperationContext(operation_context);
+        defer archive.setOperationContext(null);
+        try archive.install_candidate(manager, candidate, .{});
+    }
+
+    fn ignore(
+        _: Real,
         context: *runtime.RuntimeContext,
         operation_context: *Zigalpm.OperationContext,
         package_name: []const u8,
-    ) anyerror!void,
-};
-
-const InstallAdapter = struct {
-    runner: Runner,
-    candidate: *const Zigalpm.alpm.DowngradeCandidate,
-
-    fn call(
-        data: ?*anyopaque,
-        context: *runtime.RuntimeContext,
-        operation_context: *Zigalpm.OperationContext,
     ) !void {
-        const self: *InstallAdapter = @ptrCast(@alignCast(data.?));
-        try self.runner.install(
-            self.runner.data,
-            context,
-            operation_context,
-            self.candidate,
-        );
+        const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
+        defer manager.deinit();
+        manager.setOperationContext(operation_context);
+        defer manager.setOperationContext(null);
+        try manager.ignore_package(package_name);
     }
-};
-
-const real_runner: Runner = .{
-    .discover = discoverReal,
-    .install = installReal,
-    .ignore = ignoreReal,
 };
 
 pub fn dispatch(
@@ -90,14 +107,14 @@ pub fn dispatch(
         };
         if (elevated_exit) |exit_code| return exit_code;
     }
-    return try runWithRunner(context, invocation, real_runner);
+    return try runWithRunner(context, invocation, Real{});
 }
 
 fn dispatchWithRunner(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
-) !?u8 {
+    runner: anytype,
+) anyerror!?u8 {
     if (!std.mem.eql(u8, invocation.command.path, command_path)) return null;
     if (validationMessage(invocation)) |message|
         return try reportFailure(context, invocation, message);
@@ -107,8 +124,8 @@ fn dispatchWithRunner(
 fn runWithRunner(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     const package_name = invocation.positionals[0];
     if (!invocation.globals.ui_mode and !invocation.globals.json) {
         const looking_message = try std.fmt.allocPrint(
@@ -124,7 +141,6 @@ fn runWithRunner(
     context.attachTransactionLog(&operation_context);
     defer operation_context.deinit();
     var candidates = runner.discover(
-        runner.data,
         context,
         &operation_context,
         package_name,
@@ -332,20 +348,35 @@ fn executeStandard(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
     candidate: *const Zigalpm.alpm.DowngradeCandidate,
-    runner: Runner,
-) !bool {
+    runner: anytype,
+) anyerror!bool {
     const opening = try std.fmt.allocPrint(
         context.allocator,
         "Installing: {s}",
         .{candidate.filename},
     );
     defer context.allocator.free(opening);
-    var adapter: InstallAdapter = .{ .runner = runner, .candidate = candidate };
+    const InstallAdapter = struct {
+        runner: @TypeOf(runner),
+        candidate: *const Zigalpm.alpm.DowngradeCandidate,
+
+        pub fn run(
+            self: @This(),
+            runtime_context: *runtime.RuntimeContext,
+            operation_context: *Zigalpm.OperationContext,
+            _: *const parser.Invocation,
+        ) !void {
+            return self.runner.install(runtime_context, operation_context, self.candidate);
+        }
+    };
     return standard_single_pane.output(
         context,
         opening,
         invocation.globals.no_confirm,
-        .{ .data = &adapter, .call = InstallAdapter.call },
+        InstallAdapter{ .runner = runner, .candidate = candidate },
+        invocation,
+        null,
+        null,
     );
 }
 
@@ -354,8 +385,8 @@ fn executeUi(
     invocation: *const parser.Invocation,
     package_name: []const u8,
     candidate: *const Zigalpm.alpm.DowngradeCandidate,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
     context.attachTransactionLog(&operation_context);
     defer operation_context.deinit();
@@ -382,7 +413,7 @@ fn executeUi(
     try output.writeAlpmInfoFrame(context, "TransactionStart", opening);
     try ui_operation.flush(context);
 
-    runner.install(runner.data, context, &operation_context, candidate) catch |err| {
+    runner.install(context, &operation_context, candidate) catch |err| {
         const message = try std.fmt.allocPrint(context.allocator, "Downgrade failed: {t}", .{err});
         defer context.allocator.free(message);
         try output.writeErrorFrame(context, message);
@@ -391,7 +422,7 @@ fn executeUi(
         return 1;
     };
     if (optionEnabled(invocation, "--ignore")) {
-        runner.ignore(runner.data, context, &operation_context, package_name) catch |err| {
+        runner.ignore(context, &operation_context, package_name) catch |err| {
             const message = try std.fmt.allocPrint(
                 context.allocator,
                 "Failed to add package to IgnorePkg: {t}",
@@ -414,12 +445,12 @@ fn executeIgnore(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
     package_name: []const u8,
-    runner: Runner,
-) !bool {
+    runner: anytype,
+) anyerror!bool {
     var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
     context.attachTransactionLog(&operation_context);
     defer operation_context.deinit();
-    runner.ignore(runner.data, context, &operation_context, package_name) catch |err| {
+    runner.ignore(context, &operation_context, package_name) catch |err| {
         const message = try std.fmt.allocPrint(
             context.allocator,
             "Error adding {s} to IgnorePkg: {t}",
@@ -472,11 +503,9 @@ fn writeCandidates(
         cells.* = values;
     }
     try table.write(
-        context.allocator,
-        context.stdout,
+        context,
         &.{ "Filename", "Location", "Installed" },
         rows,
-        output.supportsAnsi(context),
     );
 }
 
@@ -529,85 +558,6 @@ fn uriHost(uri: []const u8) ?[]const u8 {
     return if (end > start) uri[start..end] else null;
 }
 
-fn discoverReal(
-    _: ?*anyopaque,
-    context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
-    package_name: []const u8,
-) !CandidateSet {
-    const manager = try Zigalpm.AlpmManager.init(
-        context.allocator,
-        context.environ,
-        null,
-        true,
-        null,
-    );
-    defer manager.deinit();
-    manager.setOperationContext(operation_context);
-    defer manager.setOperationContext(null);
-
-    const package_name_z = try context.allocator.dupeZ(u8, package_name);
-    defer context.allocator.free(package_name_z);
-    const installed = try manager.get_single_installed_package(package_name_z) orelse
-        return DowngradeError.PackageNotInstalled;
-
-    var archive = Zigalpm.alpm.ArchiveManager.init(context.allocator, context.io, .{});
-    defer archive.deinit();
-    archive.setOperationContext(operation_context);
-    defer archive.setOperationContext(null);
-    return .{
-        .candidates = try archive.find_candidates(
-            manager,
-            package_name,
-            installed.version(),
-        ),
-        .owns_candidates = true,
-    };
-}
-
-fn installReal(
-    _: ?*anyopaque,
-    context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
-    candidate: *const Zigalpm.alpm.DowngradeCandidate,
-) !void {
-    const manager = try Zigalpm.AlpmManager.init(
-        context.allocator,
-        context.environ,
-        null,
-        true,
-        null,
-    );
-    defer manager.deinit();
-    manager.setOperationContext(operation_context);
-    defer manager.setOperationContext(null);
-
-    var archive = Zigalpm.alpm.ArchiveManager.init(context.allocator, context.io, .{});
-    defer archive.deinit();
-    archive.setOperationContext(operation_context);
-    defer archive.setOperationContext(null);
-    try archive.install_candidate(manager, candidate, .{});
-}
-
-fn ignoreReal(
-    _: ?*anyopaque,
-    context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
-    package_name: []const u8,
-) !void {
-    const manager = try Zigalpm.AlpmManager.init(
-        context.allocator,
-        context.environ,
-        null,
-        true,
-        null,
-    );
-    defer manager.deinit();
-    manager.setOperationContext(operation_context);
-    defer manager.setOperationContext(null);
-    try manager.ignore_package(package_name);
-}
-
 fn optionEnabled(invocation: *const parser.Invocation, name: []const u8) bool {
     for (invocation.options) |option| {
         if (!std.mem.eql(u8, option.name, name)) continue;
@@ -656,82 +606,59 @@ test "downgrade is a root-default command and retains its explicit standard path
 }
 
 test "downgrade validation rejects missing packages and incompatible target modes" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
-    const unused_runner: Runner = .{
-        .discover = struct {
-            fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: []const u8) !CandidateSet {
-                return error.ShouldNotRun;
-            }
-        }.run,
-        .install = struct {
-            fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: *const Zigalpm.alpm.DowngradeCandidate) !void {
-                return error.ShouldNotRun;
-            }
-        }.run,
-        .ignore = struct {
-            fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: []const u8) !void {
-                return error.ShouldNotRun;
-            }
-        }.run,
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const Unused = struct {
+        fn discover(_: @This(), _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: []const u8) !CandidateSet {
+            return error.ShouldNotRun;
+        }
+
+        fn install(_: @This(), _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: *const Zigalpm.alpm.DowngradeCandidate) !void {
+            return error.ShouldNotRun;
+        }
+
+        fn ignore(_: @This(), _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: []const u8) !void {
+            return error.ShouldNotRun;
+        }
     };
 
-    var outcome = try parser.parse(arena.allocator(), &manifest, &.{"downgrade"});
-    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&context, &outcome.dispatch, unused_runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "No package specified") != null);
+    var outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{"downgrade"});
+    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&tc.context, &outcome.dispatch, Unused{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "No package specified") != null);
 
-    stdout.writer.end = 0;
-    outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    tc.stdout.writer.end = 0;
+    outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "downgrade", "--target", "1.0-1", "--oldest", "demo",
     });
-    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&context, &outcome.dispatch, unused_runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Cannot combine --target with --oldest") != null);
+    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&tc.context, &outcome.dispatch, Unused{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Cannot combine --target with --oldest") != null);
 
-    stdout.writer.end = 0;
-    outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    tc.stdout.writer.end = 0;
+    outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "downgrade", "--target", "1.0-1", "--list-options", "demo",
     });
-    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&context, &outcome.dispatch, unused_runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Cannot combine --target with --list-options") != null);
+    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&tc.context, &outcome.dispatch, Unused{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Cannot combine --target with --list-options") != null);
 }
 
 test "downgrade lists candidates as C sharp compatible JSON and UI records" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
     var candidates = [_]Zigalpm.alpm.DowngradeCandidate{
         testCandidate("demo", "2.0", "1", "2.0-1", "x86_64", "demo-2.0-1-x86_64.pkg.tar.zst", "https://archive.example/demo-2.0-1-x86_64.pkg.tar.zst", .arch_linux, true),
         testCandidate("demo", "1.0", "2", "1.0-2", "x86_64", "demo-1.0-2-x86_64.pkg.tar.zst", "/var/cache/pacman/pkg/demo-1.0-2-x86_64.pkg.tar.zst", .local_cache, false),
     };
     var capture: TestRunner = .{ .candidates = &candidates };
-    const runner = capture.runner();
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
 
-    var outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    var outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "downgrade", "--list-options", "--json", "demo",
     });
-    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&context, &outcome.dispatch, runner));
-    const json_output = stdout.writer.buffered();
+    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture));
+    const json_output = tc.stdout.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, json_output, "\"Location\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_output, "\"Location\":1") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_output, "\"Uri\":null") != null);
@@ -740,13 +667,13 @@ test "downgrade lists candidates as C sharp compatible JSON and UI records" {
             std.mem.indexOf(u8, json_output, "demo-2.0-1-x86_64.pkg.tar.zst").?,
     );
 
-    stdout.writer.end = 0;
-    outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    tc.stdout.writer.end = 0;
+    outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "downgrade", "--list-options", "--ui-mode", "demo",
     });
-    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&context, &outcome.dispatch, runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "[JSON]") != null);
-    const decoded = try decodeFirstFrame(arena.allocator(), stdout.writer.buffered());
+    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "[JSON]") != null);
+    const decoded = try decodeFirstFrame(tc.arena.allocator(), tc.stdout.writer.buffered());
     try std.testing.expect(std.mem.indexOf(u8, decoded, "\"Location\":\"Remote\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, decoded, "\"Location\":\"Local\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, decoded, "\"Uri\"") == null);
@@ -755,12 +682,12 @@ test "downgrade lists candidates as C sharp compatible JSON and UI records" {
             std.mem.indexOf(u8, decoded, "demo-2.0-1-x86_64.pkg.tar.zst").?,
     );
 
-    stdout.writer.end = 0;
-    outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    tc.stdout.writer.end = 0;
+    outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "downgrade", "--list-options", "demo",
     });
-    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&context, &outcome.dispatch, runner));
-    const plain_output = stdout.writer.buffered();
+    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture));
+    const plain_output = tc.stdout.writer.buffered();
     try std.testing.expect(
         std.mem.indexOf(u8, plain_output, "demo-1.0-2-x86_64.pkg.tar.zst").? <
             std.mem.indexOf(u8, plain_output, "demo-2.0-1-x86_64.pkg.tar.zst").?,
@@ -768,74 +695,55 @@ test "downgrade lists candidates as C sharp compatible JSON and UI records" {
 }
 
 test "downgrade selects oldest and exact targets and updates IgnorePkg only when requested" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
     var candidates = [_]Zigalpm.alpm.DowngradeCandidate{
         testCandidate("demo", "3.0", "1", "3.0-1", "x86_64", "demo-3.0-1-x86_64.pkg.tar.zst", "https://archive.example/demo-3.0-1-x86_64.pkg.tar.zst", .arch_linux, true),
         testCandidate("demo", "2.0", "4", "2.0-4", "x86_64", "demo-2.0-4-x86_64.pkg.tar.zst", "/cache/demo-2.0-4-x86_64.pkg.tar.zst", .local_cache, false),
         testCandidate("demo", "1.0", "2", "1.0-2", "x86_64", "demo-1.0-2-x86_64.pkg.tar.zst", "https://archive.example/demo-1.0-2-x86_64.pkg.tar.zst", .arch_linux, false),
     };
     var capture: TestRunner = .{ .candidates = &candidates };
-    const runner = capture.runner();
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
 
-    var outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    var outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "downgrade", "--oldest", "--ignore", "--no-confirm", "demo",
     });
-    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&context, &outcome.dispatch, runner));
+    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture));
     try std.testing.expectEqualStrings("demo-1.0-2-x86_64.pkg.tar.zst", capture.installed_filename.?);
     try std.testing.expectEqual(@as(usize, 1), capture.ignore_calls);
 
     capture.installed_filename = null;
     capture.ignore_calls = 0;
-    stdout.writer.end = 0;
-    outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    tc.stdout.writer.end = 0;
+    outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "downgrade", "--target", "2.0-4", "--no-confirm", "demo",
     });
-    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&context, &outcome.dispatch, runner));
+    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture));
     try std.testing.expectEqualStrings("demo-2.0-4-x86_64.pkg.tar.zst", capture.installed_filename.?);
     try std.testing.expectEqual(@as(usize, 0), capture.ignore_calls);
 }
 
 test "interactive downgrade selection and confirmations are honored" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
     var candidates = [_]Zigalpm.alpm.DowngradeCandidate{
         testCandidate("demo", "2.0", "1", "2.0-1", "x86_64", "demo-2.0-1-x86_64.pkg.tar.zst", "https://archive.example/demo-2.0-1-x86_64.pkg.tar.zst", .arch_linux, true),
         testCandidate("demo", "1.0", "1", "1.0-1", "x86_64", "demo-1.0-1-x86_64.pkg.tar.zst", "/cache/demo-1.0-1-x86_64.pkg.tar.zst", .local_cache, false),
     };
     var capture: TestRunner = .{ .candidates = &candidates };
     var stdin = std.Io.Reader.fixed("1\ny\nn\n");
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdin = &stdin,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{ "downgrade", "demo" });
+    tc.context.stdin = &stdin;
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "downgrade", "demo" });
     try std.testing.expectEqual(
         @as(?u8, 0),
-        try dispatchWithRunner(&context, &outcome.dispatch, capture.runner()),
+        try dispatchWithRunner(&tc.context, &outcome.dispatch, &capture),
     );
     try std.testing.expectEqualStrings("demo-1.0-1-x86_64.pkg.tar.zst", capture.installed_filename.?);
     try std.testing.expectEqual(@as(usize, 0), capture.ignore_calls);
-    const rendered = stdout.writer.buffered();
+    const rendered = tc.stdout.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Select Package") != null);
     try std.testing.expect(
         std.mem.indexOf(u8, rendered, "demo-1.0-1-x86_64.pkg.tar.zst").? <
@@ -851,42 +759,30 @@ const TestRunner = struct {
     installed_filename: ?[]const u8 = null,
     ignore_calls: usize = 0,
 
-    fn runner(self: *TestRunner) Runner {
-        return .{
-            .data = self,
-            .discover = discover,
-            .install = install,
-            .ignore = ignore,
-        };
-    }
-
     fn discover(
-        data: ?*anyopaque,
+        self: *TestRunner,
         _: *runtime.RuntimeContext,
         _: *Zigalpm.OperationContext,
         _: []const u8,
     ) !CandidateSet {
-        const self: *TestRunner = @ptrCast(@alignCast(data.?));
         return .{ .candidates = self.candidates };
     }
 
     fn install(
-        data: ?*anyopaque,
+        self: *TestRunner,
         _: *runtime.RuntimeContext,
         _: *Zigalpm.OperationContext,
         candidate: *const Zigalpm.alpm.DowngradeCandidate,
     ) !void {
-        const self: *TestRunner = @ptrCast(@alignCast(data.?));
         self.installed_filename = candidate.filename;
     }
 
     fn ignore(
-        data: ?*anyopaque,
+        self: *TestRunner,
         _: *runtime.RuntimeContext,
         _: *Zigalpm.OperationContext,
         _: []const u8,
     ) !void {
-        const self: *TestRunner = @ptrCast(@alignCast(data.?));
         self.ignore_calls += 1;
     }
 };

@@ -18,6 +18,10 @@ pub const libalpm = struct {
     pub const Error = enum(i32) { Ok = 0, Memory, System, BadPerms, NotAFile, NotADir, WrongArgs, DiskSpace, HandleNull, HandleNotNull, HandleLock, DbOpen, DbCreate, DbNull, DbNotNull, DbNotFound, DbInvalid, DbInvalidSig, DbVersion, DbWrite, DbRemove, ServerBadUrl, ServerNone, TransNotNull, TransNull, TransDupTarget, TransDupFilename, TransNotInitialized, TransNotPrepared, TransAbort, TransType, TransNotLocked, TransHookFailed, PkgNotFound, PkgIgnored, PkgInvalid, PkgInvalidChecksum, PkgInvalidSig, PkgMissingSig, PkgOpen, PkgCantRemove, PkgInvalidName, PkgInvalidArch, SigMissing, SigInvalid, UnsatisfiedDeps, ConflictingDeps, FileConflicts, DownloadFailed, Gpgme, ExternalDownload, SandboxFailed };
 
     pub const PackageReason = enum(i32) { Explicit = 0, Dependency = 1, Unknown = 2 };
+    pub const ReverseDependencyOptions = struct {
+        required_by: bool = false,
+        optional_for: bool = false,
+    };
     pub const SigLevel = packed struct(u32) {
         package: bool = false,
         package_optional: bool = false,
@@ -333,6 +337,20 @@ pub const libalpm = struct {
             return .{ .node = alpm.alpm_pkg_compute_requiredby(self.ptr) };
         }
 
+        /// Returns allocator-owned package names and releases libalpm's
+        /// computed list before returning. The caller owns the returned slice
+        /// and every string in it.
+        pub fn owned_optional_for(self: Package, allocator: std.mem.Allocator) std.mem.Allocator.Error![][]const u8 {
+            return dupeComputedStrings(allocator, alpm.alpm_pkg_compute_optionalfor(self.ptr));
+        }
+
+        /// Returns allocator-owned package names and releases libalpm's
+        /// computed list before returning. The caller owns the returned slice
+        /// and every string in it.
+        pub fn owned_required_by(self: Package, allocator: std.mem.Allocator) std.mem.Allocator.Error![][]const u8 {
+            return dupeComputedStrings(allocator, alpm.alpm_pkg_compute_requiredby(self.ptr));
+        }
+
         pub fn files(self: Package) AlpmFileList {
             return AlpmFileList{ .ptr = alpm.alpm_pkg_get_files(self.ptr) };
         }
@@ -374,6 +392,14 @@ pub const libalpm = struct {
         install_date_value: ?i64,
 
         pub fn init(allocator: std.mem.Allocator, package: Package) std.mem.Allocator.Error!OwnedPackage {
+            return initWithReverseDependencies(allocator, package, .{});
+        }
+
+        pub fn initWithReverseDependencies(
+            allocator: std.mem.Allocator,
+            package: Package,
+            reverse_dependencies: ReverseDependencyOptions,
+        ) std.mem.Allocator.Error!OwnedPackage {
             const name_value = try allocator.dupeZ(u8, package.name() orelse "");
             errdefer allocator.free(name_value);
 
@@ -406,13 +432,23 @@ pub const libalpm = struct {
             errdefer freeStrings(allocator, optional_depends_value);
             const conflicts_value = try dupeDependencies(allocator, package.conflicts());
             errdefer freeStrings(allocator, conflicts_value);
-            // Keep parity with the C# DTO, whose ToDto implementation currently
-            // leaves these two reverse-dependency collections empty. Computing
-            // them for every repository package also turns a search into an
-            // expensive dependency-graph walk.
-            const required_by_value = try allocator.alloc([:0]u8, 0);
+            // Reverse dependency computation walks the local package graph, so
+            // keep it opt-in for broad queries such as search and list.
+            const required_by_value = if (reverse_dependencies.required_by)
+                try dupeComputedSentinelStrings(
+                    allocator,
+                    alpm.alpm_pkg_compute_requiredby(package.ptr),
+                )
+            else
+                try allocator.alloc([:0]u8, 0);
             errdefer freeStrings(allocator, required_by_value);
-            const optional_for_value = try allocator.alloc([:0]u8, 0);
+            const optional_for_value = if (reverse_dependencies.optional_for)
+                try dupeComputedSentinelStrings(
+                    allocator,
+                    alpm.alpm_pkg_compute_optionalfor(package.ptr),
+                )
+            else
+                try allocator.alloc([:0]u8, 0);
             errdefer freeStrings(allocator, optional_for_value);
 
             return .{
@@ -471,6 +507,33 @@ pub const libalpm = struct {
                 const value = dependency.computed_dependency_string(allocator) orelse continue;
                 values.append(allocator, @constCast(value)) catch |err| {
                     allocator.free(value);
+                    return err;
+                };
+            }
+            return values.toOwnedSlice(allocator);
+        }
+
+        fn dupeComputedSentinelStrings(
+            allocator: std.mem.Allocator,
+            list: [*c]alpm.alpm_list_t,
+        ) std.mem.Allocator.Error![][:0]u8 {
+            defer {
+                alpm.alpm_list_free_inner(list, alpm.free);
+                alpm.alpm_list_free(list);
+            }
+
+            var values: std.ArrayList([:0]u8) = .empty;
+            errdefer {
+                for (values.items) |value| allocator.free(value);
+                values.deinit(allocator);
+            }
+            var node = list;
+            while (node != null) : (node = node.*.next) {
+                const data = node.*.data orelse continue;
+                const value = asStr(data) orelse continue;
+                const owned = try allocator.dupeZ(u8, value);
+                values.append(allocator, owned) catch |err| {
+                    allocator.free(owned);
                     return err;
                 };
             }
@@ -1059,6 +1122,34 @@ pub const libalpm = struct {
         };
     }
 
+    fn dupeComputedStrings(
+        allocator: std.mem.Allocator,
+        list: [*c]alpm.alpm_list_t,
+    ) std.mem.Allocator.Error![][]const u8 {
+        defer {
+            alpm.alpm_list_free_inner(list, alpm.free);
+            alpm.alpm_list_free(list);
+        }
+
+        var result: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (result.items) |item| allocator.free(item);
+            result.deinit(allocator);
+        }
+
+        var node = list;
+        while (node != null) : (node = node.*.next) {
+            const data = node.*.data orelse continue;
+            const value = asStr(data) orelse continue;
+            const owned = try allocator.dupe(u8, value);
+            result.append(allocator, owned) catch |err| {
+                allocator.free(owned);
+                return err;
+            };
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
     fn asStr(data: *anyopaque) ?[:0]const u8 {
         return std.mem.span(@as([*c]const u8, @ptrCast(data)));
     }
@@ -1081,6 +1172,8 @@ test "iterator-returning methods type-check" {
     _ = &libalpm.Package.conflicts;
     _ = &libalpm.Package.optional_for;
     _ = &libalpm.Package.required_by;
+    _ = &libalpm.Package.owned_optional_for;
+    _ = &libalpm.Package.owned_required_by;
     _ = &libalpm.AlpmPackageGroup.packages;
     // PackageConflict accessors have no other callers, so force them too.
     _ = &libalpm.PackageConflict.packageOne;

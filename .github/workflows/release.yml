@@ -32,6 +32,9 @@ jobs:
           (cd Shelly.Flatpak.Backend && zig build abi-test)
           (cd Shelly.Flatpak.Backend && zig build integration-test)
 
+      - name: Test HTTP client
+        run: cd Shelly.Http && zig build test
+
       - name: Test PackageManager
         run: |
           (cd Shelly.PackageManager && zig build test)
@@ -85,7 +88,7 @@ jobs:
       - name: Compile and bundle translations
         run: |
           mkdir -p publish/shelly-ui/locale
-          for po_file in Shelly.Ui.Gtk/no_po_git/*.po; do
+          for po_file in Shelly.Ui.Gtk/po/*.po; do
             if [ -f "$po_file" ]; then
               lang=$(basename "$po_file" .po)
               mkdir -p "publish/shelly-ui/locale/$lang/LC_MESSAGES"
@@ -96,7 +99,7 @@ jobs:
       - name: Compile and bundle tray service translations
         run: |
           mkdir -p publish/shelly-ui/locale
-          for po_file in Shelly.Notifications/po/*.po; do
+          for po_file in Shelly.Notifications.Zig/po/*.po; do
             if [ -f "$po_file" ]; then
               lang=$(basename "$po_file" .po)
               mkdir -p "publish/shelly-ui/locale/$lang/LC_MESSAGES"
@@ -104,12 +107,14 @@ jobs:
             fi
           done
 
-      - name: Publish Shelly.Notifications
+      - name: Publish Shelly.Notifications.Zig
         run: |
-          meson setup build-notify Shelly.Notifications
-          meson compile -C build-notify
+          (cd Shelly.Notifications.Zig && zig build --verbose \
+            --prefix ../publish/build-notifications \
+            -Dcpu=baseline \
+            -Doptimize=ReleaseSafe)
           # Bundle Notifications into the UI directory.
-          install -Dm755 build-notify/shelly-notifications publish/shelly-ui/shelly-notifications
+          install -Dm755 publish/build-notifications/bin/shelly-notifications publish/shelly-ui/shelly-notifications
 
       - name: Publish Shelly.Key
         run: |
@@ -129,10 +134,11 @@ jobs:
           cp publish/shelly-cli/_shelly     publish/shelly-ui/
           tar -czf publish/Shelly-ALPM-linux-x64.tar.gz -C publish/shelly-ui .
 
-      - name: Copy standalone completions
+      - name: Copy standalone release files
         run: |
           cp publish/shelly-cli/shelly.fish publish/shelly.fish
           cp publish/shelly-cli/_shelly     publish/_shelly
+          cp shellybuild.conf publish/shellybuild.conf
 
       - name: Generate SHA256 checksums
         run: |
@@ -141,8 +147,8 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/}
           curl -sL "https://github.com/ZoeyErinBauer/Shelly-ALPM/archive/${VERSION}.tar.gz" -o "source-${VERSION}.tar.gz"
           sha256sum "source-${VERSION}.tar.gz" | sed "s/source-${VERSION}.tar.gz/${VERSION}.tar.gz/" > SHA256SUMS.txt
-          # Add binary tarballs and completions checksums.
-          sha256sum Shelly-ALPM-linux-x64.tar.gz Shelly-CLI-linux-x64.tar.gz Shelly-Flatpak-Backend-linux-x64.tar.gz Shelly-Key-linux-x64.tar.gz shelly.fish _shelly >> SHA256SUMS.txt
+          # Add binary tarballs, completions, and builder configuration checksums.
+          sha256sum Shelly-ALPM-linux-x64.tar.gz Shelly-CLI-linux-x64.tar.gz Shelly-Flatpak-Backend-linux-x64.tar.gz Shelly-Key-linux-x64.tar.gz shelly.fish _shelly shellybuild.conf >> SHA256SUMS.txt
           rm "source-${VERSION}.tar.gz"
           cat SHA256SUMS.txt
 
@@ -156,6 +162,7 @@ jobs:
             publish/Shelly-Key-linux-x64.tar.gz
             publish/shelly.fish
             publish/_shelly
+            publish/shellybuild.conf
             publish/SHA256SUMS.txt
           draft: false
           prerelease: false

@@ -42,6 +42,15 @@ pub fn build(b: *std.Build) void {
             "Package containing the Flatpak backend for this Shelly build",
         ) orelse "shelly-flatpak-backend",
     );
+    options.addOption(
+        bool,
+        "skip_background_services",
+        b.option(
+            bool,
+            "skip-background-services",
+            "Skip starting background services (icon download, tray); useful for Valgrind leak checks",
+        ) orelse false,
+    );
 
     const exe = b.addExecutable(.{
         .name = "Shelly_Ui_Gtk",
@@ -77,19 +86,24 @@ pub fn build(b: *std.Build) void {
     gresource.addFileInput(b.path("src/assets/icons/settings-symbolic.svg"));
     gresource.addFileInput(b.path("src/assets/icons/application-x-executable-symbolic.svg"));
     gresource.addFileInput(b.path("src/assets/icons/software-update-available-symbolic.svg"));
+    gresource.addFileInput(b.path("src/assets/icons/checkmark-small-symbolic.svg"));
     gresource.addFileInput(b.path("src/ui/main_window.ui"));
     gresource.addFileInput(b.path("src/ui/settings_page.ui"));
     gresource.addFileInput(b.path("src/ui/utilities_page.ui"));
     gresource.addFileInput(b.path("src/ui/flatpak/flatpak_page.ui"));
     gresource.addFileInput(b.path("src/ui/appimage_page.ui"));
     gresource.addFileInput(b.path("src/ui/aur_page.ui"));
+    gresource.addFileInput(b.path("src/ui/search_page.ui"));
     gresource.addFileInput(b.path("src/ui/package_page.ui"));
     gresource.addFileInput(b.path("src/ui/update_page.ui"));
     gresource.addFileInput(b.path("src/dialog/ui/yn.ui"));
+    gresource.addFileInput(b.path("src/dialog/ui/flatpak_remove.ui"));
     gresource.addFileInput(b.path("src/dialog/ui/multiselect.ui"));
     gresource.addFileInput(b.path("src/ui/package_detail.ui"));
     gresource.addFileInput(b.path("src/ui/aur_package_detail.ui"));
+    gresource.addFileInput(b.path("src/ui/flatpak_package_detail.ui"));
     gresource.addFileInput(b.path("src/ui/transaction_page.ui"));
+    gresource.addFileInput(b.path("src/dialog/ui/provider.ui"));
     gresource.addFileInput(b.path("src/ui/recommend_page.ui"));
     gresource.addFileInput(b.path("src/ui/flatpak/flatpak_install_view.ui"));
     gresource.addFileInput(b.path("src/ui/flatpak/flatpak_remove_view.ui"));
@@ -97,9 +111,12 @@ pub fn build(b: *std.Build) void {
     gresource.addFileInput(b.path("src/ui/flatpak/flatpak_install_local.ui"));
     gresource.addFileInput(b.path("src/dialog/ui/version_history.ui"));
     gresource.addFileInput(b.path("src/dialog/ui/permissions.ui"));
+    gresource.addFileInput(b.path("src/dialog/ui/addons.ui"));
     gresource.addFileInput(b.path("src/dialog/ui/pkg_build.ui"));
     gresource.addFileInput(b.path("src/dialog/ui/plan_dialog.ui"));
     gresource.addFileInput(b.path("src/dialog/ui/preview_pkgbuild.ui"));
+    gresource.addFileInput(b.path("src/dialog/ui/polkit_warning.ui"));
+    gresource.addFileInput(b.path("src/dialog/ui/aur_warning.ui"));
     gresource.addFileInput(b.path("src/ui/welcome.ui"));
     // Link the generated resource C into the exe.
     exe.root_module.addCSourceFile(.{ .file = resources_c });
@@ -113,6 +130,23 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    const valgrind_cmd = b.addSystemCommand(&.{"valgrind"});
+    valgrind_cmd.addArgs(&.{
+        "--tool=memcheck",
+        "--leak-check=full",
+        "--show-leak-kinds=definite,indirect",
+        "--track-origins=yes",
+        "--num-callers=50",
+        "--error-exitcode=42",
+        "--log-file=valgrind-%p.log",
+    });
+    valgrind_cmd.addPrefixedFileArg("--suppressions=", b.path("valgrind/glib-gtk.supp"));
+    valgrind_cmd.addArtifactArg(exe);
+    if (b.args) |args| valgrind_cmd.addArgs(args);
+
+    const valgrind_step = b.step("valgrind", "Run the app under Valgrind (memcheck) to check for memory leaks");
+    valgrind_step.dependOn(&valgrind_cmd.step);
 
     const root_tests = b.addTest(.{ .root_module = shelly_ui_gtk });
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });

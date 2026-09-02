@@ -3,6 +3,8 @@ const Zigalpm = @import("Zigalpm");
 const model = @import("../config/model.zig");
 const runtime = @import("../runtime/context.zig");
 const xdg = @import("../runtime/xdg.zig");
+const colors = @import("colors.zig");
+const format = @import("format.zig");
 const review_output = @import("review.zig");
 
 pub fn writeListPlain(
@@ -13,10 +15,10 @@ pub fn writeListPlain(
     for (config.values.keys()) |key| width = @max(width, key.len);
     const use_color = supportsAnsi(context);
     for (config.values.keys()) |key| {
-        if (use_color) try context.stdout.writeAll("\x1b[38;2;0;255;255m");
+        if (use_color) try context.stdout.writeAll(colors.colorCode(.info));
         try context.stdout.print("{s}", .{key});
         try context.stdout.splatByteAll(' ', width - key.len);
-        if (use_color) try context.stdout.writeAll("\x1b[0m");
+        if (use_color) try context.stdout.writeAll(colors.reset);
         const value = try config.getDisplay(context.allocator, key);
         try context.stdout.print("  {s}\n", .{value orelse "(null)"});
     }
@@ -247,6 +249,12 @@ pub fn writeYesNoQuestionFrame(
     try json.write(questionKindName(question));
     try json.objectField("QuestionText");
     try json.write(question.prompt);
+    if (question.pgp_key_import) |key| {
+        try json.objectField("PackageName");
+        try json.write(key.package_name);
+        try json.objectField("Fingerprint");
+        try json.write(key.fingerprint);
+    }
     try json.endObject();
     try writeFrame(context, payload.writer.buffered());
 }
@@ -368,11 +376,47 @@ fn writeSelectionQuestionFrame(
 }
 
 fn questionKindName(question: Zigalpm.OperationQuestion) []const u8 {
+    
+    switch(question.purpose) {
+        .cache_clean_extra_entries => return "CacheCleanExtraEntries",
+        .generic => {},
+    }
+    
+    if (question.kind == .import_pgp_key) return "ImportPgpKey";
+    
     return switch (question.envelope.kind) {
         .remove => "RemovePkgs",
         .update => "ConflictPkg",
         else => "InstallIgnorePkg",
     };
+}
+
+test "cache clean question uses cache clean wire kind" {
+    const question: Zigalpm.OperationQuestion = .{
+        .question_id = 1,
+        .envelope = .{
+            .operation_id = 1,
+            .parent_id = null,
+            .backend = .alpm,
+            .kind = .cleanup,
+            .subject = null,
+        },
+        .kind = .confirmation,
+        .purpose = .cache_clean_extra_entries,
+        .prompt = "Would you like to remove extra cache entries?",
+        .options = &.{},
+        .attachments = &.{},
+        .review = null,
+        .transaction_plan = null,
+        .dependency_name = null,
+        .pgp_key_import = null,
+        .default_response = .accepted,
+    };
+
+    try std.testing.expectEqualStrings(
+        "CacheCleanExtraEntries",
+        questionKindName(question),
+    );
 }
 
 fn writeAlpmProgressFrame(
@@ -577,19 +621,11 @@ pub fn writeErrorFrame(context: *runtime.RuntimeContext, message: []const u8) !v
 }
 
 pub fn writeSuccess(context: *runtime.RuntimeContext, message: []const u8) !void {
-    if (supportsAnsi(context)) {
-        try context.stdout.print("\x1b[38;2;0;128;0m{s}\x1b[0m\n", .{message});
-    } else {
-        try context.stdout.print("{s}\n", .{message});
-    }
+    try colors.printLine(context, .success, "{s}", .{message});
 }
 
 pub fn writeFailure(context: *runtime.RuntimeContext, message: []const u8) !void {
-    if (supportsAnsi(context)) {
-        try context.stdout.print("\x1b[38;2;255;0;0m{s}\x1b[0m\n", .{message});
-    } else {
-        try context.stdout.print("{s}\n", .{message});
-    }
+    try colors.printLine(context, .err, "{s}", .{message});
 }
 
 pub fn writeWarning(context: *runtime.RuntimeContext, message: []const u8) !void {
@@ -616,20 +652,5 @@ pub fn supportsAnsi(context: *const runtime.RuntimeContext) bool {
 fn timestamp(context: *runtime.RuntimeContext) ![]const u8 {
     const seconds = std.Io.Clock.real.now(context.io).toSeconds();
     if (seconds < 0) return error.InvalidTimestamp;
-    const epoch_seconds: std.time.epoch.EpochSeconds = .{ .secs = @intCast(seconds) };
-    const year_day = epoch_seconds.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch_seconds.getDaySeconds();
-    return std.fmt.allocPrint(
-        context.allocator,
-        "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}+00:00",
-        .{
-            year_day.year,
-            month_day.month.numeric(),
-            month_day.day_index + 1,
-            day_seconds.getHoursIntoDay(),
-            day_seconds.getMinutesIntoHour(),
-            day_seconds.getSecondsIntoMinute(),
-        },
-    );
+    return format.formatIsoDateTimeUtc(context.allocator, seconds);
 }

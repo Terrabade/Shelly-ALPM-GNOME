@@ -40,7 +40,10 @@ pub const PackagePage = extern struct {
         version_column: *gtk.ColumnViewColumn,
         size_column: *gtk.ColumnViewColumn,
         repository_column: *gtk.ColumnViewColumn,
+        install_date_column: *gtk.ColumnViewColumn,
         check_column: *gtk.ColumnViewColumn,
+        no_results_overlay: *gtk.Widget,
+        no_results_label: *gtk.Label,
         selection: *gtk.SingleSelection,
         list_store: *gio.ListStore,
         loading_overlay: *gtk.Box,
@@ -182,18 +185,53 @@ pub const PackagePage = extern struct {
         _ = gtk.CheckButton.signals.toggled.connect(p.upgrade_check, *Self, &on_upgrade_toggled, self, .{});
         _ = gtk.CheckButton.signals.toggled.connect(p.show_hidden_check, *Self, &on_show_hidden_toggled, self, .{});
 
+        const install_date_factory = gtk.SignalListItemFactory.new();
+        _ = gtk.SignalListItemFactory.signals.setup.connect(install_date_factory, ?*anyopaque, &install_date_setup, null, .{});
+        _ = gtk.SignalListItemFactory.signals.bind.connect(install_date_factory, ?*anyopaque, &install_date_bind, null, .{});
+        gtk.ColumnViewColumn.setFactory(p.install_date_column, install_date_factory.as(gtk.ListItemFactory));
+
+        gtk.ColumnViewColumn.setVisible(p.install_date_column, 0);
+
+        attachSorter(p.check_column, sorters.boolSorter(PackageObject, &PackageObject.isSelected));
+        attachSorter(p.install_date_column, sorters.stringSorter(PackageObject, &PackageObject.getInstallDate));
         attachSorter(p.name_column, sorters.stringSorter(PackageObject, &PackageObject.getName));
         attachSorter(p.size_column, sorters.numericSorter(PackageObject, &PackageObject.getInstalledSize));
         attachSorter(p.repository_column, sorters.stringSorter(PackageObject, &PackageObject.getRepository));
         attachSorter(p.version_column, sorters.stringSorter(PackageObject, &PackageObject.getVersion));
 
+        const group = gio.SimpleActionGroup.new();
+        const action = gio.SimpleAction.new("focus", null);
+        _ = gio.SimpleAction.signals.activate.connect(action, *Self, &onFocusSearch, self, .{});
+        gio.ActionMap.addAction(group.as(gio.ActionMap), action.as(gio.Action));
+        gtk.Widget.insertActionGroup(self.as(gtk.Widget), "search", group.as(gio.ActionGroup));
+
         applyOptionsFromConfig(self);
         support.connectLifecycle(Self, self);
+    }
+
+    fn onFocusSearch(_: *gio.SimpleAction, _: ?*glib.Variant, self: *Self) callconv(.c) void {
+        _ = gtk.Widget.grabFocus(self.priv().search_entry.as(gtk.Widget));
     }
 
     fn attachSorter(column: *gtk.ColumnViewColumn, sorter: *gtk.Sorter) void {
         gtk.ColumnViewColumn.setSorter(column, sorter);
         sorter.as(gobject.Object).unref();
+    }
+
+    fn install_date_setup(_: *gtk.SignalListItemFactory, item: *gobject.Object, _: ?*anyopaque) callconv(.c) void {
+        const cell = gobject.ext.cast(gtk.ColumnViewCell, item) orelse return;
+        const label = gtk.Label.new("");
+        gtk.Widget.setHalign(label.as(gtk.Widget), gtk.Align.start);
+        gtk.ColumnViewCell.setChild(cell, label.as(gtk.Widget));
+    }
+
+    fn install_date_bind(_: *gtk.SignalListItemFactory, item: *gobject.Object, _: ?*anyopaque) callconv(.c) void {
+        const cell = gobject.ext.cast(gtk.ColumnViewCell, item) orelse return;
+        const obj = gtk.ColumnViewCell.getItem(cell) orelse return;
+        const pkg = gobject.ext.cast(PackageObject, obj) orelse return;
+        const child = gtk.ColumnViewCell.getChild(cell) orelse return;
+        const label = gobject.ext.cast(gtk.Label, child) orelse return;
+        gtk.Label.setLabel(label, if (pkg.isInstalled()) pkg.getInstallDate() else "");
     }
 
     fn setup_signal_text_label_column(column: *gtk.ColumnViewColumn, comptime getter: *const fn (*PackageObject) [:0]const u8, comptime halign: gtk.Align) void {
@@ -225,21 +263,41 @@ pub const PackagePage = extern struct {
         const c = struct {
             fn setup(_: *gtk.SignalListItemFactory, item: *gobject.Object, _: *Self) callconv(.c) void {
                 const cell = gobject.ext.cast(gtk.ColumnViewCell, item) orelse return;
-
-                const box = gtk.Box.new(.horizontal, 6);
                 gtk.ListItem.setActivatable(gobject.ext.as(gtk.ListItem, cell), 1);
+
+                const box = gtk.Box.new(.horizontal, 8);
+
                 const icon = gtk.Image.new();
-                gtk.Image.setPixelSize(icon, 24);
+                gtk.Image.setPixelSize(icon, 32);
+                gtk.Widget.setValign(icon.as(gtk.Widget), .center);
                 gtk.Box.append(box, icon.as(gtk.Widget));
+
+                const text_box = gtk.Box.new(.vertical, 0);
+                gtk.Widget.setValign(text_box.as(gtk.Widget), .center);
+                gtk.Widget.setHexpand(text_box.as(gtk.Widget), 1);
+
+                const name_row = gtk.Box.new(.horizontal, 6);
 
                 const label = gtk.Label.new("");
                 gtk.Widget.setHalign(label.as(gtk.Widget), .start);
+                gtk.Label.setUseMarkup(label, 1);
                 gtk.Label.setEllipsize(label, .end);
-                gtk.Box.append(box, label.as(gtk.Widget));
+                gtk.Box.append(name_row, label.as(gtk.Widget));
 
                 const installed_icon = gtk.Image.newFromIconName("object-select-symbolic");
                 gtk.Widget.setTooltipText(installed_icon.as(gtk.Widget), translations._("Installed"));
-                gtk.Box.append(box, installed_icon.as(gtk.Widget));
+                gtk.Box.append(name_row, installed_icon.as(gtk.Widget));
+
+                gtk.Box.append(text_box, name_row.as(gtk.Widget));
+
+                const desc_label = gtk.Label.new("");
+                gtk.Widget.setHalign(desc_label.as(gtk.Widget), .start);
+                gtk.Widget.addCssClass(desc_label.as(gtk.Widget), "dim-label");
+                gtk.Label.setEllipsize(desc_label, .end);
+                gtk.Label.setMaxWidthChars(desc_label, 60);
+                gtk.Box.append(text_box, desc_label.as(gtk.Widget));
+
+                gtk.Box.append(box, text_box.as(gtk.Widget));
 
                 gtk.ColumnViewCell.setChild(cell, box.as(gtk.Widget));
             }
@@ -253,11 +311,20 @@ pub const PackagePage = extern struct {
 
                 const icon_w = gtk.Widget.getFirstChild(box.as(gtk.Widget)) orelse return;
                 const icon = gobject.ext.cast(gtk.Image, icon_w) orelse return;
-                const label_w = gtk.Widget.getNextSibling(icon_w) orelse return;
+                const text_w = gtk.Widget.getNextSibling(icon_w) orelse return;
+                const name_row_w = gtk.Widget.getFirstChild(text_w) orelse return;
+                const label_w = gtk.Widget.getFirstChild(name_row_w) orelse return;
                 const label = gobject.ext.cast(gtk.Label, label_w) orelse return;
                 const installed_w = gtk.Widget.getNextSibling(label_w) orelse return;
+                const desc_w = gtk.Widget.getLastChild(text_w) orelse return;
+                const desc_label = gobject.ext.cast(gtk.Label, desc_w) orelse return;
 
-                gtk.Label.setLabel(label, pkg.getName());
+                var buf: [512]u8 = undefined;
+                const escaped = glib.markupEscapeText(pkg.getName(), -1);
+                defer glib.free(escaped);
+                const markup = std.fmt.bufPrintZ(&buf, "<b>{s}</b>", .{escaped}) catch pkg.getName();
+                gtk.Label.setMarkup(label, markup);
+                gtk.Label.setLabel(desc_label, pkg.getDescription());
                 gtk.Widget.setVisible(installed_w, @intFromBool(pkg.isInstalled()));
 
                 const p = page.priv();
@@ -561,7 +628,15 @@ pub const PackagePage = extern struct {
 
         const needle = p.search_text[0..p.search_len];
 
-        return @intFromBool(contains_ignore_case(pkg.getName(), needle));
+        return @intFromBool(contains_ignore_case(pkg.getName(), needle) or contains_ignore_case(pkg.getDescription(), needle));
+    }
+
+    fn update_no_results(self: *Self) void {
+        const p = self.priv();
+        const selection = p.selection;
+        const loaded = gio.ListModel.getNItems(p.list_store.as(gio.ListModel));
+        const visible = loaded > 0 and gio.ListModel.getNItems(selection.as(gio.ListModel)) == 0;
+        gtk.Widget.setVisible(p.no_results_overlay.as(gtk.Widget), @intFromBool(visible));
     }
 
     fn contains_ignore_case(haystack: []const u8, needle: []const u8) bool {
@@ -586,6 +661,7 @@ pub const PackagePage = extern struct {
         p.search_len = len;
 
         gtk.Filter.changed(p.filter.as(gtk.Filter), .different);
+        self.update_no_results();
     }
 
     fn on_selection_changed(_: *gobject.Object, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
@@ -631,6 +707,7 @@ pub const PackagePage = extern struct {
         self.update_selection_ui();
         _ = gtk.Widget.grabFocus(p.search_entry.as(gtk.Widget));
         const thread = std.Thread.spawn(.{}, load_worker, .{ self, p.generation, p.show_hidden }) catch return;
+        gtk.Widget.setVisible(p.no_results_overlay.as(gtk.Widget), 0);
         thread.detach();
     }
 
@@ -676,8 +753,14 @@ pub const PackagePage = extern struct {
         const p = self.priv();
         if (!p.loaded) return;
         p.loaded = false;
+        p.generation += 1;
 
         gio.ListStore.removeAll(p.list_store);
+
+        p.check_map_grid.deinit(std.heap.c_allocator);
+        p.check_map_grid = .empty;
+        p.check_map_column.deinit(std.heap.c_allocator);
+        p.check_map_column = .empty;
 
         if (p.arena) |a| {
             a.deinit();
@@ -694,20 +777,14 @@ pub const PackagePage = extern struct {
     fn load_worker(page: *Self, generation: u64, show_hidden: bool) void {
         const arena_ptr = std.heap.c_allocator.create(std.heap.ArenaAllocator) catch return;
         arena_ptr.* = std.heap.ArenaAllocator.init(std.heap.c_allocator);
-
         const alloc = arena_ptr.allocator();
-
         const p = page.priv();
         if (!p.resolver.loaded) {
             p.resolver.load(runtime.io, runtime.environ_map) catch {};
         }
-
         var threaded: std.Io.Threaded = .init(alloc, .{});
         defer threaded.deinit();
 
-        //remember arena allocs arnt thread safe so if you are coming back
-        //and looking to paralize this please consider
-        //done sequentially as load times arnt heavily effected by it and its easier then paralizing atm.
         const cli = ShellyCli{ .allocator = alloc, .io = threaded.io() };
         const parsed = cli.get_packages(show_hidden) catch |err| {
             std.debug.print("get_packages failed: {t}\n", .{err});
@@ -716,40 +793,49 @@ pub const PackagePage = extern struct {
             return;
         };
 
-        var installed_arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
-        defer installed_arena.deinit();
-        const ialloc = installed_arena.allocator();
-
-        var ithreaded: std.Io.Threaded = .init(ialloc, .{});
-        defer ithreaded.deinit();
-        const icli = ShellyCli{ .allocator = ialloc, .io = ithreaded.io() };
-
+        const icli = ShellyCli{ .allocator = alloc, .io = threaded.io() };
         const installed = icli.get_installed_packages() catch null;
+
+        var all: std.ArrayListUnmanaged(Package) = .empty;
+        all.appendSlice(alloc, parsed.value) catch {};
+
         if (installed) |inst| {
             var map: std.StringHashMapUnmanaged(*const Package) = .empty;
             for (inst.value) |*pkg| {
-                map.put(ialloc, pkg.Name, pkg) catch {};
+                map.put(alloc, pkg.Name, pkg) catch {};
             }
-            for (parsed.value) |*pkg| {
+
+            var matched: std.StringHashMapUnmanaged(void) = .empty;
+            for (all.items) |*pkg| {
                 if (map.get(pkg.Name)) |ipkg| {
                     pkg.Installed = true;
+                    pkg.InstallDate = ipkg.InstallDate;
                     pkg.Explicit = std.mem.eql(u8, ipkg.InstallReason, "Explicit");
+                    matched.put(alloc, pkg.Name, {}) catch {};
                 } else {
                     pkg.Installed = false;
+                }
+            }
+
+            for (inst.value) |ipkg| {
+                if (!matched.contains(ipkg.Name)) {
+                    var extra = ipkg;
+                    extra.Installed = true;
+                    extra.Explicit = std.mem.eql(u8, ipkg.InstallReason, "Explicit");
+                    all.append(alloc, extra) catch {};
                 }
             }
         }
 
         var set: std.StringHashMapUnmanaged(void) = .empty;
-        for (parsed.value) |pkg| {
+        for (all.items) |pkg| {
             for (pkg.Groups) |g| set.put(alloc, g, {}) catch {};
         }
-
         var list: std.ArrayListUnmanaged([]const u8) = .empty;
         var it = set.keyIterator();
         while (it.next()) |k| list.append(alloc, k.*) catch {};
 
-        post_result(page, parsed.value, list.items, arena_ptr, generation);
+        post_result(page, all.items, list.items, arena_ptr, generation);
     }
 
     fn post_result(
@@ -759,7 +845,11 @@ pub const PackagePage = extern struct {
         arena: *std.heap.ArenaAllocator,
         generation: u64,
     ) void {
-        const result = std.heap.c_allocator.create(LoadResult) catch return;
+        const result = std.heap.c_allocator.create(LoadResult) catch {
+            arena.deinit();
+            std.heap.c_allocator.destroy(arena);
+            return;
+        };
         result.* = .{
             .page = page,
             .packages = packages,
@@ -782,6 +872,9 @@ pub const PackagePage = extern struct {
 
         if (result.index == 0) {
             gio.ListStore.removeAll(p.list_store);
+
+            p.check_map_grid.clearAndFree(std.heap.c_allocator);
+            p.check_map_column.clearAndFree(std.heap.c_allocator);
 
             const strings = gtk.StringList.new(null);
             gtk.StringList.append(strings, "Any");
@@ -818,6 +911,7 @@ pub const PackagePage = extern struct {
         _ = gtk.SelectionModel.selectItem(p.selection.as(gtk.SelectionModel), 0, 1);
 
         hide_loading(page);
+
         return 0;
     }
 
@@ -833,6 +927,7 @@ pub const PackagePage = extern struct {
         const p = self.priv();
         gtk.Spinner.setSpinning(p.loading_spinner, 0);
         gtk.Widget.setVisible(p.loading_overlay.as(gtk.Widget), 0);
+        self.update_no_results();
     }
 
     const template_children = .{
@@ -841,6 +936,7 @@ pub const PackagePage = extern struct {
         .{ "version_column", @offsetOf(Private, "version_column") },
         .{ "size_column", @offsetOf(Private, "size_column") },
         .{ "repository_column", @offsetOf(Private, "repository_column") },
+        .{ "install_date_column", @offsetOf(Private, "install_date_column") },
         .{ "check_column", @offsetOf(Private, "check_column") },
         .{ "loading_spinner", @offsetOf(Private, "loading_spinner") },
         .{ "loading_overlay", @offsetOf(Private, "loading_overlay") },
@@ -861,6 +957,8 @@ pub const PackagePage = extern struct {
         .{ "show_hidden_check", @offsetOf(Private, "show_hidden_check") },
         .{ "show_explicit_only", @offsetOf(Private, "show_explicit_only_check") },
         .{ "show_detail_pane", @offsetOf(Private, "show_detail_pane_check") },
+        .{ "no_results_overlay", @offsetOf(Private, "no_results_overlay") },
+        .{ "no_results_label", @offsetOf(Private, "no_results_label") },
     };
 
     pub const Class = extern struct {
@@ -1050,6 +1148,7 @@ pub const PackagePage = extern struct {
     fn on_installed_only_toggled(check: *gtk.CheckButton, self: *Self) callconv(.c) void {
         const p = self.priv();
         p.show_installed_only = gtk.CheckButton.getActive(check) != 0;
+        gtk.ColumnViewColumn.setVisible(p.install_date_column, @intFromBool(p.show_installed_only));
         gtk.Filter.changed(p.filter.as(gtk.Filter), .different);
     }
 

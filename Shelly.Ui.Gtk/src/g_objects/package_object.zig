@@ -16,6 +16,7 @@ pub const PackageObject = extern struct {
         repository: [:0]const u8,
         description: [:0]const u8,
         groups: []const [:0]const u8,
+        install_date: [:0]const u8,
         explicit: bool,
         installed_size: i64,
         installed: bool,
@@ -45,6 +46,7 @@ pub const PackageObject = extern struct {
         p.explicit = false;
         p.groups = &.{};
         p.installed_size = 0;
+        p.install_date = "";
         p.installed = false;
         p.selected = false;
     }
@@ -62,6 +64,7 @@ pub const PackageObject = extern struct {
         p.version = a.dupeZ(u8, package.Version) catch "";
         p.repository = a.dupeZ(u8, package.Repository) catch "";
         p.description = a.dupeZ(u8, package.Description) catch "";
+        p.install_date = if (package.InstallDate) |d| a.dupeZ(u8, d) catch "" else "";
         p.installed_size = package.InstalledSize;
         p.installed = package.Installed;
         p.explicit = package.Explicit;
@@ -104,6 +107,9 @@ pub const PackageObject = extern struct {
     }
     pub fn getInstalledSize(self: *Self) i64 {
         return self.priv().installed_size;
+    }
+    pub fn getInstallDate(self: *Self) [:0]const u8 {
+        return self.priv().install_date;
     }
     pub fn isInstalled(self: *Self) bool {
         return self.priv().installed;

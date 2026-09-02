@@ -15,6 +15,8 @@ const PkgBuild = @import("../models/pkgbuild.zig").PkgBuild;
 const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 
+const log = std.log.scoped(.shelly_cli);
+
 pub const CliMessage = struct {
     @"$kind": []const u8 = "",
     Message: []const u8 = "",
@@ -77,6 +79,15 @@ pub const ShellyCli = struct {
     }
 
     fn exec(self: ShellyCli, argv: []const []const u8) !RunResult {
+        if (builtin.mode == .Debug) {
+            if (std.mem.join(self.allocator, " ", argv)) |command| {
+                defer self.allocator.free(command);
+                log.debug("argv: {s}", .{command});
+            } else |_| {
+                log.debug("argv: {d} arguments", .{argv.len});
+            }
+        }
+
         const result = try std.process.run(self.allocator, self.io, .{
             .argv = argv,
             .environ_map = runtime.environ_map,
@@ -86,9 +97,9 @@ pub const ShellyCli = struct {
         errdefer self.allocator.free(result.stderr);
 
         if (result.term != .exited or result.term.exited != 0) {
-            std.debug.print("failed: term={any} stderr='{s}' stdout='{s}'\n", .{
+            log.err("command failed: term={any} stderr='{s}' stdout='{s}'", .{
                 result.term,
-                result.stderr,
+                result.stderr[0..@min(500, result.stderr.len)],
                 result.stdout[0..@min(500, result.stdout.len)],
             });
             return error.CommandFailed;
@@ -145,10 +156,8 @@ pub const ShellyCli = struct {
         return try JsonPackFrame.decode([]AppstreamApp, self.allocator, result.stdout);
     }
 
-    pub fn get_flatpak_remote_info(self: ShellyCli, remote: []const u8, id: []const u8, branch: []const u8) !std.json.Parsed(FlatpakSearchResponse) {
+    pub fn get_flatpak_remote_info(self: ShellyCli, id: []const u8) !std.json.Parsed(FlatpakSearchResponse) {
         const result = try self.run(&.{ "search", "flatpak", id });
-        _ = remote;
-        _ = branch;
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
 
@@ -169,6 +178,56 @@ pub const ShellyCli = struct {
         defer self.allocator.free(result.stderr);
 
         return JsonPackFrame.decodeLast([]AurPackage, self.allocator, result.stdout);
+    }
+
+    const StandardSearchWrapper = struct {
+        Packages: []Package = &.{},
+    };
+
+    pub fn search_standard(self: ShellyCli, query: []const u8) !std.json.Parsed([]Package) {
+        const result = try self.run(&.{ "search", "standard", "--available", "--installed", query });
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+
+        var it = JsonPackFrame.frames(result.stdout);
+        while (it.next()) |payload| {
+            const json = JsonPackFrame.decodeBase64(self.allocator, payload) catch continue;
+            defer self.allocator.free(json);
+
+            if (std.mem.indexOf(u8, json, "\"$kind\"") != null) continue;
+
+            const options = std.json.ParseOptions{ .ignore_unknown_fields = true, .allocate = .alloc_always };
+            const trimmed = std.mem.trim(u8, json, " \t\r\n");
+            if (std.mem.startsWith(u8, trimmed, "[")) {
+                return std.json.parseFromSlice([]Package, self.allocator, json, options);
+            }
+
+            const wrapper = try std.json.parseFromSlice(StandardSearchWrapper, self.allocator, json, options);
+            return .{ .arena = wrapper.arena, .value = wrapper.value.Packages };
+        }
+
+        return error.NoDataFrame;
+    }
+
+    pub fn search_flatpak(self: ShellyCli, query: []const u8) !std.json.Parsed(FlatpakSearchResponse) {
+        const result = try self.run(&.{ "search", "flatpak", query, "--limit", "50" });
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+
+        var it = JsonPackFrame.frames(result.stdout);
+        while (it.next()) |payload| {
+            const json = JsonPackFrame.decodeBase64(self.allocator, payload) catch continue;
+            defer self.allocator.free(json);
+
+            if (std.mem.indexOf(u8, json, "\"$kind\"") != null) continue;
+
+            return std.json.parseFromSlice(FlatpakSearchResponse, self.allocator, json, .{
+                .ignore_unknown_fields = true,
+                .allocate = .alloc_always,
+            });
+        }
+
+        return error.NoDataFrame;
     }
 
     pub fn list_aur_installed(self: ShellyCli) !std.json.Parsed([]AurPackage) {
@@ -248,7 +307,7 @@ pub const ShellyCli = struct {
 
         if (result.stderr.len > 0) return error.FetchPkgbuildFailed;
 
-        std.debug.print("result.stdout: {s}\n", .{result.stdout});
+        log.debug("pkgbuild response received ({d} bytes)", .{result.stdout.len});
 
         return JsonPackFrame.decode([]PkgBuild, self.allocator, result.stdout);
     }

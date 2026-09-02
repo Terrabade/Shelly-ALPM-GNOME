@@ -1,11 +1,13 @@
 const std = @import("std");
 const Zigalpm = @import("Zigalpm");
+const test_support = @import("test_support.zig");
 const output = @import("../output/config.zig");
 const standard_single_pane = @import("../output/standard_single_pane.zig");
 const ui_operation = @import("../output/ui_operation.zig");
 const parser = @import("../cli/parser.zig");
 const runtime = @import("../runtime/context.zig");
 const elevation = @import("../runtime/elevation.zig");
+const aur_url = @import("../config/aur_url.zig");
 
 const standard_command_path = "shelly update standard";
 const aur_command_path = "shelly update aur";
@@ -14,33 +16,25 @@ const flatpak_command_path = "shelly update flatpak";
 const UpdateError = error{
     BackendFailed,
     BackendNotImplemented,
+    FlatpakNotFound,
 };
 
-const Runner = struct {
-    data: ?*anyopaque = null,
-    call: *const fn (
-        data: ?*anyopaque,
+const Real = struct {
+    pub fn run(
+        _: Real,
         context: *runtime.RuntimeContext,
         operation_context: *Zigalpm.OperationContext,
         invocation: *const parser.Invocation,
-    ) anyerror!void,
-};
-
-const RunnerAdapter = struct {
-    runner: Runner,
-    invocation: *const parser.Invocation,
-
-    fn call(
-        data: ?*anyopaque,
-        context: *runtime.RuntimeContext,
-        operation_context: *Zigalpm.OperationContext,
     ) !void {
-        const self: *RunnerAdapter = @ptrCast(@alignCast(data.?));
-        try self.runner.call(self.runner.data, context, operation_context, self.invocation);
+        if (std.mem.eql(u8, invocation.command.path, standard_command_path))
+            return runStandard(context, operation_context, invocation);
+        if (std.mem.eql(u8, invocation.command.path, aur_command_path))
+            return runAur(context, operation_context, invocation);
+        if (std.mem.eql(u8, invocation.command.path, flatpak_command_path))
+            return runFlatpak(context, operation_context, invocation);
+        return UpdateError.BackendNotImplemented;
     }
 };
-
-const real_runner: Runner = .{ .call = runRealUpdate };
 
 pub fn dispatch(
     context: *runtime.RuntimeContext,
@@ -61,11 +55,17 @@ pub fn dispatch(
     }
 
     if (!invocation.globals.ui_mode and needsElevation(invocation) and !elevation.isRoot()) {
-        const elevated_arguments = if (is_standard and confirmed_standard)
-            try argumentsWithNoConfirm(context.allocator, invocation.arguments)
+        const carries_aur = std.mem.eql(u8, invocation.command.path, aur_command_path);
+        const aur_arguments = if (carries_aur)
+            try aur_url.argumentsWithEffectiveBase(context, invocation)
         else
             invocation.arguments;
-        defer if (elevated_arguments.ptr != invocation.arguments.ptr)
+        defer if (carries_aur) context.allocator.free(aur_arguments);
+        const elevated_arguments = if (is_standard and confirmed_standard)
+            try argumentsWithNoConfirm(context.allocator, aur_arguments)
+        else
+            aur_arguments;
+        defer if (elevated_arguments.ptr != aur_arguments.ptr)
             context.allocator.free(elevated_arguments);
 
         const elevated_exit = elevation.relaunchIfNeeded(context, elevated_arguments) catch |err| {
@@ -75,7 +75,7 @@ pub fn dispatch(
         if (elevated_exit) |exit_code| return exit_code;
     }
 
-    return try executeWithRunner(context, invocation, real_runner);
+    return try executeWithRunner(context, invocation, Real{});
 }
 
 fn confirmStandardUpdate(
@@ -174,8 +174,8 @@ fn argumentsWithNoConfirm(
 fn executeWithRunner(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     const opening = try openingMessage(context.allocator, invocation);
     defer context.allocator.free(opening);
     return if (invocation.globals.ui_mode)
@@ -187,15 +187,17 @@ fn executeWithRunner(
 fn executeStandard(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
+    runner: anytype,
     opening: []const u8,
-) !u8 {
-    var adapter: RunnerAdapter = .{ .runner = runner, .invocation = invocation };
+) anyerror!u8 {
     const succeeded = try standard_single_pane.output(
         context,
         opening,
         invocation.globals.no_confirm,
-        .{ .data = &adapter, .call = RunnerAdapter.call },
+        runner,
+        invocation,
+        null,
+        null,
     );
     return if (succeeded) 0 else 1;
 }
@@ -203,56 +205,15 @@ fn executeStandard(
 fn executeUi(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
+    runner: anytype,
     opening: []const u8,
-) !u8 {
-    var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
-    context.attachTransactionLog(&operation_context);
-    defer operation_context.deinit();
-    var question_responder: ui_operation.QuestionResponder = .{
-        .context = context,
-        .operation_context = &operation_context,
-        .no_confirm = invocation.globals.no_confirm,
-    };
-    question_responder.attach();
-    defer question_responder.detach();
-    var reporter: ui_operation.Reporter = .{ .context = context };
-    const event_subscription = try operation_context.subscribe(.{
-        .function = ui_operation.Reporter.handle,
-        .data = &reporter,
-    });
-    defer _ = operation_context.unsubscribe(event_subscription);
-
-    try output.writeAlpmInfoFrame(context, "TransactionStart", opening);
-    try ui_operation.flush(context);
-
-    runner.call(runner.data, context, &operation_context, invocation) catch |err| {
-        const message = try std.fmt.allocPrint(context.allocator, "Update failed: {t}", .{err});
-        defer context.allocator.free(message);
-        try output.writeErrorFrame(context, message);
-        try output.writeAlpmInfoFrame(context, "TransactionFailed", failureMessage(invocation));
-        try ui_operation.flush(context);
-        return 1;
-    };
-
-    try output.writeAlpmInfoFrame(context, "TransactionDone", successMessage(invocation));
-    try ui_operation.flush(context);
-    return if (reporter.failed()) 1 else 0;
-}
-
-fn runRealUpdate(
-    _: ?*anyopaque,
-    context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
-    invocation: *const parser.Invocation,
-) !void {
-    if (std.mem.eql(u8, invocation.command.path, standard_command_path))
-        return runStandard(context, operation_context, invocation);
-    if (std.mem.eql(u8, invocation.command.path, aur_command_path))
-        return runAur(context, operation_context, invocation);
-    if (std.mem.eql(u8, invocation.command.path, flatpak_command_path))
-        return runFlatpak(context, operation_context, invocation);
-    return UpdateError.BackendNotImplemented;
+) anyerror!u8 {
+    return ui_operation.runTransaction(context, invocation, .{
+        .opening = opening,
+        .success_message = successMessage(invocation),
+        .failure_message = failureMessage(invocation),
+        .failure_label = "Update failed",
+    }, runner);
 }
 
 fn runStandard(
@@ -260,13 +221,7 @@ fn runStandard(
     operation_context: *Zigalpm.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
-    const manager = try Zigalpm.AlpmManager.init(
-        context.allocator,
-        context.environ,
-        null,
-        true,
-        null,
-    );
+    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
@@ -281,14 +236,87 @@ fn runAur(
     operation_context: *Zigalpm.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
+    const executable = try std.process.executablePathAlloc(context.io, context.allocator);
+    defer context.allocator.free(executable);
+    const build_command = std.mem.trimEnd(u8, executable, " (deleted)");
+    const aur_base = try aur_url.resolveFor(context, invocation);
     const manager = try Zigalpm.AurManager.init(context.allocator, context.environ, .{
+        .aur_git_base_url = aur_base,
         .root = true,
-        .no_check = !optionEnabled(invocation, "--check"),
+        .check = checkOverride(invocation),
+        .sign = signOverride(invocation),
+        .build_command = build_command,
+        .operation_context = operation_context,
     });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
     try manager.updatePackages(invocation.positionals);
+}
+
+fn checkOverride(invocation: *const parser.Invocation) ?bool {
+    if (optionEnabled(invocation, "--no-check")) return false;
+    if (optionEnabled(invocation, "--check")) return true;
+    return null;
+}
+
+fn signOverride(invocation: *const parser.Invocation) ?bool {
+    if (optionEnabled(invocation, "--nosign")) return false;
+    if (optionEnabled(invocation, "--sign")) return true;
+    return null;
+}
+
+fn updateFlatpakTarget(
+    context: *runtime.RuntimeContext,
+    operation_context: *Zigalpm.OperationContext,
+    manager: anytype,
+    target: []const u8,
+) !void {
+    var application = (manager.find_installed_flatpak(target) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return UpdateError.BackendFailed,
+    }) orelse return UpdateError.FlatpakNotFound;
+    defer application.deinit(context.allocator);
+
+    var detection = (manager.detect_eol_flatpak(&application) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    }) orelse {
+        if (!try manager.update_installed_flatpak(target, null))
+            return UpdateError.BackendFailed;
+        return;
+    };
+    defer detection.deinit(context.allocator);
+
+    if (detection.rebase) |rebase| {
+        if (!try manager.rebase_flatpak(
+            rebase.old_ref,
+            rebase.new_ref,
+            rebase.remote,
+            rebase.scope,
+            &.{application.id},
+        )) return UpdateError.BackendFailed;
+        const message = try Zigalpm.flatpak.eol.rebasedMessage(
+            context.allocator,
+            application.id,
+            rebase.new_id,
+        );
+        defer context.allocator.free(message);
+        Zigalpm.flatpak.eol.emitStatus(operation_context, .update, .success, application.id, message);
+        return;
+    }
+
+    if (detection.reason) |reason| {
+        const warning = try Zigalpm.flatpak.eol.eolOnlyWarning(
+            context.allocator,
+            application.id,
+            application.branch,
+            reason,
+        );
+        defer context.allocator.free(warning);
+        Zigalpm.flatpak.eol.emitStatus(operation_context, .update, .warning, application.id, warning);
+    }
+    if (!try manager.update_installed_flatpak(target, null))
+        return UpdateError.BackendFailed;
 }
 
 fn runFlatpak(
@@ -300,8 +328,7 @@ fn runFlatpak(
     defer manager.deinit();
     try manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null) catch {};
-    if (!try manager.update_installed_flatpak(invocation.positionals[0], null))
-        return UpdateError.BackendFailed;
+    try updateFlatpakTarget(context, operation_context, manager, invocation.positionals[0]);
 }
 
 fn reportValidationFailure(
@@ -438,30 +465,20 @@ test "routes update long forms and canonical shortcodes" {
 
 test "routes every update backend through shared output lifecycles" {
     const spec = @import("../cli/spec.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
     const Capture = struct {
         calls: usize = 0,
         paths: [3][]const u8 = undefined,
 
-        fn run(
-            data: ?*anyopaque,
+        pub fn run(
+            self: *@This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             invocation: *const parser.Invocation,
         ) !void {
-            const self: *@This() = @ptrCast(@alignCast(data.?));
             self.paths[self.calls] = invocation.command.path;
             self.calls += 1;
             if (std.mem.eql(u8, invocation.command.path, aur_command_path))
@@ -469,80 +486,61 @@ test "routes every update backend through shared output lifecycles" {
         }
     };
     var capture: Capture = .{};
-    const runner: Runner = .{ .data = &capture, .call = Capture.run };
 
     for ([_][]const []const u8{
         &.{ "update", "standard", "--no-confirm", "linux", "mesa" },
         &.{ "update", "aur", "--check", "demo-git" },
         &.{ "update", "flatpak", "--ui-mode", "org.example.App" },
     }) |arguments| {
-        const outcome = try parser.parse(arena.allocator(), &manifest, arguments);
-        try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
+        const outcome = try parser.parse(tc.arena.allocator(), &manifest, arguments);
+        try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, &capture));
     }
     try std.testing.expectEqual(@as(usize, 3), capture.calls);
     try std.testing.expectEqualStrings(standard_command_path, capture.paths[0]);
     try std.testing.expectEqualStrings(aur_command_path, capture.paths[1]);
     try std.testing.expectEqualStrings(flatpak_command_path, capture.paths[2]);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "linux, mesa") != null);
-    try std.testing.expect(std.mem.count(u8, stdout.writer.buffered(), "[JSON]") >= 2);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "linux, mesa") != null);
+    try std.testing.expect(std.mem.count(u8, tc.stdout.writer.buffered(), "[JSON]") >= 2);
 }
 
 test "standard update confirmation is explicit default deny" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
     var stdin = std.Io.Reader.fixed("maybe\nyes\n");
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdin = &stdin,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    tc.context.stdin = &stdin;
 
-    try std.testing.expect(try confirmStandardUpdate(&context, &.{ "linux", "mesa" }));
-    const accepted_output = stdout.writer.buffered();
+    try std.testing.expect(try confirmStandardUpdate(&tc.context, &.{ "linux", "mesa" }));
+    const accepted_output = tc.stdout.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, accepted_output, "Packages to update: linux, mesa") != null);
     try std.testing.expect(std.mem.indexOf(u8, accepted_output, "partial upgrade") != null);
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, accepted_output, "(y/N)"));
 
-    stdout.writer.end = 0;
+    tc.stdout.writer.end = 0;
     var decline_stdin = std.Io.Reader.fixed("\n");
-    context.stdin = &decline_stdin;
-    try std.testing.expect(!try confirmStandardUpdate(&context, &.{"linux"}));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Operation cancelled.") != null);
+    tc.context.stdin = &decline_stdin;
+    try std.testing.expect(!try confirmStandardUpdate(&tc.context, &.{"linux"}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Operation cancelled.") != null);
 }
 
 test "standard UI confirmation uses C sharp compatible yes-no frames" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
     const response_json = "{\"$kind\":\"a.yesno\",\"QuestionId\":\"1\",\"Accept\":true}";
     const encoded_size = std.base64.standard.Encoder.calcSize(response_json.len);
-    const encoded = try arena.allocator().alloc(u8, encoded_size);
+    const encoded = try tc.arena.allocator().alloc(u8, encoded_size);
     const encoded_response = std.base64.standard.Encoder.encode(encoded, response_json);
     const response_frame = try std.fmt.allocPrint(
-        arena.allocator(),
+        tc.arena.allocator(),
         "[JSON]{s}[/JSON]\n",
         .{encoded_response},
     );
     var stdin = std.Io.Reader.fixed(response_frame);
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdin = &stdin,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    tc.context.stdin = &stdin;
 
-    try std.testing.expect(try confirmStandardUpdateUi(&context, &.{"linux"}));
-    const rendered = stdout.writer.buffered();
+    try std.testing.expect(try confirmStandardUpdateUi(&tc.context, &.{"linux"}));
+    const rendered = tc.stdout.writer.buffered();
     var frame_iterator = std.mem.splitSequence(u8, rendered, "[JSON]");
     _ = frame_iterator.next();
     var found_confirmation = false;
@@ -550,7 +548,7 @@ test "standard UI confirmation uses C sharp compatible yes-no frames" {
         const encoded_end = std.mem.indexOf(u8, framed, "[/JSON]") orelse continue;
         const payload = framed[0..encoded_end];
         const decoded_size = try std.base64.standard.Decoder.calcSizeForSlice(payload);
-        const decoded = try arena.allocator().alloc(u8, decoded_size);
+        const decoded = try tc.arena.allocator().alloc(u8, decoded_size);
         try std.base64.standard.Decoder.decode(decoded, payload);
         if (std.mem.indexOf(u8, decoded, "\"$kind\":\"q.yesno\"") == null) continue;
         found_confirmation = true;
@@ -562,51 +560,33 @@ test "standard UI confirmation uses C sharp compatible yes-no frames" {
 
 test "update validation rejects empty standard and AUR target lists" {
     const spec = @import("../cli/spec.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
 
     for ([_][]const []const u8{
         &.{ "update", "standard", "--ui-mode" },
         &.{ "update", "aur", "--ui-mode" },
     }) |arguments| {
-        const outcome = try parser.parse(arena.allocator(), &manifest, arguments);
-        try std.testing.expectEqual(@as(?u8, 1), try dispatch(&context, &outcome.dispatch));
+        const outcome = try parser.parse(tc.arena.allocator(), &manifest, arguments);
+        try std.testing.expectEqual(@as(?u8, 1), try dispatch(&tc.context, &outcome.dispatch));
     }
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, stdout.writer.buffered(), "[JSON]"));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, tc.stdout.writer.buffered(), "[JSON]"));
 }
 
 test "update backend failures return a nonzero status" {
     const spec = @import("../cli/spec.zig");
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "update", "flatpak", "org.example.App",
     });
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
     const Failure = struct {
-        fn run(
-            _: ?*anyopaque,
+        pub fn run(
+            _: @This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             _: *const parser.Invocation,
@@ -617,7 +597,7 @@ test "update backend failures return a nonzero status" {
 
     try std.testing.expectEqual(
         @as(u8, 1),
-        try executeWithRunner(&context, &outcome.dispatch, .{ .call = Failure.run }),
+        try executeWithRunner(&tc.context, &outcome.dispatch, Failure{}),
     );
 }
 
@@ -627,4 +607,237 @@ test "confirmed elevated standard updates append no-confirm exactly once" {
     defer std.testing.allocator.free(elevated);
     try std.testing.expectEqual(@as(usize, 4), elevated.len);
     try std.testing.expectEqualStrings("--no-confirm", elevated[3]);
+}
+
+const EolUpdateTestManager = struct {
+    allocator: std.mem.Allocator,
+    application: ?Zigalpm.flatpak.types.InstalledApplication = null,
+    detection: ?Zigalpm.flatpak.EolDetection = null,
+    find_error: bool = false,
+    update_result: bool = true,
+    rebase_result: bool = true,
+    update_called: bool = false,
+    rebase_called: bool = false,
+    rebase_old_ref: ?[]const u8 = null,
+    rebase_new_ref: ?[]const u8 = null,
+    rebase_remote: ?[]const u8 = null,
+    rebase_previous_ids: []const []const u8 = &.{},
+
+    pub fn find_installed_flatpak(
+        self: @This(),
+        _: []const u8,
+    ) !?Zigalpm.flatpak.types.InstalledApplication {
+        if (self.find_error) return error.TestFindFailure;
+        if (self.application == null) return null;
+        const source = self.application.?;
+        return try Zigalpm.flatpak.types.InstalledApplication.fromWire(self.allocator, .{
+            .id = source.id,
+            .name = source.name,
+            .arch = source.arch,
+            .branch = source.branch,
+            .summary = source.summary,
+            .version = source.version,
+            .latest_commit = source.latest_commit,
+            .origin = source.origin,
+            .kind = @enumFromInt(@intFromEnum(source.kind)),
+            .installed_size = source.installed_size,
+            .scope = Zigalpm.flatpak.types.Scope.toWire(source.scope),
+            .eol = source.eol,
+            .eol_rebase = source.eol_rebase,
+        });
+    }
+
+    pub fn detect_eol_flatpak(
+        self: @This(),
+        _: *const Zigalpm.flatpak.types.InstalledApplication,
+    ) !?Zigalpm.flatpak.EolDetection {
+        const source = self.detection orelse return null;
+        var reason: ?[]u8 = null;
+        if (source.reason) |value| reason = try self.allocator.dupe(u8, value);
+        var rebase: ?Zigalpm.flatpak.EolRebase = null;
+        if (source.rebase) |value| {
+            rebase = try cloneEolRebase(self.allocator, value);
+        }
+        return .{ .reason = reason, .rebase = rebase };
+    }
+
+    pub fn update_installed_flatpak(
+        self: *@This(),
+        _: []const u8,
+        _: ?[]const u8,
+    ) !bool {
+        self.update_called = true;
+        return self.update_result;
+    }
+
+    pub fn rebase_flatpak(
+        self: *@This(),
+        old_ref: []const u8,
+        new_ref: []const u8,
+        remote: []const u8,
+        _: Zigalpm.flatpak.Scope,
+        previous_ids: []const []const u8,
+    ) !bool {
+        self.rebase_called = true;
+        self.rebase_old_ref = try self.allocator.dupe(u8, old_ref);
+        self.rebase_new_ref = try self.allocator.dupe(u8, new_ref);
+        self.rebase_remote = try self.allocator.dupe(u8, remote);
+        const duped_ids = try self.allocator.alloc([]const u8, previous_ids.len);
+        for (previous_ids, duped_ids) |source, *dest| {
+            dest.* = try self.allocator.dupe(u8, source);
+        }
+        self.rebase_previous_ids = duped_ids;
+        return self.rebase_result;
+    }
+};
+
+fn cloneEolRebase(
+    allocator: std.mem.Allocator,
+    source: Zigalpm.flatpak.EolRebase,
+) !Zigalpm.flatpak.EolRebase {
+    return .{
+        .old_ref = try allocator.dupe(u8, source.old_ref),
+        .new_ref = try allocator.dupe(u8, source.new_ref),
+        .new_id = try allocator.dupe(u8, source.new_id),
+        .new_branch = try allocator.dupe(u8, source.new_branch),
+        .remote = try allocator.dupe(u8, source.remote),
+        .scope = source.scope,
+    };
+}
+
+fn makeInstalledApplication(id: []const u8, branch: []const u8) Zigalpm.flatpak.types.InstalledApplication {
+    return .{
+        .id = @constCast(id),
+        .name = @constCast(id),
+        .arch = @constCast("x86_64"),
+        .branch = @constCast(branch),
+        .summary = @constCast(""),
+        .version = @constCast("1.0"),
+        .latest_commit = @constCast("abc"),
+        .origin = @constCast("flathub"),
+        .kind = .app,
+        .installed_size = 0,
+        .scope = .system,
+        .eol = null,
+        .eol_rebase = null,
+    };
+}
+
+fn makeEolRebaseDetection(new_id: []const u8, new_branch: []const u8) Zigalpm.flatpak.EolDetection {
+    return .{
+        .reason = null,
+        .rebase = .{
+            .old_ref = @constCast("app/dev.bragefuglseth.Keypunch/x86_64/stable"),
+            .new_ref = @constCast("app/no.bragefuglseth.Keypunch/x86_64/stable"),
+            .new_id = @constCast(new_id),
+            .new_branch = @constCast(new_branch),
+            .remote = @constCast("flathub"),
+            .scope = .system,
+        },
+    };
+}
+
+test "Flatpak update EOL rebase dispatches to the replacement" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stdout = std.Io.Writer.Discarding.init(&.{});
+    var stderr = std.Io.Writer.Discarding.init(&.{});
+    var context: runtime.RuntimeContext = .{
+        .allocator = arena.allocator(),
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    defer operations.deinit();
+
+    var manager: EolUpdateTestManager = .{
+        .allocator = arena.allocator(),
+        .application = makeInstalledApplication("dev.bragefuglseth.Keypunch", "stable"),
+        .detection = makeEolRebaseDetection("no.bragefuglseth.Keypunch", "stable"),
+    };
+
+    try updateFlatpakTarget(&context, &operations, &manager, "dev.bragefuglseth.Keypunch");
+    try std.testing.expect(manager.rebase_called);
+    try std.testing.expect(!manager.update_called);
+    try std.testing.expectEqualStrings("app/dev.bragefuglseth.Keypunch/x86_64/stable", manager.rebase_old_ref.?);
+    try std.testing.expectEqualStrings("app/no.bragefuglseth.Keypunch/x86_64/stable", manager.rebase_new_ref.?);
+    try std.testing.expectEqualStrings("flathub", manager.rebase_remote.?);
+    try std.testing.expectEqual(@as(usize, 1), manager.rebase_previous_ids.len);
+    try std.testing.expectEqualStrings("dev.bragefuglseth.Keypunch", manager.rebase_previous_ids[0]);
+}
+
+test "Flatpak update EOL-only warns and proceeds with the normal update" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stdout = std.Io.Writer.Discarding.init(&.{});
+    var stderr = std.Io.Writer.Discarding.init(&.{});
+    var context: runtime.RuntimeContext = .{
+        .allocator = arena.allocator(),
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    defer operations.deinit();
+
+    var manager: EolUpdateTestManager = .{
+        .allocator = arena.allocator(),
+        .application = makeInstalledApplication("org.example.Dead", "stable"),
+        .detection = .{ .reason = @constCast("No longer maintained"), .rebase = null },
+    };
+
+    try updateFlatpakTarget(&context, &operations, &manager, "org.example.Dead");
+    try std.testing.expect(!manager.rebase_called);
+    try std.testing.expect(manager.update_called);
+}
+
+test "Flatpak update without EOL runs the normal update path" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stdout = std.Io.Writer.Discarding.init(&.{});
+    var stderr = std.Io.Writer.Discarding.init(&.{});
+    var context: runtime.RuntimeContext = .{
+        .allocator = arena.allocator(),
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    defer operations.deinit();
+
+    var manager: EolUpdateTestManager = .{
+        .allocator = arena.allocator(),
+        .application = makeInstalledApplication("org.example.App", "stable"),
+        .detection = null,
+    };
+
+    try updateFlatpakTarget(&context, &operations, &manager, "org.example.App");
+    try std.testing.expect(!manager.rebase_called);
+    try std.testing.expect(manager.update_called);
+}
+
+test "Flatpak update returns FlatpakNotFound when the ref is not installed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stdout = std.Io.Writer.Discarding.init(&.{});
+    var stderr = std.Io.Writer.Discarding.init(&.{});
+    var context: runtime.RuntimeContext = .{
+        .allocator = arena.allocator(),
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    defer operations.deinit();
+
+    var manager: EolUpdateTestManager = .{
+        .allocator = arena.allocator(),
+        .application = null,
+    };
+
+    try std.testing.expectError(
+        UpdateError.FlatpakNotFound,
+        updateFlatpakTarget(&context, &operations, &manager, "org.example.Missing"),
+    );
 }

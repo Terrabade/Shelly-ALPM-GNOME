@@ -1,5 +1,6 @@
 const std = @import("std");
 const Zigalpm = @import("Zigalpm");
+const test_support = @import("test_support.zig");
 const output = @import("../output/config.zig");
 const ui_operation = @import("../output/ui_operation.zig");
 const parser = @import("../cli/parser.zig");
@@ -38,35 +39,36 @@ const PackageList = struct {
     }
 };
 
-const Runner = struct {
-    data: ?*anyopaque = null,
-    list: *const fn (
-        data: ?*anyopaque,
+const Real = struct {
+    fn list(
+        _: Real,
         context: *runtime.RuntimeContext,
         operation_context: *Zigalpm.OperationContext,
         kind: MarkKind,
-    ) anyerror!PackageList,
-    mutate: *const fn (
-        data: ?*anyopaque,
+    ) !PackageList {
+        return listReal(context, operation_context, kind);
+    }
+
+    fn mutate(
+        _: Real,
         context: *runtime.RuntimeContext,
         operation_context: *Zigalpm.OperationContext,
         kind: MarkKind,
         action: ListAction,
         packages: []const []const u8,
-    ) anyerror!void,
-    reason: *const fn (
-        data: ?*anyopaque,
+    ) !void {
+        return mutateReal(context, operation_context, kind, action, packages);
+    }
+
+    fn reason(
+        _: Real,
         context: *runtime.RuntimeContext,
         operation_context: *Zigalpm.OperationContext,
         kind: MarkKind,
         package: []const u8,
-    ) anyerror!void,
-};
-
-const real_runner: Runner = .{
-    .list = listReal,
-    .mutate = mutateReal,
-    .reason = reasonReal,
+    ) !void {
+        return reasonReal(context, operation_context, kind, package);
+    }
 };
 
 pub fn dispatch(
@@ -87,13 +89,13 @@ pub fn dispatch(
         if (elevated_exit) |exit_code| return exit_code;
     }
 
-    return try runWithRunner(context, invocation, kind, real_runner);
+    return try runWithRunner(context, invocation, kind, Real{});
 }
 
 fn dispatchWithRunner(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
+    runner: anytype,
 ) !?u8 {
     const kind = kindForPath(invocation.command.path) orelse return null;
     if (validationMessage(invocation, kind)) |message|
@@ -105,8 +107,8 @@ fn runWithRunner(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
     kind: MarkKind,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     if (kind.isList()) {
         const action = selectedListAction(invocation).?;
         if (action == .list) return executeList(context, invocation, kind, runner);
@@ -126,12 +128,12 @@ fn executeList(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
     kind: MarkKind,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
     context.attachTransactionLog(&operation_context);
     defer operation_context.deinit();
-    var packages = runner.list(runner.data, context, &operation_context, kind) catch |err| {
+    var packages = runner.list(context, &operation_context, kind) catch |err| {
         const message = try std.fmt.allocPrint(
             context.allocator,
             "Unable to list {s}: {t}",
@@ -171,13 +173,12 @@ fn executeMutation(
     invocation: *const parser.Invocation,
     kind: MarkKind,
     action: ListAction,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
     context.attachTransactionLog(&operation_context);
     defer operation_context.deinit();
     runner.mutate(
-        runner.data,
         context,
         &operation_context,
         kind,
@@ -208,8 +209,8 @@ fn executeReason(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
     kind: MarkKind,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     const package = invocation.positionals[0];
     var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
     context.attachTransactionLog(&operation_context);
@@ -222,7 +223,7 @@ fn executeReason(
         try ui_operation.flush(context);
     }
 
-    runner.reason(runner.data, context, &operation_context, kind, package) catch |err| {
+    runner.reason(context, &operation_context, kind, package) catch |err| {
         const message = try std.fmt.allocPrint(
             context.allocator,
             "Marking failed for {s}: {t}",
@@ -409,18 +410,11 @@ fn confirm(
 }
 
 fn listReal(
-    _: ?*anyopaque,
     context: *runtime.RuntimeContext,
     operation_context: *Zigalpm.OperationContext,
     kind: MarkKind,
 ) !PackageList {
-    const manager = try Zigalpm.AlpmManager.init(
-        context.allocator,
-        context.environ,
-        null,
-        false,
-        null,
-    );
+    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = false, .operation_context = operation_context });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
@@ -442,20 +436,13 @@ fn listReal(
 }
 
 fn mutateReal(
-    _: ?*anyopaque,
     context: *runtime.RuntimeContext,
     operation_context: *Zigalpm.OperationContext,
     kind: MarkKind,
     action: ListAction,
     packages: []const []const u8,
 ) !void {
-    const manager = try Zigalpm.AlpmManager.init(
-        context.allocator,
-        context.environ,
-        null,
-        true,
-        null,
-    );
+    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
@@ -490,19 +477,12 @@ fn mutateReal(
 }
 
 fn reasonReal(
-    _: ?*anyopaque,
     context: *runtime.RuntimeContext,
     operation_context: *Zigalpm.OperationContext,
     kind: MarkKind,
     package: []const u8,
 ) !void {
-    const manager = try Zigalpm.AlpmManager.init(
-        context.allocator,
-        context.environ,
-        null,
-        true,
-        null,
-    );
+    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
@@ -576,132 +556,100 @@ test "mark parses native subcommands and shortcodes" {
 }
 
 test "mark validates list operations before running a backend" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
 
-    const missing_action = try parser.parse(arena.allocator(), &manifest, &.{ "mark", "ignore", "linux" });
-    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&context, &missing_action.dispatch, test_runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Choose exactly one") != null);
+    const missing_action = try parser.parse(tc.arena.allocator(), &manifest, &.{ "mark", "ignore", "linux" });
+    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&tc.context, &missing_action.dispatch, TestRunner{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Choose exactly one") != null);
 
-    stdout.writer.end = 0;
-    const missing_packages = try parser.parse(arena.allocator(), &manifest, &.{ "mark", "hold", "--add" });
-    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&context, &missing_packages.dispatch, test_runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "No packages specified") != null);
+    tc.stdout.writer.end = 0;
+    const missing_packages = try parser.parse(tc.arena.allocator(), &manifest, &.{ "mark", "hold", "--add" });
+    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&tc.context, &missing_packages.dispatch, TestRunner{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "No packages specified") != null);
 
-    stdout.writer.end = 0;
-    const protected = try parser.parse(arena.allocator(), &manifest, &.{ "mark", "hold", "--remove", "shelly" });
-    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&context, &protected.dispatch, test_runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "is protected") != null);
+    tc.stdout.writer.end = 0;
+    const protected = try parser.parse(tc.arena.allocator(), &manifest, &.{ "mark", "hold", "--remove", "shelly" });
+    try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&tc.context, &protected.dispatch, TestRunner{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "is protected") != null);
 }
 
 test "mark lists IgnorePkg in plain JSON and UI output" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
 
-    const plain = try parser.parse(arena.allocator(), &manifest, &.{ "mark", "ignore", "--list" });
-    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&context, &plain.dispatch, test_runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Total: 2 ignored packages: linux, mesa") != null);
+    const plain = try parser.parse(tc.arena.allocator(), &manifest, &.{ "mark", "ignore", "--list" });
+    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &plain.dispatch, TestRunner{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Total: 2 ignored packages: linux, mesa") != null);
 
-    stdout.writer.end = 0;
-    const json = try parser.parse(arena.allocator(), &manifest, &.{ "mark", "ignore", "--list", "--json" });
-    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&context, &json.dispatch, test_runner));
-    try std.testing.expectEqualStrings("[\"linux\",\"mesa\"]\n", stdout.writer.buffered());
+    tc.stdout.writer.end = 0;
+    const json = try parser.parse(tc.arena.allocator(), &manifest, &.{ "mark", "ignore", "--list", "--json" });
+    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &json.dispatch, TestRunner{}));
+    try std.testing.expectEqualStrings("[\"linux\",\"mesa\"]\n", tc.stdout.writer.buffered());
 
-    stdout.writer.end = 0;
-    const ui = try parser.parse(arena.allocator(), &manifest, &.{ "mark", "ignore", "--list", "--ui-mode" });
-    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&context, &ui.dispatch, test_runner));
-    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, stdout.writer.buffered(), "[JSON]"));
+    tc.stdout.writer.end = 0;
+    const ui = try parser.parse(tc.arena.allocator(), &manifest, &.{ "mark", "ignore", "--list", "--ui-mode" });
+    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &ui.dispatch, TestRunner{}));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, tc.stdout.writer.buffered(), "[JSON]"));
 }
 
 test "mark applies list mutations and confirms install reason changes" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
     var stdin = std.Io.Reader.fixed("n\n");
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdin = &stdin,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    tc.context.stdin = &stdin;
     var capture: TestCapture = .{};
-    const runner = capture.runner();
 
-    const add = try parser.parse(arena.allocator(), &manifest, &.{ "mark", "hold", "--add", "linux" });
-    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&context, &add.dispatch, runner));
+    const add = try parser.parse(tc.arena.allocator(), &manifest, &.{ "mark", "hold", "--add", "linux" });
+    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &add.dispatch, &capture));
     try std.testing.expectEqual(MarkKind.hold, capture.kind.?);
     try std.testing.expectEqual(ListAction.add, capture.action.?);
 
-    const declined = try parser.parse(arena.allocator(), &manifest, &.{ "mark", "explicit", "linux" });
-    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&context, &declined.dispatch, runner));
+    const declined = try parser.parse(tc.arena.allocator(), &manifest, &.{ "mark", "explicit", "linux" });
+    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &declined.dispatch, &capture));
     try std.testing.expectEqual(@as(usize, 0), capture.reason_calls);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Operation Cancelled") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Operation Cancelled") != null);
 
-    const dependency = try parser.parse(arena.allocator(), &manifest, &.{
+    const dependency = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "mark", "dependency", "linux", "--no-confirm",
     });
-    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&context, &dependency.dispatch, runner));
+    try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &dependency.dispatch, &capture));
     try std.testing.expectEqual(@as(usize, 1), capture.reason_calls);
     try std.testing.expectEqual(MarkKind.dependency, capture.kind.?);
 }
 
-const test_runner: Runner = .{
-    .list = struct {
-        fn call(
-            _: ?*anyopaque,
-            _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
-            _: MarkKind,
-        ) !PackageList {
-            return .{ .items = &.{ "linux", "mesa" } };
-        }
-    }.call,
-    .mutate = struct {
-        fn call(
-            _: ?*anyopaque,
-            _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
-            _: MarkKind,
-            _: ListAction,
-            _: []const []const u8,
-        ) !void {}
-    }.call,
-    .reason = struct {
-        fn call(
-            _: ?*anyopaque,
-            _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
-            _: MarkKind,
-            _: []const u8,
-        ) !void {}
-    }.call,
+const TestRunner = struct {
+    fn list(
+        _: TestRunner,
+        _: *runtime.RuntimeContext,
+        _: *Zigalpm.OperationContext,
+        _: MarkKind,
+    ) !PackageList {
+        return .{ .items = &.{ "linux", "mesa" } };
+    }
+
+    fn mutate(
+        _: TestRunner,
+        _: *runtime.RuntimeContext,
+        _: *Zigalpm.OperationContext,
+        _: MarkKind,
+        _: ListAction,
+        _: []const []const u8,
+    ) !void {}
+
+    fn reason(
+        _: TestRunner,
+        _: *runtime.RuntimeContext,
+        _: *Zigalpm.OperationContext,
+        _: MarkKind,
+        _: []const u8,
+    ) !void {}
 };
 
 const TestCapture = struct {
@@ -709,17 +657,8 @@ const TestCapture = struct {
     action: ?ListAction = null,
     reason_calls: usize = 0,
 
-    fn runner(self: *TestCapture) Runner {
-        return .{
-            .data = self,
-            .list = list,
-            .mutate = mutate,
-            .reason = reason,
-        };
-    }
-
     fn list(
-        _: ?*anyopaque,
+        _: *TestCapture,
         _: *runtime.RuntimeContext,
         _: *Zigalpm.OperationContext,
         _: MarkKind,
@@ -728,26 +667,24 @@ const TestCapture = struct {
     }
 
     fn mutate(
-        data: ?*anyopaque,
+        self: *TestCapture,
         _: *runtime.RuntimeContext,
         _: *Zigalpm.OperationContext,
         kind: MarkKind,
         action: ListAction,
         _: []const []const u8,
     ) !void {
-        const self: *TestCapture = @ptrCast(@alignCast(data.?));
         self.kind = kind;
         self.action = action;
     }
 
     fn reason(
-        data: ?*anyopaque,
+        self: *TestCapture,
         _: *runtime.RuntimeContext,
         _: *Zigalpm.OperationContext,
         kind: MarkKind,
         _: []const u8,
     ) !void {
-        const self: *TestCapture = @ptrCast(@alignCast(data.?));
         self.kind = kind;
         self.reason_calls += 1;
     }

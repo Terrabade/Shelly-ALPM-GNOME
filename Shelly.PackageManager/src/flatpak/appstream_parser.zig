@@ -174,8 +174,6 @@ pub const AppstreamParser = struct {
                     if (std.mem.eql(u8, name, "id")) {
                         if (id_seen) try skipElement(reader) else {
                             app.id = try readElementText(reader, scratch);
-                            if (std.mem.endsWith(u8, app.id, ".desktop"))
-                                app.id = app.id[0 .. app.id.len - ".desktop".len];
                             id_seen = true;
                         }
                     } else if (std.mem.eql(u8, name, "name")) {
@@ -736,8 +734,8 @@ test "parseStream parses a full component with description, icons, screenshots, 
         \\    </custom>
         \\  </component>
         \\  <component type="addon">
-        \\    <id>org.example.App.Plugin</id>
-        \\    <extends>org.example.App</extends>
+        \\    <id>org.example.App.desktop.Plugin</id>
+        \\    <extends>org.example.App.desktop</extends>
         \\    <name>Example Plugin</name>
         \\  </component>
         \\  <component type="generic">
@@ -759,7 +757,7 @@ test "parseStream parses a full component with description, icons, screenshots, 
     const app = apps[0];
 
     // The ".desktop" suffix is stripped from the id.
-    try std.testing.expectEqualStrings("org.example.App", app.id);
+    try std.testing.expectEqualStrings("org.example.App.desktop", app.id);
     // elementNoLang picks the untranslated <name>, ignoring xml:lang variants.
     try std.testing.expectEqualStrings("Example App", app.name);
     try std.testing.expectEqualStrings("An example application", app.summary);
@@ -816,7 +814,7 @@ test "parseStream parses a full component with description, icons, screenshots, 
     // The "addon" component is linked as a child of the app it extends via
     // <extends>, rather than appearing in the top-level app list.
     try std.testing.expectEqual(@as(usize, 1), app.addons.len);
-    try std.testing.expectEqualStrings("org.example.App.Plugin", app.addons[0].id);
+    try std.testing.expectEqualStrings("org.example.App.desktop.Plugin", app.addons[0].id);
     try std.testing.expectEqualStrings("Example Plugin", app.addons[0].name);
 }
 

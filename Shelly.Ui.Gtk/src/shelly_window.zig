@@ -8,6 +8,7 @@ const FlatpakPage = @import("pages/flatpak/flatpak_page.zig").FlatpakPage;
 const AppImagePage = @import("pages/appimage_page.zig").AppImagePage;
 const PackagePage = @import("pages/package_page.zig").PackagePage;
 const AurPage = @import("pages/aur_page.zig").AurPage;
+const ShellySearchPage = @import("pages/search_page.zig").ShellySearchPage;
 const UpdatePage = @import("pages/update_page.zig").UpdatePage;
 const RecommendPage = @import("pages/recommend_page.zig").RecommendPage;
 const WelcomePage = @import("pages/welcome.zig").WelcomePage;
@@ -21,6 +22,8 @@ const NavMode = @import("models/shelly_config.zig").NavMode;
 const ShellyTabs = @import("models/shelly_config.zig").ShellyTabs;
 const translations = @import("helpers/translations.zig");
 const ConfirmDialog = @import("dialog/page/yn_dialog.zig").ConfirmDialog;
+const PolkitDialog = @import("dialog/page/polkit_warning.zig").PolkitDialog;
+const DBus = @import("services/dbus.zig").DBus;
 
 const NavButton = struct {
     button: *gtk.Button,
@@ -93,6 +96,7 @@ pub const ShellyWindow = extern struct {
         applyConfig(self);
         applyDefaultPage(self);
         showWelcomeIfFirstStart(self);
+        checkPolkitLockout(self);
         _ = gtk.Window.signals.close_request.connect(self.as(gtk.Window), *ShellyWindow, &on_close_request, self, .{});
     }
 
@@ -104,6 +108,7 @@ pub const ShellyWindow = extern struct {
         setNavEnabled(self, "aur", cfg.AurEnabled);
         setNavEnabled(self, "flatpak", cfg.FlatPackEnabled);
         setNavEnabled(self, "appimage", cfg.AppImageEnabled);
+        setNavEnabled(self, "search", cfg.ShellySearchEnabled);
 
         self.changeNav(cfg.NavMode);
 
@@ -137,6 +142,23 @@ pub const ShellyWindow = extern struct {
         if (!cfg.NewInstall) return;
         const wp = WelcomePage.new();
         self.showLockout(wp.as(gtk.Widget));
+    }
+
+    fn checkPolkitLockout(self: *ShellyWindow) void {
+        var dbus = DBus{};
+        defer dbus.deinit();
+
+        const status = dbus.checkPolkitStatus();
+        if (status == .no_agent or status == .no_daemon) {
+            const dialog = PolkitDialog.new(&on_polkit_close, self);
+            self.showLockout(dialog.as(gtk.Widget));
+            dialog.focusClose();
+        }
+    }
+
+    fn on_polkit_close(ctx: ?*anyopaque) void {
+        const self: *ShellyWindow = @ptrCast(@alignCast(ctx.?));
+        self.hideLockout();
     }
 
     fn setNavEnabled(self: *ShellyWindow, name: [:0]const u8, enabled: bool) void {
@@ -255,6 +277,7 @@ pub const ShellyWindow = extern struct {
         add_nav_button(self, items, stack, true, "aur", AurPage.icon_name, translations._(AurPage.title));
         add_nav_button(self, items, stack, true, "flatpak", FlatpakPage.icon_name, translations._(FlatpakPage.title));
         add_nav_button(self, items, stack, true, "appimage", AppImagePage.icon_name, translations._(AppImagePage.title));
+        add_nav_button(self, items, stack, true, "search", ShellySearchPage.icon_name, translations._(ShellySearchPage.title));
         add_nav_button(self, items, stack, true, "update", UpdatePage.icon_name, translations._(UpdatePage.title));
 
         const sep = gtk.Box.new(.horizontal, 0);
@@ -295,8 +318,7 @@ pub const ShellyWindow = extern struct {
         gtk.Widget.setHexpand(left_spacer.as(gtk.Widget), 1);
         gtk.Box.append(bar, left_spacer.as(gtk.Widget));
 
-        const items = gtk.Box.new(.horizontal, 4);
-        gtk.Widget.addCssClass(items.as(gtk.Widget), "linked");
+        const items = gtk.Box.new(.horizontal, 0);
         gtk.Box.append(bar, items.as(gtk.Widget));
 
         add_nav_button(self, items, stack, false, "recommend", RecommendPage.icon_name, translations._(RecommendPage.title));
@@ -304,6 +326,7 @@ pub const ShellyWindow = extern struct {
         add_nav_button(self, items, stack, false, "aur", AurPage.icon_name, translations._(AurPage.title));
         add_nav_button(self, items, stack, false, "flatpak", FlatpakPage.icon_name, translations._(FlatpakPage.title));
         add_nav_button(self, items, stack, false, "appimage", AppImagePage.icon_name, translations._(AppImagePage.title));
+        add_nav_button(self, items, stack, false, "search", ShellySearchPage.icon_name, translations._(ShellySearchPage.title));
         add_nav_button(self, items, stack, false, "update", UpdatePage.icon_name, translations._(UpdatePage.title));
 
         const right_spacer = gtk.Box.new(.horizontal, 0);
@@ -428,7 +451,8 @@ pub const ShellyWindow = extern struct {
             .flatpak => "flatpak",
             .app_image => "appimage",
             .recommend => "recommend",
-            .shelly_search => null,
+            .update => "update",
+            .shelly_search => "search",
         };
     }
 
@@ -493,6 +517,10 @@ pub const ShellyWindow = extern struct {
         const au_page = gtk.Stack.addTitled(stack, au.as(gtk.Widget), "aur", translations._("AUR"));
         gtk.StackPage.setIconName(au_page, AurPage.icon_name);
 
+        const ss = ShellySearchPage.new();
+        const ss_page = gtk.Stack.addTitled(stack, ss.as(gtk.Widget), "search", translations._(ShellySearchPage.title));
+        gtk.StackPage.setIconName(ss_page, ShellySearchPage.icon_name);
+
         const up = UpdatePage.new();
         const up_page = gtk.Stack.addTitled(stack, up.as(gtk.Widget), "update", translations._("Update"));
         gtk.StackPage.setIconName(up_page, UpdatePage.icon_name);
@@ -543,6 +571,17 @@ pub const ShellyWindow = extern struct {
         const tp = TransactionPage.new();
         self.showLockout(tp.as(gtk.Widget));
         tp.run(request);
+    }
+
+    pub fn navigateToUpdates(self: *ShellyWindow) void {
+        const p = self.private();
+        gtk.Stack.setVisibleChildName(p.content_stack, "update");
+        for (p.nav_buttons.items) |nb| {
+            if (std.mem.eql(u8, nb.name, "update")) {
+                set_active_nav(self, nb);
+                break;
+            }
+        }
     }
 
     const template_children = .{

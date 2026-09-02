@@ -1,5 +1,5 @@
 const std = @import("std");
-const HttpClient = @import("../shared/http_client.zig");
+const HttpClient = @import("ShellyHttp");
 const bindings = @import("bindings.zig");
 const cache_manager = @import("cache_manager.zig");
 const alpm_manager = @import("manager.zig");

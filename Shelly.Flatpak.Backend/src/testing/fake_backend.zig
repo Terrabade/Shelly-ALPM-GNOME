@@ -234,6 +234,8 @@ fn emit(
             .kind = kind,
             .code = code,
             .message = message,
+            .stage = if (kind == .progress) "Downloading" else null,
+            .subject = if (kind == .progress) "runtime/org.example.Platform/x86_64/stable" else null,
             .level = if (kind == .failure) .err else .information,
             .percentage = percentage,
         },

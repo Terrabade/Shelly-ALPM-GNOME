@@ -26,13 +26,24 @@
                                 <property name="spacing">5</property>
                                 <property name="valign">baseline-center</property>
                                 <child>
-                                    <object class="GtkSearchEntry" id="search_entry">
-                                        <property name="placeholder-text" translatable="yes">Search packages...</property>
-                                        <property name="width-request">200</property>
-                                        <style>
-                                            <class name="spaced-search"/>
-                                        </style>
-                                    </object>
+                                  <object class="GtkSearchEntry" id="search_entry">
+                                      <property name="placeholder-text" translatable="yes">Search packages...</property>
+                                      <property name="width-request">200</property>
+                                      <style>
+                                          <class name="spaced-search"/>
+                                      </style>
+                                      <child>
+                                          <object class="GtkShortcutController">
+                                              <property name="scope">managed</property>
+                                              <child>
+                                                  <object class="GtkShortcut">
+                                                      <property name="trigger">&lt;Control&gt;f</property>
+                                                      <property name="action">action(search.focus)</property>
+                                                  </object>
+                                              </child>
+                                          </object>
+                                      </child>
+                                  </object>
                                 </child>
                                 <child>
                                     <object class="GtkDropDown" id="grouping_selection">
@@ -181,6 +192,13 @@
                                                                 <property name="resizable">true</property>
                                                             </object>
                                                         </child>
+                                                        <child>
+                                                            <object class="GtkColumnViewColumn" id="install_date_column">
+                                                                <property name="expand">true</property>
+                                                                <property name="title" translatable="yes">Install Date</property>
+                                                                <property name="resizable">true</property>
+                                                            </object>
+                                                        </child>
                                                     </object>
                                                 </child>
                                             </object>
@@ -218,6 +236,41 @@
                             </object>
                         </child>
                     </object>
+                </child>
+                <child type="overlay">
+                  <object class="GtkBox" id="no_results_overlay">
+                    <property name="visible">false</property>
+                    <property name="orientation">vertical</property>
+                    <property name="halign">center</property>
+                    <property name="valign">center</property>
+                    <child>
+                      <object class="GtkBox">
+                        <property name="vexpand">true</property>
+                        <property name="hexpand">true</property>
+                        <property name="halign">center</property>
+                        <property name="valign">center</property>
+                        <property name="orientation">vertical</property>
+                        <property name="spacing">12</property>
+                        <child>
+                          <object class="GtkImage">
+                            <property name="icon-name">edit-find-symbolic</property>
+                            <property name="pixel-size">48</property>
+                            <style>
+                              <class name="dim-label"/>
+                            </style>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkLabel" id="no_results_label">
+                            <property name="label" translatable="yes">No matching packages found</property>
+                            <style>
+                              <class name="title-4"/>
+                            </style>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                  </object>
                 </child>
                 <child type="overlay">
                     <object class="GtkBox" id="loading_overlay">
@@ -286,7 +339,7 @@
                 <child>
                     <object class="GtkCheckButton" id="show_depends_only">
                         <property name="label" translatable="yes">Show Dependency Only</property>
-                        <property name="tooltip-text" translatable="yes">Show dependency packages on;y</property>
+                        <property name="tooltip-text" translatable="yes">Show dependency packages only</property>
                         <signal name="toggled" handler="on_depends_only"/>
                         <property name="active">false</property>
                     </object>

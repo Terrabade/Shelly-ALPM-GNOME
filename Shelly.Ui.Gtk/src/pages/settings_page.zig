@@ -8,7 +8,8 @@ const ShellyConfig = @import("../models/shelly_config.zig").ShellyConfig;
 const ShellyTabs = @import("../models/shelly_config.zig").ShellyTabs;
 const DayOfWeek = @import("../models/shelly_config.zig").DayOfWeek;
 const NavMode = @import("../models/shelly_config.zig").NavMode;
-const ConfigResolver = @import("../services/config_resolver.zig").ConfigResolver;
+const ConfigResolver = @import("../services/ui_config_resolver.zig").ConfigResolver;
+const CliConfigResolver = @import("../services/cli_config_resolver.zig").CliConfigResolver;
 const ShellyCommands = @import("../services/shelly_operation.zig").ShellyCommands;
 const support_packages = @import("../services/support_packages.zig");
 const runtime = @import("../services/runtime.zig");
@@ -20,7 +21,7 @@ const ShellyWindow = @import("../shelly_window.zig").ShellyWindow;
 const Toast = @import("../helpers/custom_ui_comps/toast.zig").Toast;
 const VersionHistoryDialog = @import("../dialog/page/version_history.zig").VersionHistoryDialog;
 const HistoryEntry = @import("../dialog/page/version_history.zig").Entry;
-const ConfirmDialog = @import("../dialog/page/yn_dialog.zig").ConfirmDialog;
+const AurWarningDialog = @import("../dialog/page/aur_warning.zig").AurWarningDialog;
 const translations = @import("../helpers/translations.zig");
 const options = @import("options");
 
@@ -57,6 +58,8 @@ pub const ShellySettingsPage = extern struct {
         tray_auto_switch_box: *gtk.Box,
         daily_schedule: *gtk.Switch,
         weekly_schedule_switch_box: *gtk.Box,
+        use_ui: *gtk.Switch,
+        use_ui_switch_box: *gtk.Box,
         tray_interval_box: *gtk.Box,
         tray_interval_spin: *gtk.SpinButton,
         weekly_schedule_box: *gtk.Box,
@@ -74,6 +77,8 @@ pub const ShellySettingsPage = extern struct {
         shelly_icons_switch: *gtk.Switch,
         symbolic_tray_box: *gtk.Box,
         symbolic_tray_switch: *gtk.Switch,
+        use_ui_for_update_switch: *gtk.Switch,
+
         tray_icon_button: *gtk.Button,
         tray_icon_clear_button: *gtk.Button,
         tray_updates_icon_button: *gtk.Button,
@@ -86,7 +91,6 @@ pub const ShellySettingsPage = extern struct {
         remove_cache_switch: *gtk.Switch,
         no_confirm_switch: *gtk.Switch,
         shelly_search_switch: *gtk.Switch,
-        package_downgrade_switch: *gtk.Switch,
         webview_switch: *gtk.Switch,
         appimage_install_path_box: *gtk.Box,
         appimage_install_path_button: *gtk.Button,
@@ -105,6 +109,8 @@ pub const ShellySettingsPage = extern struct {
         save_source: c_uint,
         support_install_pending: ?SupportFeature,
         support_install_stage: SupportInstallStage,
+
+        page_filter: PageFilter,
 
         var offset: c_int = 0;
     };
@@ -137,6 +143,7 @@ pub const ShellySettingsPage = extern struct {
         p.save_source = 0;
         p.support_install_pending = null;
         p.support_install_stage = .dependencies;
+        p.page_filter = .{};
 
         populateDropdowns(p);
 
@@ -154,6 +161,13 @@ pub const ShellySettingsPage = extern struct {
             p.daily_schedule.as(gobject.Object),
             *Self,
             &on_schedule_notify,
+            self,
+            .{ .detail = "active" },
+        );
+        _ = gobject.Object.signals.notify.connect(
+            p.use_ui.as(gobject.Object),
+            *Self,
+            &on_use_ui_notify,
             self,
             .{ .detail = "active" },
         );
@@ -206,7 +220,6 @@ pub const ShellySettingsPage = extern struct {
             p.symbolic_tray_switch,
             p.no_confirm_switch,
             p.shelly_search_switch,
-            p.package_downgrade_switch,
             p.remove_cache_switch,
             p.webview_switch,
         };
@@ -296,8 +309,11 @@ pub const ShellySettingsPage = extern struct {
         };
 
         p.save_guard = true;
+        defer p.save_guard = false;
+
+        populatePageDropdown(p, cfg);
         applyConfig(p, cfg);
-        p.save_guard = false;
+
         applyScheduleVisibility(p);
         applyTrayVisibility(p);
     }
@@ -332,6 +348,9 @@ pub const ShellySettingsPage = extern struct {
         try svc.set(updated);
         try svc.save();
 
+        const lang_value = language_entries[gtk.DropDown.getSelected(p.language_drop)].value;
+        _ = translations.initWithLocale(lang_value);
+
         applyScheduleVisibility(p);
         applyTrayVisibility(p);
 
@@ -358,6 +377,15 @@ pub const ShellySettingsPage = extern struct {
 
         var updated = cfg.*;
         collectIntoConfig(p, arena.allocator(), &updated);
+
+        const page_drop_stale =
+            updated.RecommendedEnabled != cfg.RecommendedEnabled or
+            updated.AurEnabled != cfg.AurEnabled or
+            updated.FlatPackEnabled != cfg.FlatPackEnabled or
+            updated.AppImageEnabled != cfg.AppImageEnabled or
+            updated.ShellySearchEnabled != cfg.ShellySearchEnabled or
+            !std.mem.eql(u8, updated.Culture, cfg.Culture);
+
         svc.set(updated) catch {
             p.toast.show(.@"error", translations._("Failed to save settings"));
             return;
@@ -366,6 +394,16 @@ pub const ShellySettingsPage = extern struct {
             p.toast.show(.@"error", translations._("Failed to save settings"));
             return;
         };
+
+        const lang_value = language_entries[gtk.DropDown.getSelected(p.language_drop)].value;
+        _ = translations.initWithLocale(lang_value);
+
+        p.save_guard = true;
+        defer p.save_guard = false;
+
+        if (page_drop_stale) {
+            populatePageDropdown(p, &updated);
+        }
 
         if (support.getWindow(ShellyWindow, self)) |win| {
             win.applyConfig();
@@ -526,17 +564,26 @@ pub const ShellySettingsPage = extern struct {
             return;
         };
 
+        const svc = obtainConfigService() catch return;
+        const cfg = svc.get() catch return;
+
+        p.save_guard = true;
+        defer p.save_guard = false;
+
+        populatePageDropdown(p, cfg);
+
         if (support.getWindow(ShellyWindow, self)) |win| {
             win.applyConfig();
         }
+
         p.toast.show(.success, supportSuccessMessage(feature));
     }
 
     fn restoreSupportSwitch(self: *Self, feature: SupportFeature, enabled: bool) void {
         const p = self.priv();
         p.save_guard = true;
+        defer p.save_guard = false;
         setSwitch(supportSwitch(p, feature), enabled);
-        p.save_guard = false;
     }
 
     fn supportSwitch(p: *Private, feature: SupportFeature) *gtk.Switch {
@@ -852,12 +899,32 @@ pub const ShellySettingsPage = extern struct {
         const p = self.priv();
         gtk.Button.setLabel(p.appimage_install_path_button, path_cstr);
 
-        updateConfigField(.AppImageInstallPath, path_slice);
+        self.saveAppImageInstallPath(path_slice);
+    }
+
+    fn saveAppImageInstallPath(self: *Self, path: []const u8) void {
+        const p = self.priv();
+        var resolver = CliConfigResolver.init(std.heap.c_allocator, runtime.io, runtime.environ_map) catch {
+            p.toast.show(.@"error", translations._("Failed to save settings"));
+            return;
+        };
+        defer resolver.deinit();
+
+        resolver.writeAppImageInstallPath(path) catch |err| {
+            std.log.err("settings: failed to save AppImage install path: {t}", .{err});
+            p.toast.show(.@"error", translations._("Failed to save settings"));
+        };
     }
 
     fn on_schedule_notify(_: *gobject.Object, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
         applyScheduleVisibility(self.priv());
         self.autosave();
+    }
+
+    fn on_use_ui_notify(_: *gobject.Object, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
+        const p = self.priv();
+        const active = gtk.Switch.getActive(p.use_ui) != 0;
+        updateConfigField(.UseUiForUpdate, active);
     }
 
     fn on_tray_notify(_: *gobject.Object, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
@@ -942,15 +1009,10 @@ pub const ShellySettingsPage = extern struct {
 
         gtk.Switch.setActive(p.aur_switch, 0);
 
-        const dialog = ConfirmDialog.new(
-            translations._("Enable AUR?"),
-            translations._("The Arch User Repository (AUR) is a community-driven repository. Packages are user-produced and may contain risks. Do you want to enable it?"),
-            &on_aur_confirmation_response,
-            self,
-        );
-        dialog.setButtons(translations._("Enable"), translations._("Cancel"));
+        const dialog = AurWarningDialog.new(&on_aur_confirmation_response, self);
         if (support.getWindow(ShellyWindow, self)) |win| {
             win.showLockout(dialog.as(gtk.Widget));
+            dialog.focusCancel();
         }
     }
 
@@ -990,6 +1052,8 @@ pub const ShellySettingsPage = extern struct {
         .{ "tray_auto_switch_box", @offsetOf(Private, "tray_auto_switch_box") },
         .{ "daily_schedule", @offsetOf(Private, "daily_schedule") },
         .{ "weekly_schedule_switch_box", @offsetOf(Private, "weekly_schedule_switch_box") },
+        .{ "use_ui", @offsetOf(Private, "use_ui") },
+        .{ "use_ui_switch_box", @offsetOf(Private, "use_ui_switch_box") },
         .{ "tray_interval_box", @offsetOf(Private, "tray_interval_box") },
         .{ "tray_interval_spin", @offsetOf(Private, "tray_interval_spin") },
         .{ "weekly_schedule_box", @offsetOf(Private, "weekly_schedule_box") },
@@ -1019,7 +1083,6 @@ pub const ShellySettingsPage = extern struct {
         .{ "remove_cache_switch", @offsetOf(Private, "remove_cache_switch") },
         .{ "no_confirm_switch", @offsetOf(Private, "no_confirm_switch") },
         .{ "shelly_search_switch", @offsetOf(Private, "shelly_search_switch") },
-        .{ "package_downgrade_switch", @offsetOf(Private, "package_downgrade_switch") },
         .{ "webview_switch", @offsetOf(Private, "webview_switch") },
         .{ "appimage_install_path_box", @offsetOf(Private, "appimage_install_path_box") },
         .{ "appimage_install_path_button", @offsetOf(Private, "appimage_install_path_button") },
@@ -1057,6 +1120,24 @@ const DefaultPageEntry = struct {
     value: ShellyTabs,
 };
 
+const PageFilter = struct {
+    recommended: bool = false,
+    aur: bool = false,
+    flatpak: bool = false,
+    app_image: bool = false,
+    shelly_search: bool = false,
+
+    fn fromConfig(cfg: *const ShellyConfig) PageFilter {
+        return .{
+            .recommended = cfg.RecommendedEnabled,
+            .aur = cfg.AurEnabled,
+            .flatpak = cfg.FlatPackEnabled,
+            .app_image = cfg.AppImageEnabled,
+            .shelly_search = cfg.ShellySearchEnabled,
+        };
+    }
+};
+
 const default_page_entries = [_]DefaultPageEntry{
     .{ .label = "Recommended", .value = .recommend },
     .{ .label = "Packages", .value = .packages },
@@ -1064,6 +1145,7 @@ const default_page_entries = [_]DefaultPageEntry{
     .{ .label = "Flatpak", .value = .flatpak },
     .{ .label = "AppImage", .value = .app_image },
     .{ .label = "Shelly Search", .value = .shelly_search },
+    .{ .label = "Update", .value = .update },
 };
 
 const NavModeEntry = struct {
@@ -1098,20 +1180,6 @@ const language_entries = [_]struct {
 };
 
 fn populateDropdowns(p: *ShellySettingsPage.Private) void {
-    const page_strings = gtk.StringList.new(null);
-    inline for (default_page_entries) |entry| {
-        const label = switch (entry.value) {
-            .recommend => translations._("Recommended"),
-            .packages => translations._("Packages"),
-            .aur => translations._("AUR"),
-            .flatpak => translations._("Flatpak"),
-            .app_image => translations._("AppImage"),
-            .shelly_search => translations._("Shelly Search"),
-        };
-        gtk.StringList.append(page_strings, label);
-    }
-    gtk.DropDown.setModel(p.default_page_drop, page_strings.as(gio.ListModel));
-
     const nav_strings = gtk.StringList.new(null);
     inline for (nav_mode_entries) |entry| {
         gtk.StringList.append(nav_strings, entry.label);
@@ -1136,11 +1204,51 @@ fn populateDropdowns(p: *ShellySettingsPage.Private) void {
             12 => translations._("Русский"),
             13 => translations._("Türkçe"),
             14 => translations._("中文（简体）"),
-            else => unreachable,
+            else => translations._("System Default"),
         };
         gtk.StringList.append(lang_strings, label);
     }
     gtk.DropDown.setModel(p.language_drop, lang_strings.as(gio.ListModel));
+}
+
+fn isPageEntryEnabled(entry: DefaultPageEntry, filter: PageFilter) bool {
+    return switch (entry.value) {
+        .recommend => filter.recommended,
+        .packages => true,
+        .aur => filter.aur,
+        .flatpak => filter.flatpak,
+        .app_image => filter.app_image,
+        .shelly_search => filter.shelly_search,
+        .update => true,
+    };
+}
+
+fn pageEntryLabel(entry: DefaultPageEntry) [:0]const u8 {
+    return switch (entry.value) {
+        .recommend => translations._("Recommended"),
+        .packages => translations._("Packages"),
+        .aur => translations._("AUR"),
+        .flatpak => translations._("Flatpak"),
+        .app_image => translations._("AppImage"),
+        .shelly_search => translations._("Shelly Search"),
+        .update => translations._("Update"),
+    };
+}
+
+fn populatePageDropdown(p: *ShellySettingsPage.Private, cfg: *const ShellyConfig) void {
+    p.page_filter = PageFilter.fromConfig(cfg);
+    const page_strings = gtk.StringList.new(null);
+    for (default_page_entries) |entry| {
+        if (!isPageEntryEnabled(entry, p.page_filter)) continue;
+        gtk.StringList.append(page_strings, pageEntryLabel(entry));
+    }
+    gtk.DropDown.setModel(p.default_page_drop, page_strings.as(gio.ListModel));
+    // Replacing the model resets the selection, so restore it.
+    // Callers must hold save_guard: this emits notify::selected.
+    gtk.DropDown.setSelected(
+        p.default_page_drop,
+        defaultPageIndex(cfg.DefaultPageDropDown, p.page_filter),
+    );
 }
 
 fn obtainConfigService() !*ConfigResolver {
@@ -1184,6 +1292,7 @@ fn applyConfig(p: *ShellySettingsPage.Private, cfg: *ShellyConfig) void {
     setSwitch(p.tray_switch, cfg.TrayEnabled);
     setSwitch(p.tray_auto_switch, cfg.TrayAutoStart);
     setSwitch(p.daily_schedule, cfg.UseWeeklySchedule);
+    setSwitch(p.use_ui, cfg.UseUiForUpdate);
 
     gtk.SpinButton.setValue(p.tray_interval_spin, @floatFromInt(cfg.TrayCheckIntervalHours));
 
@@ -1203,7 +1312,6 @@ fn applyConfig(p: *ShellySettingsPage.Private, cfg: *ShellyConfig) void {
     setSwitch(p.shelly_icons_switch, cfg.ShellyIconsEnabled);
     setSwitch(p.symbolic_tray_switch, cfg.UseSymbolicTray);
 
-    gtk.DropDown.setSelected(p.default_page_drop, defaultPageIndex(cfg.DefaultPageDropDown));
     gtk.DropDown.setSelected(p.nav_mode_drop, navModeIndex(cfg.NavMode));
     gtk.DropDown.setSelected(p.language_drop, languageIndex(cfg.Culture));
 
@@ -1213,11 +1321,28 @@ fn applyConfig(p: *ShellySettingsPage.Private, cfg: *ShellyConfig) void {
     // Advanced
     setSwitch(p.no_confirm_switch, cfg.NoConfirm);
     setSwitch(p.shelly_search_switch, cfg.ShellySearchEnabled);
-    setSwitch(p.package_downgrade_switch, cfg.PackageDowngradeEnabled);
     setSwitch(p.remove_cache_switch, cfg.PackageManagementRemoveConfigs);
     setSwitch(p.webview_switch, cfg.WebviewEnabled);
 
-    setButtonLabel(p.appimage_install_path_button, std.heap.c_allocator, cfg.AppImageInstallPath, translations._("Select Directory"));
+    applyAppImageInstallPath(p);
+}
+
+fn applyAppImageInstallPath(p: *ShellySettingsPage.Private) void {
+    const allocator = std.heap.c_allocator;
+    var resolver = CliConfigResolver.init(allocator, runtime.io, runtime.environ_map) catch {
+        setButtonLabel(p.appimage_install_path_button, allocator, "", translations._("Select Directory"));
+        return;
+    };
+    defer resolver.deinit();
+
+    const path = resolver.readAppImageInstallPath() catch |err| {
+        std.log.warn("settings: could not read AppImage install path: {t}", .{err});
+        setButtonLabel(p.appimage_install_path_button, allocator, "", translations._("Select Directory"));
+        return;
+    };
+    defer if (path) |value| allocator.free(value);
+
+    setButtonLabel(p.appimage_install_path_button, allocator, path orelse "", translations._("Select Directory"));
 }
 
 fn setButtonLabel(b: *gtk.Button, allocator: std.mem.Allocator, value: []const u8, default: [:0]const u8) void {
@@ -1245,6 +1370,7 @@ fn collectIntoConfig(p: *ShellySettingsPage.Private, allocator: std.mem.Allocato
     cfg.TrayEnabled = getSwitch(p.tray_switch);
     cfg.TrayAutoStart = getSwitch(p.tray_auto_switch);
     cfg.UseWeeklySchedule = getSwitch(p.daily_schedule);
+    cfg.UseUiForUpdate = getSwitch(p.use_ui);
 
     cfg.TrayCheckIntervalHours = gtk.SpinButton.getValueAsInt(p.tray_interval_spin);
 
@@ -1260,8 +1386,10 @@ fn collectIntoConfig(p: *ShellySettingsPage.Private, allocator: std.mem.Allocato
     cfg.UseSymbolicTray = getSwitch(p.symbolic_tray_switch);
 
     const idx = gtk.DropDown.getSelected(p.default_page_drop);
-    if (idx != std.math.maxInt(u32) and idx < default_page_entries.len) {
-        cfg.DefaultPageDropDown = default_page_entries[idx].value;
+    if (idx != std.math.maxInt(u32)) {
+        if (pageEntryValue(idx, p.page_filter)) |page| {
+            cfg.DefaultPageDropDown = page;
+        }
     }
 
     const nav_idx = gtk.DropDown.getSelected(p.nav_mode_drop);
@@ -1272,7 +1400,6 @@ fn collectIntoConfig(p: *ShellySettingsPage.Private, allocator: std.mem.Allocato
     // Advanced
     cfg.NoConfirm = getSwitch(p.no_confirm_switch);
     cfg.ShellySearchEnabled = getSwitch(p.shelly_search_switch);
-    cfg.PackageDowngradeEnabled = getSwitch(p.package_downgrade_switch);
     cfg.PackageManagementRemoveConfigs = getSwitch(p.remove_cache_switch);
     cfg.WebviewEnabled = getSwitch(p.webview_switch);
 }
@@ -1326,6 +1453,7 @@ fn applyScheduleVisibility(p: *ShellySettingsPage.Private) void {
         gtk.Widget.setVisible(p.weekly_schedule_switch_box.as(gtk.Widget), 0);
         gtk.Widget.setVisible(p.weekly_schedule_box.as(gtk.Widget), 0);
         gtk.Widget.setVisible(p.tray_interval_box.as(gtk.Widget), 0);
+        gtk.Widget.setVisible(p.use_ui_switch_box.as(gtk.Widget), 0);
         return;
     }
 
@@ -1399,11 +1527,24 @@ fn languageIndex(culture: ?[]const u8) c_uint {
     return 0;
 }
 
-fn defaultPageIndex(page: ShellyTabs) c_uint {
-    inline for (default_page_entries, 0..) |entry, i| {
-        if (entry.value == page) return @intCast(i);
+fn defaultPageIndex(page: ShellyTabs, filter: PageFilter) c_uint {
+    var filtered_idx: c_uint = 0;
+    for (default_page_entries) |entry| {
+        if (!isPageEntryEnabled(entry, filter)) continue;
+        if (entry.value == page) return filtered_idx;
+        filtered_idx += 1;
     }
     return 0;
+}
+
+fn pageEntryValue(index: c_uint, filter: PageFilter) ?ShellyTabs {
+    var filtered_idx: c_uint = 0;
+    for (default_page_entries) |entry| {
+        if (!isPageEntryEnabled(entry, filter)) continue;
+        if (filtered_idx == index) return entry.value;
+        filtered_idx += 1;
+    }
+    return null;
 }
 
 fn navModeIndex(mode: NavMode) c_uint {

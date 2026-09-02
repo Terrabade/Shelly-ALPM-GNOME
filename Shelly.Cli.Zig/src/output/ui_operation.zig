@@ -2,6 +2,91 @@ const std = @import("std");
 const Zigalpm = @import("Zigalpm");
 const output = @import("config.zig");
 const runtime = @import("../runtime/context.zig");
+const parser = @import("../cli/parser.zig");
+
+pub const QuestionMode = enum {
+    responder,
+    accept_defaults,
+};
+
+pub const Transaction = struct {
+    opening: []const u8,
+    success_message: []const u8,
+    failure_message: []const u8,
+    failure_label: []const u8,
+    question_mode: QuestionMode = .responder,
+    cancelled_message: ?[]const u8 = null,
+    report_flatpak_unavailable: bool = false,
+};
+
+/// Runs a backend operation through the common UI transaction lifecycle:
+/// operation context setup, question handling, event reporting, and the
+/// TransactionStart/TransactionDone/TransactionFailed frame sequence.
+/// The runner must expose
+/// `run(context: *runtime.RuntimeContext, operation_context: *Zigalpm.OperationContext, invocation: *const parser.Invocation) anyerror!void`.
+pub fn runTransaction(
+    context: *runtime.RuntimeContext,
+    invocation: *const parser.Invocation,
+    config: Transaction,
+    runner: anytype,
+) anyerror!u8 {
+    var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
+    context.attachTransactionLog(&operation_context);
+    defer operation_context.deinit();
+
+    var question_responder: QuestionResponder = .{
+        .context = context,
+        .operation_context = &operation_context,
+        .no_confirm = invocation.globals.no_confirm,
+    };
+    const use_responder = config.question_mode == .responder;
+    if (use_responder) question_responder.attach();
+    defer if (use_responder) question_responder.detach();
+
+    const use_defaults = config.question_mode == .accept_defaults and invocation.globals.no_confirm;
+    if (use_defaults) operation_context.setQuestionHandler(.{ .function = acceptQuestionDefaults });
+    defer if (use_defaults) operation_context.setQuestionHandler(null);
+
+    var reporter: Reporter = .{ .context = context };
+    const event_subscription = try operation_context.subscribe(.{
+        .function = Reporter.handle,
+        .data = &reporter,
+    });
+    defer _ = operation_context.unsubscribe(event_subscription);
+
+    try output.writeAlpmInfoFrame(context, "TransactionStart", config.opening);
+    try flush(context);
+
+    runner.run(context, &operation_context, invocation) catch |err| {
+        const failure: anyerror = err;
+        if (config.cancelled_message) |cancelled_message| {
+            if (failure == error.Cancelled) {
+                try output.writeInfoFrame(context, "Operation cancelled.");
+                try output.writeAlpmInfoFrame(context, "TransactionCancelled", cancelled_message);
+                try flush(context);
+                return 0;
+            }
+        }
+        if (config.report_flatpak_unavailable) {
+            if (Zigalpm.flatpak.errors.unavailableMessage(failure)) |message| {
+                try output.writeErrorFrame(context, message);
+                try output.writeAlpmInfoFrame(context, "TransactionFailed", config.failure_message);
+                try flush(context);
+                return 1;
+            }
+        }
+        const message = try std.fmt.allocPrint(context.allocator, "{s}: {t}", .{ config.failure_label, failure });
+        defer context.allocator.free(message);
+        try output.writeErrorFrame(context, message);
+        try output.writeAlpmInfoFrame(context, "TransactionFailed", config.failure_message);
+        try flush(context);
+        return 1;
+    };
+
+    try output.writeAlpmInfoFrame(context, "TransactionDone", config.success_message);
+    try flush(context);
+    return if (reporter.failed()) 1 else 0;
+}
 
 pub const Reporter = struct {
     context: *runtime.RuntimeContext,
@@ -27,7 +112,10 @@ pub const Reporter = struct {
                 status.message,
             ),
             .progress => |progress| try output.writeOperationProgressFrame(self.context, progress),
-            .failure => |failure| try output.writeErrorFrame(self.context, failure.message),
+            .failure => |failure| if (failure.recoverable)
+                try output.writeWarningFrame(self.context, failure.message)
+            else
+                try output.writeErrorFrame(self.context, failure.message),
             .started, .completed => {},
         }
         try flush(self.context);
@@ -59,14 +147,23 @@ pub const QuestionResponder = struct {
         const self: *QuestionResponder = @ptrCast(@alignCast(data.?));
         if (self.no_confirm) {
             if (question.kind == .review_changes) {
+                if (hasSecurityFindings(question)) return self.handleInteractive(question);
                 self.writeAutomaticReview(question) catch return .declined;
                 return safeReviewDefault(question);
             }
             return automaticResponse(question.kind);
         }
 
+        return self.handleInteractive(question);
+    }
+
+    fn handleInteractive(
+        self: *QuestionResponder,
+        question: Zigalpm.OperationQuestion,
+    ) Zigalpm.OperationQuestionResponse {
         switch (question.kind) {
             .confirmation => output.writeYesNoQuestionFrame(self.context, question) catch return .declined,
+            .import_pgp_key => output.writeYesNoQuestionFrame(self.context, question) catch return .declined,
             .confirm_transaction => output.writeTransactionQuestionFrame(self.context, question) catch return .declined,
             .review_changes => output.writePkgbuildQuestionFrame(self.context, question) catch return .declined,
             .select_one, .select_provider => output.writeProviderQuestionFrame(self.context, question) catch return .{ .choice = 0 },
@@ -285,13 +382,22 @@ fn safeReviewDefault(question: Zigalpm.OperationQuestion) Zigalpm.OperationQuest
     };
 }
 
+fn hasSecurityFindings(question: Zigalpm.OperationQuestion) bool {
+    const review = question.review orelse return false;
+    return review.findings.len != 0;
+}
+
 fn automaticResponse(kind: Zigalpm.OperationQuestionKind) Zigalpm.OperationQuestionResponse {
     return switch (kind) {
         .confirmation, .confirm_transaction => .accepted,
-        .review_changes => .declined,
+        .import_pgp_key, .review_changes => .declined,
         .select_one, .select_provider => .{ .choice = 0 },
         .select_many, .select_optional_dependencies => .{ .choices = &.{} },
     };
+}
+
+test "non-interactive UI declines source key imports" {
+    try std.testing.expect(automaticResponse(.import_pgp_key) == .declined);
 }
 
 pub fn flush(context: *runtime.RuntimeContext) !void {
@@ -330,6 +436,9 @@ test "UI operation reporter preserves percentages for every progress frame shape
     var appimage = operation_context.begin(.{ .backend = .appimage, .kind = .download, .subject = "demo.AppImage" });
     appimage.progress(.{ .bytes_completed = 25, .bytes_total = 100 });
     appimage.finish(.success);
+    var cleanup = operation_context.begin(.{ .backend = .alpm, .kind = .cleanup, .subject = "build dependencies" });
+    cleanup.reportError(error.TestRecoverableFailure, "optional cleanup failed", "test", null, true);
+    cleanup.finish(.failed);
 
     var frame_iterator = std.mem.splitSequence(u8, stdout.writer.buffered(), "[/JSON]\n");
     const expected = [_][]const []const u8{
@@ -351,6 +460,12 @@ test "UI operation reporter preserves percentages for every progress frame shape
             "\"Status\":\"demo.AppImage\"",
             "\"Percentage\":25",
         },
+        &.{
+            "\"$kind\":\"alpm.info\"",
+            "\"EventType\":\"WarningOutput\"",
+            "\"Message\":\"optional cleanup failed\"",
+            "\"Level\":\"Warning\"",
+        },
     };
     for (expected) |needles| {
         const frame = frame_iterator.next() orelse return error.MissingProgressFrame;
@@ -368,7 +483,7 @@ test "UI operation reporter preserves percentages for every progress frame shape
     try std.testing.expect(!reporter.failed());
 }
 
-test "UI PKGBUILD review emits C# compatible frame and waits for matching answer" {
+test "UI risky PKGBUILD review bypasses no-confirm and waits for matching answer" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const response_json =
@@ -398,7 +513,7 @@ test "UI PKGBUILD review emits C# compatible frame and waits for matching answer
     var responder: QuestionResponder = .{
         .context = &context,
         .operation_context = &operation_context,
-        .no_confirm = false,
+        .no_confirm = true,
     };
     responder.attach();
     defer responder.detach();

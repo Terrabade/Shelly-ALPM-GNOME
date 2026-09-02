@@ -1,6 +1,8 @@
 const std = @import("std");
 const bindings = @import("Shelly_Ui_Gtk");
 const gtk = bindings.gtk;
+const gio = bindings.gio;
+const glib = bindings.glib;
 const gobject = bindings.gobject;
 const support = @import("../support.zig");
 
@@ -64,6 +66,7 @@ pub const FlatpakPage = extern struct {
         populateStack(self);
 
         _ = gtk.SearchEntry.signals.search_changed.connect(p.search_entry, *Self, &onSearchChanged, self, .{});
+        _ = gtk.SearchEntry.signals.activate.connect(p.search_entry, *Self, &onSearchActivate, self, .{});
 
         _ = gtk.ListBox.signals.row_selected.connect(
             p.section_nav_list,
@@ -87,7 +90,17 @@ pub const FlatpakPage = extern struct {
 
         gtk.ListBox.setHeaderFunc(p.category_list, &category_header, null, null);
 
+        const group = gio.SimpleActionGroup.new();
+        const action = gio.SimpleAction.new("focus", null);
+        _ = gio.SimpleAction.signals.activate.connect(action, *Self, &onFocusSearch, self, .{});
+        gio.ActionMap.addAction(group.as(gio.ActionMap), action.as(gio.Action));
+        gtk.Widget.insertActionGroup(self.as(gtk.Widget), "search", group.as(gio.ActionGroup));
+
         support.connectLifecycle(Self, self);
+    }
+
+    fn onFocusSearch(_: *gio.SimpleAction, _: ?*glib.Variant, self: *Self) callconv(.c) void {
+        _ = gtk.Widget.grabFocus(self.priv().search_entry.as(gtk.Widget));
     }
 
     fn populateStack(self: *Self) void {
@@ -166,6 +179,14 @@ pub const FlatpakPage = extern struct {
         p.remove_view.applySearch(text);
     }
 
+    fn onSearchActivate(entry: *gtk.SearchEntry, self: *Self) callconv(.c) void {
+        const text = std.mem.span(gtk.Editable.getText(entry.as(gtk.Editable)));
+        const p = self.priv();
+        p.install_view.apply_search(text);
+        p.remove_view.applySearch(text);
+        p.install_view.show_list();
+    }
+
     pub fn onMap(self: *Self) void {
         const p = self.priv();
         if (p.loaded) return;
@@ -174,7 +195,7 @@ pub const FlatpakPage = extern struct {
 
         for (std.enums.values(Category)) |app| {
             const row = gtk.ListBoxRow.new();
-            const enum_num = @intFromEnum(app);
+            const enum_num: usize = @intFromEnum(app);
             gobject.Object.setData(
                 row.as(gobject.Object),
                 "category-index",
@@ -209,6 +230,7 @@ pub const FlatpakPage = extern struct {
         return switch (category) {
             .@"All Applications" => "view-grid-symbolic",
             .Recommended => "starred-symbolic",
+            .Verified => "security-high-symbolic",
             .@"Most Wanted" => "user-bookmarks-symbolic",
             .@"Recently Added" => "list-add-symbolic",
             .@"Recently Updated" => "view-refresh-symbolic",
@@ -229,6 +251,7 @@ pub const FlatpakPage = extern struct {
         return switch (category) {
             .@"All Applications" => translations._("All Applications"),
             .Recommended => translations._("Recommended"),
+            .Verified => translations._("Verified"),
             .@"Most Wanted" => translations._("Most Wanted"),
             .@"Recently Added" => translations._("Recently Added"),
             .@"Recently Updated" => translations._("Recently Updated"),
@@ -258,7 +281,6 @@ pub const FlatpakPage = extern struct {
         .{ "nav_remove_row", @offsetOf(Private, "nav_remove_row") },
         .{ "nav_remote_row", @offsetOf(Private, "nav_remote_row") },
         .{ "nav_install_local", @offsetOf(Private, "nav_install_local") },
-
         .{ "search_entry", @offsetOf(Private, "search_entry") },
         .{ "category_list", @offsetOf(Private, "category_list") },
     };

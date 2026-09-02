@@ -9,6 +9,7 @@ const SERVICE_CONTENT =
     \\[Unit]
     \\Description=Shelly Notifications Tray Service
     \\After=graphical-session.target
+    \\PartOf=graphical-session.target
     \\
     \\[Service]
     \\Type=simple
@@ -16,7 +17,7 @@ const SERVICE_CONTENT =
     \\Restart=on-failure
     \\
     \\[Install]
-    \\WantedBy=default.target
+    \\WantedBy=graphical-session.target
 ;
 
 fn serviceDir(allocator: std.mem.Allocator) ![]u8 {

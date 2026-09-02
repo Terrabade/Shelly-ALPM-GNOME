@@ -21,15 +21,25 @@
             <property name="width-request">200</property>
             <signal name="activate" handler="on_search_activate" swapped="true"/>
             <style><class name="spaced-search"/></style>
+            <child>
+                <object class="GtkShortcutController">
+                    <property name="scope">managed</property>
+                    <child>
+                        <object class="GtkShortcut">
+                            <property name="trigger">&lt;Control&gt;f</property>
+                            <property name="action">action(search.focus)</property>
+                        </object>
+                    </child>
+                </object>
+            </child>
           </object>
         </child>
-        <child>
-          <object class="GtkToggleButton" id="installed_toggle">
-            <property name="label" translatable="yes">Installed</property>
-            <property name="valign">center</property>
-            <property name="tooltip-text" translatable="yes">Show only packages already installed on this system</property>
-            <signal name="toggled" handler="on_installed_toggled" swapped="true"/>
-          </object>
+         <child>
+            <object class="GtkCheckButton" id="installed_toggle">
+                <property name="label" translatable="yes">Installed Only</property>
+                <property name="tooltip-text" translatable="yes">Show only installed packages</property>
+                <signal name="toggled" handler="on_installed_toggled" swapped="true"/>
+            </object>
         </child>
         <child>
           <object class="GtkBox"><property name="hexpand">true</property></object>
@@ -71,6 +81,8 @@
                   <object class="GtkColumnView" id="package_grid">
                     <property name="hexpand">true</property>
                     <property name="vexpand">true</property>
+                    <property name="show-column-separators">false</property>
+                    <property name="show-row-separators">false</property>
                     <child>
                       <object class="GtkColumnViewColumn" id="check_column">
                         <property name="title"></property>
@@ -78,6 +90,7 @@
                     </child>
                     <child>
                       <object class="GtkColumnViewColumn" id="name_column">
+
                         <property name="title" translatable="yes">Name</property>
                         <property name="expand">true</property>
                       </object>
@@ -140,7 +153,7 @@
                 </child>
                 <child>
                   <object class="GtkLabel" id="placeholder_subtitle">
-                    <property name="label" translatable="yes">The AUR has no browsable index type a package name to begin.</property>
+                    <property name="label" translatable="yes">The AUR has no browsable index. Type a package name to begin.</property>
                     <property name="wrap">true</property>
                     <property name="justify">center</property>
                     <property name="max-width-chars">40</property>

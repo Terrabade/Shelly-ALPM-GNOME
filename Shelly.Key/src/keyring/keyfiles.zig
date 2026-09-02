@@ -7,6 +7,23 @@ pub const KeyfilesError = fsutil.FsUtilError ||
     std.Io.Dir.OpenError ||
     std.Io.Dir.SetFilePermissionsError;
 
+/// Create the legacy OpenPGP keyring files used by pacman/libalpm.
+///
+/// These files must exist before the first GnuPG command is run. Otherwise,
+/// modern GnuPG creates `pubring.kbx`, which libalpm does not use when loading
+/// pacman's configured keyring.
+pub fn ensureAlpmKeyringFiles(
+    base: std.Io.Dir,
+    io: Io,
+    keyring_dir: []const u8,
+) KeyfilesError!void {
+    var dir = try base.openDir(io, keyring_dir, .{});
+    defer dir.close(io);
+
+    try fsutil.ensureRegularFile(dir, io, "pubring.gpg");
+    try fsutil.ensureRegularFile(dir, io, "secring.gpg");
+}
+
 pub fn trustdbExists(
     base: std.Io.Dir,
     io: Io,
@@ -29,7 +46,9 @@ pub fn applyKeyringPermissions(
     var dir = try base.openDir(io, keyring_dir, .{});
     defer dir.close(io);
 
+    try dir.setFilePermissions(io, "pubring.gpg", fsutil.mode.readable, .{});
     try dir.setFilePermissions(io, "trustdb.gpg", fsutil.mode.readable, .{});
+    try dir.setFilePermissions(io, "secring.gpg", fsutil.mode.private, .{});
 }
 
 pub const ResolveKeyringsError = error{
@@ -234,6 +253,62 @@ pub fn trustedFileNonempty(
 
 const testing = std.testing;
 
+test "ensureAlpmKeyringFiles creates the libalpm-compatible keyring files" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(testing.io, "gnupg", .default_dir);
+
+    try ensureAlpmKeyringFiles(tmp.dir, testing.io, "gnupg");
+
+    var gnupg = try tmp.dir.openDir(testing.io, "gnupg", .{});
+    defer gnupg.close(testing.io);
+
+    for ([_][]const u8{ "pubring.gpg", "secring.gpg" }) |name| {
+        const st = try gnupg.statFile(testing.io, name, .{});
+        try testing.expectEqual(@as(Io.File.Kind, .file), st.kind);
+        try testing.expectEqual(@as(u64, 0), st.size);
+    }
+}
+
+test "ensureAlpmKeyringFiles is idempotent and preserves existing keyring data" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(testing.io, "gnupg", .default_dir);
+    {
+        var dir = try tmp.dir.openDir(testing.io, "gnupg", .{});
+        defer dir.close(testing.io);
+        var file = try dir.createFile(testing.io, "pubring.gpg", .{});
+        try file.writeStreamingAll(testing.io, "existing keyring data");
+        file.close(testing.io);
+    }
+
+    try ensureAlpmKeyringFiles(tmp.dir, testing.io, "gnupg");
+    try ensureAlpmKeyringFiles(tmp.dir, testing.io, "gnupg");
+
+    var gnupg = try tmp.dir.openDir(testing.io, "gnupg", .{});
+    defer gnupg.close(testing.io);
+
+    const pubring = try gnupg.statFile(testing.io, "pubring.gpg", .{});
+    try testing.expectEqual(@as(u64, "existing keyring data".len), pubring.size);
+    const secring = try gnupg.statFile(testing.io, "secring.gpg", .{});
+    try testing.expectEqual(@as(u64, 0), secring.size);
+}
+
+test "ensureAlpmKeyringFiles rejects a non-file keyring path" {
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.createDir(testing.io, "gnupg", .default_dir);
+    try tmp.dir.createDir(testing.io, "gnupg/pubring.gpg", .default_dir);
+
+    try testing.expectError(
+        error.NotARegularFile,
+        ensureAlpmKeyringFiles(tmp.dir, testing.io, "gnupg"),
+    );
+}
+
 test "trustdbExists returns false when trustdb.gpg is absent" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
@@ -258,7 +333,7 @@ test "trustdbExists returns true when trustdb.gpg exists as a regular file" {
     try testing.expect(try trustdbExists(tmp.dir, testing.io, "gnupg"));
 }
 
-test "applyKeyringPermissions sets the canonical mode on trustdb.gpg" {
+test "applyKeyringPermissions sets canonical modes on the libalpm keyring files" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
@@ -266,10 +341,11 @@ test "applyKeyringPermissions sets the canonical mode on trustdb.gpg" {
     {
         var dir = try tmp.dir.openDir(testing.io, "gnupg", .{});
         defer dir.close(testing.io);
-        var f = try dir.createFile(testing.io, "trustdb.gpg", .{});
-        f.close(testing.io);
-        // Set deliberately wrong mode.
-        try dir.setFilePermissions(testing.io, "trustdb.gpg", @enumFromInt(0o600), .{});
+        for ([_][]const u8{ "pubring.gpg", "secring.gpg", "trustdb.gpg" }) |name| {
+            var file = try dir.createFile(testing.io, name, .{});
+            file.close(testing.io);
+            try dir.setFilePermissions(testing.io, name, @enumFromInt(0o666), .{});
+        }
     }
 
     try applyKeyringPermissions(tmp.dir, testing.io, "gnupg");
@@ -277,7 +353,9 @@ test "applyKeyringPermissions sets the canonical mode on trustdb.gpg" {
     var gnupg = try tmp.dir.openDir(testing.io, "gnupg", .{});
     defer gnupg.close(testing.io);
 
+    try testing.expectFmt("0644", "{o:0>4}", .{try fsutil.statMode(gnupg, testing.io, "pubring.gpg")});
     try testing.expectFmt("0644", "{o:0>4}", .{try fsutil.statMode(gnupg, testing.io, "trustdb.gpg")});
+    try testing.expectFmt("0600", "{o:0>4}", .{try fsutil.statMode(gnupg, testing.io, "secring.gpg")});
 }
 
 test "applyKeyringPermissions reports missing trustdb.gpg" {
@@ -285,6 +363,7 @@ test "applyKeyringPermissions reports missing trustdb.gpg" {
     defer tmp.cleanup();
 
     try tmp.dir.createDir(testing.io, "gnupg", .default_dir);
+    try ensureAlpmKeyringFiles(tmp.dir, testing.io, "gnupg");
 
     try testing.expectError(
         error.FileNotFound,

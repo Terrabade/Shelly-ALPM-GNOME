@@ -412,23 +412,34 @@ fn deleteFile(io: std.Io, path: []const u8) !bool {
     return true;
 }
 
+const cache_cleanup_progress_name = "package-cache";
+
+fn reportCleanupProgress(
+    operation: *const operation_api.Operation,
+    completed: usize,
+    total: usize,
+) void {
+    operation.progress(.{
+        .stage = "cache-clean",
+        .completed = @intCast(completed),
+        .total = @intCast(total),
+        .percentage = if (total == 0)
+            100
+        else
+            @as(f64, @floatFromInt(completed)) * 100.0 / @as(f64, @floatFromInt(total)),
+        .message = cache_cleanup_progress_name,
+    });
+}
+
 fn executeRemovalPlan(io: std.Io, plan: *const RemovalPlan, operation: ?*const operation_api.Operation) Error!ExecutionResult {
     try validateRemovalPlan(plan);
     if (operation) |active_operation| if (active_operation.isCancelled()) return Error.Cancelled;
     if (plan.dry_run) return .{ .dry_run = true };
 
     var result: ExecutionResult = .{ .dry_run = false };
+    if (operation) |active_operation| reportCleanupProgress(active_operation, 0, plan.items.len);
     for (plan.items, 0..) |item, item_index| {
-        if (operation) |active_operation| {
-            if (active_operation.isCancelled()) return Error.Cancelled;
-            active_operation.progress(.{
-                .stage = "cache-clean",
-                .completed = @intCast(item_index),
-                .total = @intCast(plan.items.len),
-                .percentage = if (plan.items.len == 0) 100 else @as(f64, @floatFromInt(item_index)) * 100.0 / @as(f64, @floatFromInt(plan.items.len)),
-                .message = item.package.full_path,
-            });
-        }
+        if (operation) |active_operation| if (active_operation.isCancelled()) return Error.Cancelled;
         const package_removed = deleteFile(io, item.package.full_path) catch
             return Error.RemovalFailed;
         if (package_removed) {
@@ -448,14 +459,8 @@ fn executeRemovalPlan(io: std.Io, plan: *const RemovalPlan, operation: ?*const o
                 result.files_already_missing += 1;
             }
         }
+        if (operation) |active_operation| reportCleanupProgress(active_operation, item_index + 1, plan.items.len);
     }
-    if (operation) |active_operation| active_operation.progress(.{
-        .stage = "cache-clean",
-        .completed = @intCast(plan.items.len),
-        .total = @intCast(plan.items.len),
-        .percentage = 100,
-        .message = "Package-cache cleanup complete",
-    });
     return result;
 }
 
@@ -521,6 +526,72 @@ const TestInstalledPackages = struct {
     }
 };
 
+const CacheProgressCapture = struct {
+    io: std.Io,
+    items: []const RemovalItem,
+    completed: [8]u64 = undefined,
+    totals: [8]u64 = undefined,
+    percentages: [8]f64 = undefined,
+    operation_id: ?operation_api.OperationId = null,
+    count: usize = 0,
+    valid_shape: bool = true,
+    stable_identity: bool = true,
+    emitted_after_removal: bool = true,
+
+    fn receive(data: ?*anyopaque, event: operation_api.Event) void {
+        const self: *@This() = @ptrCast(@alignCast(data.?));
+        const progress = switch (event) {
+            .progress => |value| value,
+            else => return,
+        };
+        const stage = progress.update.stage orelse return;
+        if (!std.mem.eql(u8, stage, "cache-clean")) return;
+        if (self.count >= self.completed.len) {
+            self.valid_shape = false;
+            return;
+        }
+
+        if (self.operation_id) |operation_id| {
+            if (operation_id != progress.envelope.operation_id) self.stable_identity = false;
+        } else {
+            self.operation_id = progress.envelope.operation_id;
+        }
+        const message = progress.update.message orelse {
+            self.stable_identity = false;
+            return;
+        };
+        if (!std.mem.eql(u8, message, cache_cleanup_progress_name)) self.stable_identity = false;
+
+        const completed = progress.update.completed orelse {
+            self.valid_shape = false;
+            return;
+        };
+        const total = progress.update.total orelse {
+            self.valid_shape = false;
+            return;
+        };
+        const percentage = progress.update.percentage orelse {
+            self.valid_shape = false;
+            return;
+        };
+        self.completed[self.count] = completed;
+        self.totals[self.count] = total;
+        self.percentages[self.count] = percentage;
+        self.count += 1;
+
+        if (completed == 0 or completed > self.items.len) return;
+        std.Io.Dir.cwd().access(
+            self.io,
+            self.items[@intCast(completed - 1)].package.full_path,
+            .{},
+        ) catch |err| {
+            if (err != error.FileNotFound) self.emitted_after_removal = false;
+            return;
+        };
+        self.emitted_after_removal = false;
+    }
+};
+
 test "cache cleanup exposes planning and execution through CacheManager" {
     _ = CacheManager.plan_cache_cleanup;
     _ = CacheManager.execute_cache_removal_plan;
@@ -534,6 +605,63 @@ test "package-cache operations honor shared cancellation" {
 
     context.cancel();
     try testing.expectError(Error.Cancelled, manager.plan_cache_cleanup(.{}));
+}
+
+test "cache cleanup emits stable aggregate progress after each removal" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cache_directory = try std.fmt.allocPrint(
+        testing.allocator,
+        ".zig-cache/tmp/{s}/cache",
+        .{tmp.sub_path},
+    );
+    defer testing.allocator.free(cache_directory);
+    try std.Io.Dir.cwd().createDirPath(testing.io, cache_directory);
+
+    const fixture_names = [_][]const u8{
+        "alpha-1.0-1-x86_64.pkg.tar.zst",
+        "beta-1.0-1-x86_64.pkg.tar.zst",
+    };
+    for (fixture_names) |fixture_name| {
+        const path = try std.fs.path.join(testing.allocator, &.{ cache_directory, fixture_name });
+        defer testing.allocator.free(path);
+        try std.Io.Dir.cwd().writeFile(testing.io, .{ .sub_path = path, .data = fixture_name });
+    }
+
+    var installed: TestInstalledPackages = .{ .names = &.{} };
+    var plan = try buildRemovalPlan(
+        testing.allocator,
+        testing.io,
+        cache_directory,
+        .{ .keep = 0 },
+        .{ .context = &installed, .function = TestInstalledPackages.lookup },
+        null,
+    );
+    defer plan.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, fixture_names.len), plan.items.len);
+
+    var context = operation_api.OperationContext.init(testing.allocator, testing.io);
+    defer context.deinit();
+    var capture: CacheProgressCapture = .{
+        .io = testing.io,
+        .items = plan.items,
+    };
+    _ = try context.subscribe(.{ .function = CacheProgressCapture.receive, .data = &capture });
+
+    var manager = CacheManager.init(testing.allocator, testing.io, .{
+        .cache_directory = cache_directory,
+    });
+    manager.setOperationContext(&context);
+    const result = try manager.execute_cache_removal_plan(&plan);
+
+    try testing.expectEqual(@as(usize, fixture_names.len), result.packages_removed);
+    try testing.expect(capture.valid_shape);
+    try testing.expect(capture.stable_identity);
+    try testing.expect(capture.emitted_after_removal);
+    try testing.expectEqual(@as(usize, 3), capture.count);
+    try testing.expectEqualSlices(u64, &.{ 0, 1, 2 }, capture.completed[0..capture.count]);
+    try testing.expectEqualSlices(u64, &.{ 2, 2, 2 }, capture.totals[0..capture.count]);
+    try testing.expectEqualSlices(f64, &.{ 0, 50, 100 }, capture.percentages[0..capture.count]);
 }
 
 test "cache cleanup parses package filenames from right to left" {

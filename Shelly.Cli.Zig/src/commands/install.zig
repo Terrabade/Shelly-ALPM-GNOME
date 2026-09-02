@@ -1,8 +1,10 @@
 const std = @import("std");
 const Zigalpm = @import("Zigalpm");
+const test_support = @import("test_support.zig");
 const config_manager = @import("../config/manager.zig");
 const config_model = @import("../config/model.zig");
 const output = @import("../output/config.zig");
+const format = @import("../output/format.zig");
 const standard_single_pane = @import("../output/standard_single_pane.zig");
 const ui_operation = @import("../output/ui_operation.zig");
 const list_updates = @import("list_updates.zig");
@@ -11,6 +13,7 @@ const runtime = @import("../runtime/context.zig");
 const elevation = @import("../runtime/elevation.zig");
 const xdg = @import("../runtime/xdg.zig");
 const spec = @import("../cli/spec.zig");
+const aur_url = @import("../config/aur_url.zig");
 
 const standard_command_path = "shelly install standard";
 const appimage_command_path = "shelly install appimage";
@@ -24,31 +27,29 @@ const InstallError = error{
     UnsupportedLocalPackage,
 };
 
-const Runner = struct {
-    data: ?*anyopaque = null,
-    call: *const fn (
-        data: ?*anyopaque,
+const Real = struct {
+    pub fn run(
+        _: Real,
         context: *runtime.RuntimeContext,
         operation_context: *Zigalpm.OperationContext,
         invocation: *const parser.Invocation,
-    ) anyerror!void,
-};
-
-const RunnerAdapter = struct {
-    runner: Runner,
-    invocation: *const parser.Invocation,
-
-    fn call(
-        data: ?*anyopaque,
-        context: *runtime.RuntimeContext,
-        operation_context: *Zigalpm.OperationContext,
     ) !void {
-        const self: *RunnerAdapter = @ptrCast(@alignCast(data.?));
-        try self.runner.call(self.runner.data, context, operation_context, self.invocation);
+        if (std.mem.eql(u8, invocation.command.path, standard_command_path))
+            return runStandard(context, operation_context, invocation);
+        if (std.mem.eql(u8, invocation.command.path, aur_command_path))
+            return runAur(context, operation_context, invocation);
+        if (std.mem.eql(u8, invocation.command.path, appimage_command_path))
+            return runAppImage(context, operation_context, invocation);
+        if (std.mem.eql(u8, invocation.command.path, flatpak_command_path)) {
+            if (isFlatpakRepair(invocation))
+                return runFlatpakRepair(context, operation_context, invocation);
+            if (flatpakFileKind(invocation)) |kind|
+                return runFlatpakFile(context, operation_context, invocation, kind);
+            return runFlatpak(context, operation_context, invocation);
+        }
+        unreachable;
     }
 };
-
-const real_runner: Runner = .{ .call = runRealInstall };
 
 pub const Backend = enum {
     standard,
@@ -60,6 +61,7 @@ pub const Backend = enum {
 pub const CallOptions = struct {
     no_confirm: bool = false,
     ui_mode: bool = false,
+    aur_url: ?[]const u8 = null,
 };
 
 pub const Caller = struct {
@@ -114,6 +116,10 @@ fn callArguments(
     try arguments.append(allocator, @tagName(backend));
     if (options.no_confirm) try arguments.append(allocator, "--no-confirm");
     if (options.ui_mode) try arguments.append(allocator, "--ui-mode");
+    if (options.aur_url) |url| {
+        try arguments.append(allocator, "--aur-url");
+        try arguments.append(allocator, url);
+    }
     try arguments.appendSlice(allocator, targets);
     return arguments.toOwnedSlice(allocator);
 }
@@ -127,7 +133,7 @@ test "internal install calls preserve targets and automatic-answer globals" {
         allocator,
         .standard,
         &.{ "base", "linux" },
-        .{ .no_confirm = true, .ui_mode = true },
+        .{ .no_confirm = true, .ui_mode = true, .aur_url = "https://atoll.seafoam-labs.org" },
     );
     const manifest = try spec.Manifest.load(allocator);
     const outcome = try parser.parse(allocator, &manifest, arguments);
@@ -136,6 +142,7 @@ test "internal install calls preserve targets and automatic-answer globals" {
     try std.testing.expectEqualStrings(standard_command_path, outcome.dispatch.command.path);
     try std.testing.expect(outcome.dispatch.globals.no_confirm);
     try std.testing.expect(outcome.dispatch.globals.ui_mode);
+    try std.testing.expectEqualStrings("https://atoll.seafoam-labs.org", aur_url.overrideValue(&outcome.dispatch).?);
     try std.testing.expectEqual(@as(usize, 2), outcome.dispatch.positionals.len);
     try std.testing.expectEqualStrings("base", outcome.dispatch.positionals[0]);
     try std.testing.expectEqualStrings("linux", outcome.dispatch.positionals[1]);
@@ -229,21 +236,27 @@ pub fn dispatch(
             if (elevated_exit) |exit_code| return exit_code;
         }
     } else if (!invocation.globals.ui_mode and needsElevation(invocation)) {
-        const elevated_exit = elevation.relaunchIfNeeded(context, invocation.arguments) catch |err| {
+        const carries_aur = std.mem.eql(u8, invocation.command.path, aur_command_path);
+        const elevated_arguments = if (carries_aur)
+            try aur_url.argumentsWithEffectiveBase(context, invocation)
+        else
+            invocation.arguments;
+        defer if (carries_aur) context.allocator.free(elevated_arguments);
+        const elevated_exit = elevation.relaunchIfNeeded(context, elevated_arguments) catch |err| {
             try context.stderr.print("Unable to elevate install: {t}\n", .{err});
             return 1;
         };
         if (elevated_exit) |exit_code| return exit_code;
     }
 
-    return try executeWithRunner(context, invocation, real_runner);
+    return try executeWithRunner(context, invocation, Real{});
 }
 
 fn executeWithRunner(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     if (requestsStandardUpgrade(invocation) and !invocation.globals.no_confirm) {
         const confirmed = if (invocation.globals.ui_mode)
             try confirmStandardUpgradeUi(context)
@@ -267,7 +280,7 @@ fn requestsStandardUpgrade(invocation: *const parser.Invocation) bool {
 }
 
 fn confirmStandardUpgrade(context: *runtime.RuntimeContext) !bool {
-    var result = list_updates.collectUpdates(context, .standard, false) catch |err| {
+    var result = list_updates.collectUpdates(context, .standard, .{}) catch |err| {
         try context.stderr.print("Unable to prepare the standard upgrade plan: {t}\n", .{err});
         try context.stderr.flush();
         return err;
@@ -323,7 +336,7 @@ fn confirmStandardUpgradeWithUpdates(
 }
 
 fn confirmStandardUpgradeUi(context: *runtime.RuntimeContext) !bool {
-    var result = list_updates.collectUpdates(context, .standard, false) catch |err| {
+    var result = list_updates.collectUpdates(context, .standard, .{}) catch |err| {
         const message = try std.fmt.allocPrint(
             context.allocator,
             "Unable to prepare the standard upgrade plan: {t}",
@@ -413,15 +426,17 @@ fn writeStandardUpgradePreview(
 fn executeStandard(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
+    runner: anytype,
     opening: []const u8,
-) !u8 {
-    var adapter: RunnerAdapter = .{ .runner = runner, .invocation = invocation };
+) anyerror!u8 {
     const succeeded = try standard_single_pane.output(
         context,
         opening,
         invocation.globals.no_confirm,
-        .{ .data = &adapter, .call = RunnerAdapter.call },
+        runner,
+        invocation,
+        null,
+        null,
     );
     return if (succeeded) 0 else 1;
 }
@@ -429,75 +444,17 @@ fn executeStandard(
 fn executeUi(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
+    runner: anytype,
     opening: []const u8,
-) !u8 {
-    var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
-    context.attachTransactionLog(&operation_context);
-    defer operation_context.deinit();
-    var question_responder: ui_operation.QuestionResponder = .{
-        .context = context,
-        .operation_context = &operation_context,
-        .no_confirm = invocation.globals.no_confirm,
-    };
-    question_responder.attach();
-    defer question_responder.detach();
-    var reporter: ui_operation.Reporter = .{ .context = context };
-    const event_subscription = try operation_context.subscribe(.{
-        .function = ui_operation.Reporter.handle,
-        .data = &reporter,
-    });
-    defer _ = operation_context.unsubscribe(event_subscription);
-
-    try output.writeAlpmInfoFrame(context, "TransactionStart", opening);
-    try ui_operation.flush(context);
-
-    runner.call(runner.data, context, &operation_context, invocation) catch |err| {
-        if (err == error.Cancelled) {
-            try output.writeInfoFrame(context, "Operation cancelled.");
-            try output.writeAlpmInfoFrame(context, "TransactionCancelled", "Installation cancelled.");
-            try ui_operation.flush(context);
-            return 0;
-        }
-        if (Zigalpm.flatpak.errors.unavailableMessage(err)) |message| {
-            try output.writeErrorFrame(context, message);
-            try output.writeAlpmInfoFrame(context, "TransactionFailed", failureMessage(invocation));
-            try ui_operation.flush(context);
-            return 1;
-        }
-        const message = try std.fmt.allocPrint(context.allocator, "Installation failed: {t}", .{err});
-        defer context.allocator.free(message);
-        try output.writeErrorFrame(context, message);
-        try output.writeAlpmInfoFrame(context, "TransactionFailed", failureMessage(invocation));
-        try ui_operation.flush(context);
-        return 1;
-    };
-
-    try output.writeAlpmInfoFrame(context, "TransactionDone", successMessage(invocation));
-    try ui_operation.flush(context);
-    return if (reporter.failed()) 1 else 0;
-}
-
-fn runRealInstall(
-    _: ?*anyopaque,
-    context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
-    invocation: *const parser.Invocation,
-) !void {
-    if (std.mem.eql(u8, invocation.command.path, standard_command_path))
-        return runStandard(context, operation_context, invocation);
-    if (std.mem.eql(u8, invocation.command.path, aur_command_path))
-        return runAur(context, operation_context, invocation);
-    if (std.mem.eql(u8, invocation.command.path, appimage_command_path))
-        return runAppImage(context, operation_context, invocation);
-    if (std.mem.eql(u8, invocation.command.path, flatpak_command_path)) {
-        if (isFlatpakRepair(invocation))
-            return runFlatpakRepair(context, operation_context, invocation);
-        if (flatpakFileKind(invocation)) |kind|
-            return runFlatpakFile(context, operation_context, invocation, kind);
-        return runFlatpak(context, operation_context, invocation);
-    }
-    unreachable;
+) anyerror!u8 {
+    return ui_operation.runTransaction(context, invocation, .{
+        .opening = opening,
+        .success_message = successMessage(invocation),
+        .failure_message = failureMessage(invocation),
+        .failure_label = "Installation failed",
+        .cancelled_message = "Installation cancelled.",
+        .report_flatpak_unavailable = true,
+    }, runner);
 }
 
 const PackageSource = union(enum) {
@@ -549,7 +506,7 @@ fn installRepositoryPackages(
     invocation: *const parser.Invocation,
     package_names: []const []const u8,
 ) !void {
-    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, null, true, null);
+    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
@@ -593,7 +550,7 @@ fn installLocalPackage(
     const inspector: Zigalpm.local.Inspector = .{ .allocator = context.allocator, .io = context.io };
 
     if (try inspector.isArchPackage(absolute_path)) {
-        const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, null, true, null);
+        const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
         defer manager.deinit();
         manager.setOperationContext(operation_context);
         defer manager.setOperationContext(null);
@@ -651,10 +608,18 @@ fn runAur(
     if (!isAurVersionInstall(invocation) and
         optionEnabled(invocation, "--build-deps") and invocation.positionals.len > 1)
         return error.MultipleDependencyTargets;
+    const executable = try std.process.executablePathAlloc(context.io, context.allocator);
+    defer context.allocator.free(executable);
+    const build_command = std.mem.trimEnd(u8, executable, " (deleted)");
+    const aur_base = try aur_url.resolveFor(context, invocation);
     const manager = try Zigalpm.AurManager.init(context.allocator, context.environ, .{
+        .aur_git_base_url = aur_base,
         .root = true,
         .use_chroot = optionEnabled(invocation, "--chroot"),
-        .no_check = !optionEnabled(invocation, "--check"),
+        .check = checkOverride(invocation),
+        .sign = signOverride(invocation),
+        .build_command = build_command,
+        .operation_context = operation_context,
     });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
@@ -672,18 +637,42 @@ fn runAur(
     }
 }
 
+fn checkOverride(invocation: *const parser.Invocation) ?bool {
+    if (optionEnabled(invocation, "--no-check")) return false;
+    if (optionEnabled(invocation, "--check")) return true;
+    return null;
+}
+
+fn signOverride(invocation: *const parser.Invocation) ?bool {
+    if (optionEnabled(invocation, "--nosign")) return false;
+    if (optionEnabled(invocation, "--sign")) return true;
+    return null;
+}
+
 fn runAppImage(
     context: *runtime.RuntimeContext,
     operation_context: *Zigalpm.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
+    if (elevation.isRoot()) {
+        const args = try appimageInstallArgs(context.allocator, invocation);
+        defer context.allocator.free(args);
+        if (try elevation.runAsInvokingUser(context, args)) |exit_code| {
+            if (exit_code != 0) return InstallError.BackendFailed;
+            return;
+        }
+        // A direct root invocation has no user to re-launch as. Continue
+        // with root's own user-scoped AppImage store in that case.
+    }
+
     const location = invocation.positionals[0];
     std.Io.Dir.cwd().access(context.io, location, .{}) catch return error.FileNotFound;
     if (!Zigalpm.AppImageManager.isAppImage(location)) return error.NotAnAppImage;
 
     const configuration = config_manager.Manager.init(context).read() catch
         try config_model.Config.defaults(context.allocator);
-    const install_directory = stringValue(&configuration, "AppImageInstallPath") orelse
+    const install_directory = optionValue(invocation, "--install-path") orelse
+        stringValue(&configuration, "AppImageInstallPath") orelse
         try xdg.binHome(context);
     const local_db_path = try std.fs.path.join(
         context.allocator,
@@ -702,11 +691,100 @@ fn runAppImage(
     if (!try manager.installAppImage(location)) return InstallError.BackendFailed;
 }
 
+fn appimageInstallArgs(
+    allocator: std.mem.Allocator,
+    invocation: *const parser.Invocation,
+) ![]const []const u8 {
+    var args: std.ArrayList([]const u8) = .empty;
+    errdefer args.deinit(allocator);
+    try args.appendSlice(allocator, &.{ "install", "appimage" });
+    if (invocation.globals.no_confirm)
+        try args.append(allocator, "--no-confirm");
+    if (invocation.globals.json)
+        try args.append(allocator, "--json");
+    if (invocation.globals.ui_mode)
+        try args.append(allocator, "--ui-mode");
+    if (optionValue(invocation, "--install-path")) |install_path|
+        try args.appendSlice(allocator, &.{ "--install-path", install_path });
+    for (invocation.positionals) |positional| try args.append(allocator, positional);
+    return args.toOwnedSlice(allocator);
+}
+
 const FlatpakCandidate = struct {
     id: []const u8,
     name: []const u8,
     remote: []const u8,
 };
+
+const EolInstallReplacement = struct {
+    id: []u8,
+    branch: []u8,
+
+    fn deinit(self: *EolInstallReplacement, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.branch);
+        self.* = undefined;
+    }
+};
+
+fn resolveFlatpakEolInstallTarget(
+    context: *runtime.RuntimeContext,
+    operation_context: *Zigalpm.OperationContext,
+    manager: anytype,
+    selected_id: []const u8,
+    selected_remote: []const u8,
+    requested_branch: []const u8,
+    requested_scope: Zigalpm.flatpak.Scope,
+) !?EolInstallReplacement {
+    var remote_ref = manager.get_remote_ref_info_flatpak(
+        selected_remote,
+        selected_id,
+        requested_branch,
+        requested_scope,
+    ) catch return null;
+    defer remote_ref.deinit(context.allocator);
+
+    const marker = remote_ref.eol_rebase orelse {
+        if (remote_ref.eol) |reason| {
+            const warning = try Zigalpm.flatpak.eol.eolOnlyWarning(
+                context.allocator,
+                selected_id,
+                requested_branch,
+                reason,
+            );
+            defer context.allocator.free(warning);
+            Zigalpm.flatpak.eol.emitStatus(operation_context, .install, .warning, selected_id, warning);
+        }
+        return null;
+    };
+
+    const target = Zigalpm.flatpak.eol.parseRebaseTarget(marker, requested_branch) orelse {
+        const warning = try Zigalpm.flatpak.eol.eolOnlyWarning(
+            context.allocator,
+            selected_id,
+            requested_branch,
+            remote_ref.eol,
+        );
+        defer context.allocator.free(warning);
+        Zigalpm.flatpak.eol.emitStatus(operation_context, .install, .warning, selected_id, warning);
+        return null;
+    };
+
+    const owned_id = try context.allocator.dupe(u8, target.id);
+    errdefer context.allocator.free(owned_id);
+    const owned_branch = try context.allocator.dupe(u8, target.branch);
+    errdefer context.allocator.free(owned_branch);
+
+    const notice = try std.fmt.allocPrint(
+        context.allocator,
+        "{s} is end-of-life; installing replacement {s} instead.",
+        .{ selected_id, target.id },
+    );
+    defer context.allocator.free(notice);
+    Zigalpm.flatpak.eol.emitStatus(operation_context, .install, .information, selected_id, notice);
+
+    return .{ .id = owned_id, .branch = owned_branch };
+}
 
 fn runFlatpak(
     context: *runtime.RuntimeContext,
@@ -755,17 +833,36 @@ fn runFlatpak(
     }
     if (selected_remote.len == 0) return InstallError.NoFlatpakRemote;
 
-    const id_z = try context.allocator.dupeZ(u8, selected_id);
-    defer context.allocator.free(id_z);
-    const remote_z = try context.allocator.dupeZ(u8, selected_remote);
-    defer context.allocator.free(remote_z);
-    const branch_z = try context.allocator.dupeZ(u8, optionValue(invocation, "--branch") orelse "stable");
-    defer context.allocator.free(branch_z);
+    const requested_branch = optionValue(invocation, "--branch") orelse "";
 
     var manager = Zigalpm.FlatpakManager{ .allocator = context.allocator, .io = context.io };
     defer manager.deinit();
     try manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null) catch {};
+
+    var eol_replacement: ?EolInstallReplacement = null;
+    if (!optionEnabled(invocation, "--runtime")) {
+        eol_replacement = resolveFlatpakEolInstallTarget(
+            context,
+            operation_context,
+            manager,
+            selected_id,
+            selected_remote,
+            requested_branch,
+            requested_scope,
+        ) catch null;
+    }
+    defer if (eol_replacement) |*replacement| replacement.deinit(context.allocator);
+
+    const install_id = if (eol_replacement) |replacement| replacement.id else selected_id;
+    const install_branch = if (eol_replacement) |replacement| replacement.branch else requested_branch;
+
+    const id_z = try context.allocator.dupeZ(u8, install_id);
+    defer context.allocator.free(id_z);
+    const remote_z = try context.allocator.dupeZ(u8, selected_remote);
+    defer context.allocator.free(remote_z);
+    const branch_z = try context.allocator.dupeZ(u8, install_branch);
+    defer context.allocator.free(branch_z);
     if (!try manager.install_flatpak(
         id_z,
         remote_z,
@@ -932,7 +1029,7 @@ fn openingMessage(allocator: std.mem.Allocator, invocation: *const parser.Invoca
                 "Installing AUR package {s} at commit {s}",
                 .{ invocation.positionals[0], invocation.positionals[1] },
             );
-        const names = try joined(allocator, invocation.positionals);
+        const names = try format.joined(allocator, invocation.positionals);
         defer allocator.free(names);
         if (std.mem.eql(u8, invocation.command.path, standard_command_path))
             return std.fmt.allocPrint(allocator, "Installing packages: {s}", .{names});
@@ -985,7 +1082,7 @@ fn classifyPackageSource(value: []const u8) PackageSource {
         std.mem.indexOfScalar(u8, value, '\\') != null or
         std.mem.startsWith(u8, value, "~") or
         std.fs.path.isAbsolute(value) or
-        std.fs.path.extension(value).len > 0) return .{ .file = value };
+        Zigalpm.local.file_inspector.isSupportedArchive(value)) return .{ .file = value };
     return .{ .repository = value };
 }
 
@@ -1077,10 +1174,6 @@ fn stringValue(configuration: *const config_model.Config, key: []const u8) ?[]co
     return value.string;
 }
 
-fn joined(allocator: std.mem.Allocator, values: []const []const u8) ![]const u8 {
-    return std.mem.join(allocator, ", ", values);
-}
-
 fn isInstallPath(path: []const u8) bool {
     return std.mem.eql(u8, path, standard_command_path) or
         std.mem.eql(u8, path, appimage_command_path) or
@@ -1144,28 +1237,19 @@ test "Flatpak repair is an install modifier with f shortcode" {
 }
 
 test "Flatpak repair rejects install source modifiers" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
     const outcome = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "install", "flatpak", "--repair", "--remote", "flathub", "org.example.App" },
     );
-    try std.testing.expectEqual(@as(?u8, 1), try dispatch(&context, &outcome.dispatch));
+    try std.testing.expectEqual(@as(?u8, 1), try dispatch(&tc.context, &outcome.dispatch));
     try std.testing.expect(std.mem.indexOf(
         u8,
-        stdout.writer.buffered(),
+        tc.stdout.writer.buffered(),
         "Cannot combine --repair with",
     ) != null);
 }
@@ -1175,45 +1259,34 @@ test "Flatpak repair lifecycle and elevation follow the installed scope" {
     try std.testing.expect(!repairScopeRequiresElevation(.user, false));
     try std.testing.expect(!repairScopeRequiresElevation(.system, true));
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
     const outcome = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "install", "flatpak", "--repair", "org.example.App" },
     );
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
     const Capture = struct {
         called: bool = false,
 
-        fn run(
-            data: ?*anyopaque,
+        pub fn run(
+            self: *@This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             invocation: *const parser.Invocation,
         ) !void {
-            const self: *@This() = @ptrCast(@alignCast(data.?));
             self.called = true;
             try std.testing.expect(isFlatpakRepair(invocation));
         }
     };
     var capture: Capture = .{};
-    const runner: Runner = .{ .data = &capture, .call = Capture.run };
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, &capture));
     try std.testing.expect(capture.called);
     try std.testing.expect(std.mem.indexOf(
         u8,
-        stdout.writer.buffered(),
+        tc.stdout.writer.buffered(),
         "Repairing Flatpak: org.example.App",
     ) != null);
 }
@@ -1269,71 +1342,52 @@ test "Flatpak file install modifiers use the shared command and scope" {
 }
 
 test "Flatpak file install modifiers reject conflicting modes and repository options" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
 
     var outcome = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "install", "flatpak", "--ref-file", "--bundle", "demo.flatpak" },
     );
-    try std.testing.expectEqual(@as(?u8, 1), try dispatch(&context, &outcome.dispatch));
+    try std.testing.expectEqual(@as(?u8, 1), try dispatch(&tc.context, &outcome.dispatch));
     try std.testing.expect(std.mem.indexOf(
         u8,
-        stdout.writer.buffered(),
+        tc.stdout.writer.buffered(),
         "Choose exactly one of --ref-file or --bundle.",
     ) != null);
 
-    stdout.writer.end = 0;
+    tc.stdout.writer.end = 0;
     outcome = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "install", "flatpak", "--ref-file", "--remote", "flathub", "demo.flatpakref" },
     );
-    try std.testing.expectEqual(@as(?u8, 1), try dispatch(&context, &outcome.dispatch));
+    try std.testing.expectEqual(@as(?u8, 1), try dispatch(&tc.context, &outcome.dispatch));
     try std.testing.expect(std.mem.indexOf(
         u8,
-        stdout.writer.buffered(),
+        tc.stdout.writer.buffered(),
         "Cannot combine --ref-file or --bundle with --remote, --branch, or --runtime.",
     ) != null);
 }
 
 test "install routes every action-first backend and forwards type-specific options" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
     const Capture = struct {
         calls: usize = 0,
         paths: [6][]const u8 = undefined,
 
-        fn run(
-            data: ?*anyopaque,
+        pub fn run(
+            self: *@This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             invocation: *const parser.Invocation,
         ) !void {
-            const self: *@This() = @ptrCast(@alignCast(data.?));
             self.paths[self.calls] = invocation.command.path;
             self.calls += 1;
             if (std.mem.eql(u8, invocation.command.path, standard_command_path))
@@ -1354,7 +1408,6 @@ test "install routes every action-first backend and forwards type-specific optio
         }
     };
     var capture: Capture = .{};
-    const runner: Runner = .{ .data = &capture, .call = Capture.run };
     const arguments = [_][]const []const u8{
         &.{ "install", "standard", "--no-deps", "demo" },
         &.{ "install", "appimage", "demo.AppImage" },
@@ -1364,9 +1417,9 @@ test "install routes every action-first backend and forwards type-specific optio
         &.{ "install", "flatpak", "--bundle", "demo.flatpak" },
     };
     for (arguments) |argv| {
-        const outcome = try parser.parse(arena.allocator(), &manifest, argv);
+        const outcome = try parser.parse(tc.arena.allocator(), &manifest, argv);
         const invocation = outcome.dispatch;
-        try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &invocation, runner));
+        try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &invocation, &capture));
     }
     try std.testing.expectEqual(@as(usize, 6), capture.calls);
     try std.testing.expectEqualStrings(standard_command_path, capture.paths[0]);
@@ -1378,10 +1431,11 @@ test "install routes every action-first backend and forwards type-specific optio
 }
 
 test "AUR version install uses exact package and commit through the shared lifecycle" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "install",
         "aur",
         "--version",
@@ -1392,19 +1446,9 @@ test "AUR version install uses exact package and commit through the shared lifec
     try std.testing.expect(outcome == .dispatch);
     try std.testing.expect(isAurVersionInstall(&outcome.dispatch));
 
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
     const Capture = struct {
-        fn run(
-            _: ?*anyopaque,
+        pub fn run(
+            _: @This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             invocation: *const parser.Invocation,
@@ -1417,9 +1461,9 @@ test "AUR version install uses exact package and commit through the shared lifec
     };
     try std.testing.expectEqual(
         @as(u8, 0),
-        try executeWithRunner(&context, &outcome.dispatch, .{ .call = Capture.run }),
+        try executeWithRunner(&tc.context, &outcome.dispatch, Capture{}),
     );
-    const rendered = stdout.writer.buffered();
+    const rendered = tc.stdout.writer.buffered();
     try std.testing.expect(std.mem.indexOf(
         u8,
         rendered,
@@ -1429,30 +1473,21 @@ test "AUR version install uses exact package and commit through the shared lifec
 }
 
 test "AUR version install validates package commit and incompatible dependency mode" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
 
     var outcome = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "install", "aur", "--version", "demo-git" },
     );
-    try std.testing.expectEqual(@as(?u8, 1), try dispatch(&context, &outcome.dispatch));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "No commit specified.") != null);
+    try std.testing.expectEqual(@as(?u8, 1), try dispatch(&tc.context, &outcome.dispatch));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "No commit specified.") != null);
 
-    stdout.writer.end = 0;
-    outcome = try parser.parse(arena.allocator(), &manifest, &.{
+    tc.stdout.writer.end = 0;
+    outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "install",
         "aur",
         "--version",
@@ -1460,30 +1495,21 @@ test "AUR version install validates package commit and incompatible dependency m
         "demo-git",
         "deadbeef",
     });
-    try std.testing.expectEqual(@as(?u8, 1), try dispatch(&context, &outcome.dispatch));
+    try std.testing.expectEqual(@as(?u8, 1), try dispatch(&tc.context, &outcome.dispatch));
     try std.testing.expect(std.mem.indexOf(
         u8,
-        stdout.writer.buffered(),
+        tc.stdout.writer.buffered(),
         "Cannot combine --version with dependency-only installation options.",
     ) != null);
 }
 
 test "install uses the shared non-UI and UI transaction lifecycles" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
     const Success = struct {
-        fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, operation_context: *Zigalpm.OperationContext, invocation: *const parser.Invocation) !void {
+        pub fn run(_: @This(), _: *runtime.RuntimeContext, operation_context: *Zigalpm.OperationContext, invocation: *const parser.Invocation) !void {
             if (!invocation.globals.ui_mode) return;
             var operation = operation_context.begin(.{
                 .backend = .aur,
@@ -1494,50 +1520,38 @@ test "install uses the shared non-UI and UI transaction lifecycles" {
             operation.progress(.{ .percentage = 42, .native_code = 200 });
         }
     };
-    const runner: Runner = .{ .call = Success.run };
 
-    var outcome = try parser.parse(arena.allocator(), &manifest, &.{ "install", "standard", "demo" });
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), ":: Installing packages: demo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), ":: Transaction complete.") != null);
+    var outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "install", "standard", "demo" });
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, Success{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), ":: Installing packages: demo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), ":: Transaction complete.") != null);
 
-    stdout.writer.end = 0;
-    outcome = try parser.parse(arena.allocator(), &manifest, &.{ "install", "aur", "--ui-mode", "demo" });
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
-    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, stdout.writer.buffered(), "[JSON]"));
+    tc.stdout.writer.end = 0;
+    outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "install", "aur", "--ui-mode", "demo" });
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, Success{}));
+    try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, tc.stdout.writer.buffered(), "[JSON]"));
 }
 
 test "standard install upgrade requires confirmation unless disabled" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
     var declined_input = std.Io.Reader.fixed("n\n");
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdin = &declined_input,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    tc.context.stdin = &declined_input;
     const Capture = struct {
         called: bool = false,
 
-        fn run(
-            data: ?*anyopaque,
+        pub fn run(
+            self: *@This(),
             _: *runtime.RuntimeContext,
             _: *Zigalpm.OperationContext,
             _: *const parser.Invocation,
         ) !void {
-            const self: *@This() = @ptrCast(@alignCast(data.?));
             self.called = true;
         }
     };
     var capture: Capture = .{};
-    const runner: Runner = .{ .data = &capture, .call = Capture.run };
     const updates = [_]list_updates.StandardUpdate{.{
         .name = "linux",
         .current_version = "6.12.1-1",
@@ -1557,41 +1571,41 @@ test "standard install upgrade requires confirmation unless disabled" {
     }};
 
     var outcome = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "install", "standard", "--upgrade", "demo" },
     );
     try std.testing.expect(requestsStandardUpgrade(&outcome.dispatch));
-    try std.testing.expect(!try confirmStandardUpgradeWithUpdates(&context, &updates));
+    try std.testing.expect(!try confirmStandardUpgradeWithUpdates(&tc.context, &updates));
     try std.testing.expect(!capture.called);
     try std.testing.expect(std.mem.indexOf(
         u8,
-        stdout.writer.buffered(),
+        tc.stdout.writer.buffered(),
         "core/linux: 6.12.1-1 -> 6.12.2-1",
     ) != null);
     try std.testing.expect(std.mem.indexOf(
         u8,
-        stdout.writer.buffered(),
+        tc.stdout.writer.buffered(),
         "Proceed with the standard system upgrade? (Y/n)",
     ) != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Operation cancelled.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Operation cancelled.") != null);
 
-    stdout.writer.end = 0;
+    tc.stdout.writer.end = 0;
     var accepted_input = std.Io.Reader.fixed("\n");
-    context.stdin = &accepted_input;
-    try std.testing.expect(try confirmStandardUpgradeWithUpdates(&context, &updates));
+    tc.context.stdin = &accepted_input;
+    try std.testing.expect(try confirmStandardUpgradeWithUpdates(&tc.context, &updates));
 
-    context.stdin = null;
+    tc.context.stdin = null;
     outcome = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "install", "standard", "--upgrade", "--no-confirm", "demo" },
     );
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, &capture));
     try std.testing.expect(capture.called);
 
     outcome = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "install", "standard", "--upgrade", "demo.pkg.tar.zst" },
     );
@@ -1627,29 +1641,20 @@ test "standard install upgrade CLI skips confirmation when packages are current"
 }
 
 test "standard install upgrade UI previews available updates before confirmation" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
     const response_json = "{\"$kind\":\"a.yesno\",\"QuestionId\":\"1\",\"Accept\":true}";
     const encoded_size = std.base64.standard.Encoder.calcSize(response_json.len);
-    const encoded = try arena.allocator().alloc(u8, encoded_size);
+    const encoded = try tc.arena.allocator().alloc(u8, encoded_size);
     const encoded_response = std.base64.standard.Encoder.encode(encoded, response_json);
     const response_frame = try std.fmt.allocPrint(
-        arena.allocator(),
+        tc.arena.allocator(),
         "[JSON]{s}[/JSON]\n",
         .{encoded_response},
     );
     var stdin = std.Io.Reader.fixed(response_frame);
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdin = &stdin,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    tc.context.stdin = &stdin;
 
     const updates = [_]list_updates.StandardUpdate{
         .{
@@ -1688,8 +1693,8 @@ test "standard install upgrade UI previews available updates before confirmation
         },
     };
 
-    try std.testing.expect(try confirmStandardUpgradeUiWithUpdates(&context, &updates));
-    const rendered = stdout.writer.buffered();
+    try std.testing.expect(try confirmStandardUpgradeUiWithUpdates(&tc.context, &updates));
+    const rendered = tc.stdout.writer.buffered();
     var frame_iterator = std.mem.splitSequence(u8, rendered, "[JSON]");
     _ = frame_iterator.next();
     var found_preview = false;
@@ -1698,7 +1703,7 @@ test "standard install upgrade UI previews available updates before confirmation
         const encoded_end = std.mem.indexOf(u8, framed, "[/JSON]") orelse continue;
         const payload = framed[0..encoded_end];
         const decoded_size = try std.base64.standard.Decoder.calcSizeForSlice(payload);
-        const decoded = try arena.allocator().alloc(u8, decoded_size);
+        const decoded = try tc.arena.allocator().alloc(u8, decoded_size);
         try std.base64.standard.Decoder.decode(decoded, payload);
         if (std.mem.indexOf(u8, decoded, "core/linux: 6.12.1-1 -> 6.12.2-1") != null and
             std.mem.indexOf(u8, decoded, "extra/firefox: 127.0-1 -> 128.0-1") != null)
@@ -1712,19 +1717,19 @@ test "standard install upgrade UI previews available updates before confirmation
     try std.testing.expect(found_preview);
     try std.testing.expect(found_confirmation);
 
-    stdout.writer.end = 0;
+    tc.stdout.writer.end = 0;
     const decline_json = "{\"$kind\":\"a.yesno\",\"QuestionId\":\"1\",\"Accept\":false}";
     const decline_encoded_size = std.base64.standard.Encoder.calcSize(decline_json.len);
-    const decline_encoded = try arena.allocator().alloc(u8, decline_encoded_size);
+    const decline_encoded = try tc.arena.allocator().alloc(u8, decline_encoded_size);
     const decline_response = std.base64.standard.Encoder.encode(decline_encoded, decline_json);
     const decline_frame = try std.fmt.allocPrint(
-        arena.allocator(),
+        tc.arena.allocator(),
         "[JSON]{s}[/JSON]\n",
         .{decline_response},
     );
     var decline_input = std.Io.Reader.fixed(decline_frame);
-    context.stdin = &decline_input;
-    try std.testing.expect(!try confirmStandardUpgradeUiWithUpdates(&context, &updates));
+    tc.context.stdin = &decline_input;
+    try std.testing.expect(!try confirmStandardUpgradeUiWithUpdates(&tc.context, &updates));
 }
 
 test "standard install upgrade UI skips confirmation when packages are current" {
@@ -1764,36 +1769,28 @@ test "standard install upgrade UI skips confirmation when packages are current" 
 }
 
 test "install backend failures return a failing exit code and transaction result" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{ "install", "standard", "demo" });
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "install", "standard", "demo" });
     const Failure = struct {
-        fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: *const parser.Invocation) !void {
+        pub fn run(_: @This(), _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: *const parser.Invocation) !void {
             return error.TestInstallFailure;
         }
     };
     try std.testing.expectEqual(
         @as(u8, 1),
-        try executeWithRunner(&context, &outcome.dispatch, .{ .call = Failure.run }),
+        try executeWithRunner(&tc.context, &outcome.dispatch, Failure{}),
     );
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "error: TestInstallFailure") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), ":: Transaction failed.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "error: TestInstallFailure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), ":: Transaction failed.") != null);
 }
 
-test "standard source classification preserves repository names files and URLs" {
+test "standard source classification preserves dotted repository names files and URLs" {
     try std.testing.expect(classifyPackageSource("core/linux") == .repository);
     try std.testing.expect(classifyPackageSource("linux") == .repository);
+    try std.testing.expect(classifyPackageSource("dotnet-sdk-8.0") == .repository);
     try std.testing.expect(classifyPackageSource("./demo.pkg.tar.zst") == .file);
     try std.testing.expect(classifyPackageSource("demo.pkg.tar.zst") == .file);
     try std.testing.expect(classifyPackageSource("https://example.test/demo.pkg.tar.zst") == .url);
@@ -1824,4 +1821,202 @@ test "Flatpak candidate selection uses the shared question response" {
     });
     try std.testing.expectEqualStrings("org.demo.Two", selected.id);
     try std.testing.expectEqualStrings("flathub-beta", selected.remote);
+}
+
+const EolInstallTestManager = struct {
+    allocator: std.mem.Allocator,
+    remote_ref: ?Zigalpm.flatpak.types.RemoteRef = null,
+    fetch_error: bool = false,
+
+    pub fn get_remote_ref_info_flatpak(
+        self: @This(),
+        _: []const u8,
+        _: []const u8,
+        _: []const u8,
+        _: Zigalpm.flatpak.Scope,
+    ) !Zigalpm.flatpak.types.RemoteRef {
+        if (self.fetch_error) return error.TestFetchFailure;
+        const source = self.remote_ref orelse return error.TestFetchFailure;
+        return Zigalpm.flatpak.types.RemoteRef.fromWire(self.allocator, .{
+            .remote_name = source.remote_name,
+            .installed_size = source.installed_size,
+            .download_size = source.download_size,
+            .eol = source.eol,
+            .eol_rebase = source.eol_rebase,
+            .scope = Zigalpm.flatpak.types.Scope.toWire(source.scope),
+            .permissions = &.{},
+        });
+    }
+};
+
+fn makeEolRemoteRef(eol: ?[]const u8, eol_rebase: ?[]const u8) Zigalpm.flatpak.types.RemoteRef {
+    return .{
+        .remote_name = @constCast("flathub"),
+        .installed_size = 0,
+        .download_size = 0,
+        .eol = if (eol) |value| @constCast(value) else null,
+        .eol_rebase = if (eol_rebase) |value| @constCast(value) else null,
+        .scope = .system,
+        .permissions = &.{},
+    };
+}
+
+test "Flatpak install EOL detection redirects to the replacement" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stdout = std.Io.Writer.Discarding.init(&.{});
+    var stderr = std.Io.Writer.Discarding.init(&.{});
+    var context: runtime.RuntimeContext = .{
+        .allocator = arena.allocator(),
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    defer operations.deinit();
+
+    var manager: EolInstallTestManager = .{
+        .allocator = arena.allocator(),
+        .remote_ref = makeEolRemoteRef(null, "no.bragefuglseth.Keypunch"),
+    };
+    _ = &manager;
+
+    var replacement = try resolveFlatpakEolInstallTarget(
+        &context,
+        &operations,
+        manager,
+        "dev.bragefuglseth.Keypunch",
+        "flathub",
+        "stable",
+        .system,
+    );
+    defer if (replacement) |*value| value.deinit(context.allocator);
+    try std.testing.expect(replacement != null);
+    try std.testing.expectEqualStrings("no.bragefuglseth.Keypunch", replacement.?.id);
+    try std.testing.expectEqualStrings("stable", replacement.?.branch);
+}
+
+test "Flatpak install EOL detection warns and proceeds for eol-only refs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stdout = std.Io.Writer.Discarding.init(&.{});
+    var stderr = std.Io.Writer.Discarding.init(&.{});
+    var context: runtime.RuntimeContext = .{
+        .allocator = arena.allocator(),
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    defer operations.deinit();
+
+    var manager: EolInstallTestManager = .{
+        .allocator = arena.allocator(),
+        .remote_ref = makeEolRemoteRef("No longer maintained", null),
+    };
+    _ = &manager;
+
+    const replacement = try resolveFlatpakEolInstallTarget(
+        &context,
+        &operations,
+        manager,
+        "org.example.Dead",
+        "flathub",
+        "stable",
+        .system,
+    );
+    try std.testing.expect(replacement == null);
+}
+
+test "Flatpak install EOL detection treats remote fetch errors as advisory" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stdout = std.Io.Writer.Discarding.init(&.{});
+    var stderr = std.Io.Writer.Discarding.init(&.{});
+    var context: runtime.RuntimeContext = .{
+        .allocator = arena.allocator(),
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    defer operations.deinit();
+
+    var manager: EolInstallTestManager = .{
+        .allocator = arena.allocator(),
+        .fetch_error = true,
+    };
+    _ = &manager;
+
+    const replacement = try resolveFlatpakEolInstallTarget(
+        &context,
+        &operations,
+        manager,
+        "org.example.App",
+        "flathub",
+        "stable",
+        .system,
+    );
+    try std.testing.expect(replacement == null);
+}
+
+test "Flatpak install EOL detection accepts full-ref replacement markers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stdout = std.Io.Writer.Discarding.init(&.{});
+    var stderr = std.Io.Writer.Discarding.init(&.{});
+    var context: runtime.RuntimeContext = .{
+        .allocator = arena.allocator(),
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    defer operations.deinit();
+
+    var manager: EolInstallTestManager = .{
+        .allocator = arena.allocator(),
+        .remote_ref = makeEolRemoteRef(null, "app/no.bragefuglseth.Keypunch/x86_64/beta"),
+    };
+    _ = &manager;
+
+    var replacement = try resolveFlatpakEolInstallTarget(
+        &context,
+        &operations,
+        manager,
+        "dev.bragefuglseth.Keypunch",
+        "flathub",
+        "stable",
+        .system,
+    );
+    defer if (replacement) |*value| value.deinit(context.allocator);
+    try std.testing.expect(replacement != null);
+    try std.testing.expectEqualStrings("no.bragefuglseth.Keypunch", replacement.?.id);
+    try std.testing.expectEqualStrings("beta", replacement.?.branch);
+}
+
+test "appimage install relaunch forwards positionals and install-path" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const manifest = try spec.Manifest.load(arena.allocator());
+
+    const plain_outcome = try parser.parse(arena.allocator(), &manifest, &.{
+        "install", "appimage", "/tmp/demo.AppImage",
+    });
+    try std.testing.expect(plain_outcome == .dispatch);
+    const plain_args = try appimageInstallArgs(std.testing.allocator, &plain_outcome.dispatch);
+    defer std.testing.allocator.free(plain_args);
+    const expected_plain = [_][]const u8{ "install", "appimage", "/tmp/demo.AppImage" };
+    try std.testing.expectEqualSlices([]const u8, &expected_plain, plain_args);
+
+    const full_outcome = try parser.parse(arena.allocator(), &manifest, &.{
+        "install", "appimage", "--no-confirm", "--install-path", "/opt/appimages", "/tmp/demo.AppImage",
+    });
+    try std.testing.expect(full_outcome == .dispatch);
+    const full_args = try appimageInstallArgs(std.testing.allocator, &full_outcome.dispatch);
+    defer std.testing.allocator.free(full_args);
+    const expected_full = [_][]const u8{
+        "install", "appimage", "--no-confirm", "--install-path", "/opt/appimages", "/tmp/demo.AppImage",
+    };
+    try std.testing.expectEqualSlices([]const u8, &expected_full, full_args);
 }

@@ -11,14 +11,23 @@ extern fn bind_textdomain_codeset(domainname: [*:0]const u8, codeset: [*:0]const
 extern fn textdomain(domainname: [*:0]const u8) ?[*:0]const u8;
 extern fn dgettext(domainname: [*:0]const u8, msgid: [*:0]const u8) [*:0]const u8;
 
-/// Initializes the process locale and the gettext domain used by both Zig
-/// strings and GtkBuilder resources.
 pub fn init() bool {
-    const locale_ok = setlocale(LC_ALL, "") != null;
+    return initWithLocale(null);
+}
+
+extern fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
+pub fn initWithLocale(override_locale: ?[:0]const u8) bool {
+    _ = setlocale(LC_ALL, "");
+
+    if (override_locale) |loc| {
+        _ = setenv("LANGUAGE", loc.ptr, 1);
+    }
+
     const directory_ok = bindtextdomain(domain, locale_dir) != null;
     const codeset_ok = bind_textdomain_codeset(domain, "UTF-8") != null;
     const domain_ok = textdomain(domain) != null;
-    return locale_ok and directory_ok and codeset_ok and domain_ok;
+    return directory_ok and codeset_ok and domain_ok;
 }
 
 pub fn _(msgid: [:0]const u8) [:0]const u8 {

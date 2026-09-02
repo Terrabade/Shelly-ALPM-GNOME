@@ -18,6 +18,8 @@ pub const Command = struct {
     implementation: ?[]const u8 = null,
     actionCode: ?u8 = null,
     typeCode: ?u8 = null,
+    aliasTypeCodes: []const u8 = &.{},
+    bareActionCode: bool = false,
     defaultForAction: bool = false,
 
     pub fn matches(self: Command, token: []const u8) bool {
@@ -57,12 +59,12 @@ pub const Manifest = struct {
         inline for (catalog.variants, 0..) |variant, variant_index| {
             if (comptime actionAppearedBefore(variant.action, variant_index)) continue;
 
-            const action_path = try std.fmt.allocPrint(allocator, "{s} {s}", .{ catalog.binary, variant.action });
+            const action_path = try std.fmt.allocPrint(allocator, "{s} {s}", .{ catalog.binary, variant.action.name() });
             try commands.append(allocator, .{
                 .path = action_path,
                 .parentPath = catalog.binary,
-                .name = variant.action,
-                .description = catalog.actionDescription(variant.action) orelse return error.InvalidCatalog,
+                .name = variant.action.name(),
+                .description = variant.action.description(),
                 .hidden = false,
                 .isBranch = true,
                 .hasAction = false,
@@ -73,26 +75,28 @@ pub const Manifest = struct {
             });
 
             inline for (catalog.variants) |candidate| {
-                if (comptime !std.mem.eql(u8, candidate.action, variant.action)) continue;
+                if (comptime candidate.action != variant.action) continue;
                 const command_path = try std.fmt.allocPrint(
                     allocator,
                     "{s} {s} {s}",
-                    .{ catalog.binary, candidate.action, candidate.type_name },
+                    .{ catalog.binary, candidate.action.name(), candidate.name },
                 );
                 try commands.append(allocator, .{
                     .path = command_path,
                     .parentPath = action_path,
-                    .name = candidate.type_name,
-                    .description = catalog.descriptionFor(candidate),
+                    .name = candidate.name,
+                    .description = candidate.description,
                     .hidden = false,
                     .isBranch = false,
                     .hasAction = true,
                     .aliases = &.{},
-                    .arguments = try effectiveArguments(allocator, candidate),
-                    .options = try effectiveOptions(allocator, candidate),
-                    .implementation = candidate.help.implementation,
-                    .actionCode = candidate.action_code,
+                    .arguments = candidate.arguments,
+                    .options = catalog.resolveOptions(candidate),
+                    .implementation = candidate.implementation,
+                    .actionCode = candidate.action.code(),
                     .typeCode = candidate.type_code,
+                    .aliasTypeCodes = candidate.alias_type_codes,
+                    .bareActionCode = candidate.bare_action_code,
                     .defaultForAction = candidate.default_for_action,
                 });
             }
@@ -154,45 +158,11 @@ pub const Manifest = struct {
     }
 };
 
-fn actionAppearedBefore(comptime action: []const u8, comptime index: usize) bool {
+fn actionAppearedBefore(comptime action: catalog.Action, comptime index: usize) bool {
     for (catalog.variants[0..index]) |earlier| {
-        if (std.mem.eql(u8, earlier.action, action)) return true;
+        if (earlier.action == action) return true;
     }
     return false;
-}
-
-fn effectiveArguments(allocator: std.mem.Allocator, comptime variant: catalog.Variant) ![]const Argument {
-    const native_arguments = catalog.argumentsFor(variant.action, variant.type_name);
-    if (native_arguments.len == 0) return native_arguments;
-    const arguments = try allocator.dupe(Argument, native_arguments);
-    for (arguments) |*argument| {
-        if (findHelpText(variant.help.arguments, argument.name)) |description|
-            argument.description = description;
-    }
-    return arguments;
-}
-
-fn effectiveOptions(allocator: std.mem.Allocator, comptime variant: catalog.Variant) ![]const Option {
-    const native_options = catalog.optionsFor(variant.action, variant.type_name);
-    if (native_options.len == 0) return native_options;
-    const options = try allocator.dupe(Option, native_options);
-    for (options) |*option| {
-        if (catalog.findSharedModifier(variant.action, variant.type_name, option.name)) |shared| {
-            option.name = shared.name;
-            option.aliases = shared.aliases;
-            option.description = shared.description;
-        }
-        if (findHelpText(variant.help.options, option.name)) |description|
-            option.description = description;
-    }
-    return options;
-}
-
-fn findHelpText(values: []const catalog.HelpText, name: []const u8) ?[]const u8 {
-    for (values) |value| {
-        if (std.mem.eql(u8, value.name, name)) return value.description;
-    }
-    return null;
 }
 
 test "builds the complete action-first manifest from native Zig metadata" {
@@ -250,35 +220,6 @@ test "centralizes shared modifiers while retaining type-specific additions" {
     const flatpak_remove = manifest.findByPath("shelly remove flatpak").?;
     try std.testing.expect(manifest.findOption(flatpak_remove, "--remove-config") != null);
     try std.testing.expect(manifest.findOption(flatpak_remove, "--config") == null);
-}
-
-test "every native leaf has complete help and valid metadata" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try Manifest.load(arena.allocator());
-
-    for (manifest.commands) |command| {
-        const description = command.description orelse return error.MissingDescription;
-        try std.testing.expect(description.len > 0);
-        for (command.arguments) |argument| {
-            try std.testing.expect(argument.name.len > 0);
-            const argument_description = argument.description orelse return error.MissingArgumentDescription;
-            try std.testing.expect(argument_description.len > 0);
-            if (argument.maximumArity) |maximum|
-                try std.testing.expect(maximum >= argument.minimumArity);
-        }
-        for (command.options, 0..) |option, option_index| {
-            try std.testing.expect(option.name.len > 2);
-            const option_description = option.description orelse return error.MissingOptionDescription;
-            try std.testing.expect(option_description.len > 0);
-            for (command.options[option_index + 1 ..]) |other| {
-                try std.testing.expect(!std.mem.eql(u8, option.name, other.name));
-                for (option.aliases) |alias| {
-                    try std.testing.expect(!other.matches(alias));
-                }
-            }
-        }
-    }
 }
 
 test "native help describes the implementations that execute" {

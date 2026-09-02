@@ -1,4 +1,5 @@
 const std = @import("std");
+const package_manifest = @import("build.zig.zon");
 
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
@@ -16,6 +17,14 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
+    const shelly_http = b.dependency("shelly_http", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const toml = b.dependency("toml", .{
+        .target = target,
+        .optimize = optimize,
+    });
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -39,6 +48,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const archive_mod = b.createModule(.{
+        .root_source_file = b.path("src/shared/archive.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    archive_mod.linkSystemLibrary("archive", .{});
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -62,8 +78,16 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     mod.addImport("alpm_c", alpm_c);
+    mod.addImport("archive", archive_mod);
     mod.addImport("operation_context", operation_context_mod);
-    mod.linkSystemLibrary("archive", .{});
+    mod.addImport("ShellyHttp", shelly_http.module("ShellyHttp"));
+    mod.addImport("toml", toml.module("toml"));
+    const package_options = b.addOptions();
+    package_options.addOption([]const u8, "version", package_manifest.version);
+    // Keep this generated module distinct from consumers that independently
+    // expose an identically-valued `version` option.
+    package_options.addOption(bool, "is_package_manager", true);
+    mod.addOptions("package_options", package_options);
 
     // PackageManager imports only the backend's data-only protocol module.
     // The native implementation is discovered with dlopen at runtime and is
@@ -199,22 +223,24 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
-    const makepackage_test_module = b.createModule(.{
-        .root_source_file = b.path("src/aur/makepackage.zig"),
+    const shellybuild_test_module = b.createModule(.{
+        .root_source_file = b.path("src/aur/shellybuild.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const makepackage_tests = b.addTest(.{
-        .name = "makepackage-test",
-        .root_module = makepackage_test_module,
+    shellybuild_test_module.addImport("toml", toml.module("toml"));
+    shellybuild_test_module.addImport("operation_context", operation_context_mod);
+    const shellybuild_tests = b.addTest(.{
+        .name = "shellybuild-test",
+        .root_module = shellybuild_test_module,
     });
-    const run_makepackage_tests = b.addRunArtifact(makepackage_tests);
-    test_step.dependOn(&run_makepackage_tests.step);
-    const makepackage_test_step = b.step(
-        "makepackage-test",
-        "Run makepkg configuration parser tests",
+    const run_shellybuild_tests = b.addRunArtifact(shellybuild_tests);
+    test_step.dependOn(&run_shellybuild_tests.step);
+    const shellybuild_test_step = b.step(
+        "shellybuild-test",
+        "Run shellybuild configuration parser tests",
     );
-    makepackage_test_step.dependOn(&run_makepackage_tests.step);
+    shellybuild_test_step.dependOn(&run_shellybuild_tests.step);
 
     // Local package tests are isolated from the package manager's live-system
     // integration tests and use only temporary configured roots.
@@ -224,8 +250,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    local_test_module.addImport("archive", archive_mod);
     local_test_module.addImport("operation_context", operation_context_mod);
-    local_test_module.linkSystemLibrary("archive", .{});
     const local_tests = b.addTest(.{ .root_module = local_test_module });
     const run_local_tests = b.addRunArtifact(local_tests);
     const local_test_step = b.step("local-test", "Run safe local package tests");
@@ -249,6 +275,10 @@ pub fn build(b: *std.Build) void {
         .filters = &.{
             "backend dispatchers share one operation event stream",
             "ALPM and AUR questions use the shared response hook",
+            "common ALPM optional dependency choices preserve every selected index",
+            "install_packages preserves every optional dependency selection after an installed first choice",
+            "AUR optional dependency prompts identify their package",
+            "OperationScope turns best-effort ALPM failures into contextual recoverable errors",
         },
     });
     const run_adapter_tests = b.addRunArtifact(adapter_tests);
@@ -265,6 +295,26 @@ pub fn build(b: *std.Build) void {
             "fixture checkout cannot invoke fake makepkg before review and integrity gates pass",
             "embedded whitespace does not bypass homograph analysis",
             "risky tool in local_source_contents produces finding",
+            "aggregate split-package review includes member-specific files and detects changes",
+            "install script discovers every libalpm hook and preserves exact bytes",
+            "install script uses the last duplicate hook definition",
+            "install script classifies helpers hooks and top-level code",
+            "install script scanner covers top-level helpers and hooks",
+            "parser_content: issue 1750 source command substitution is deferred and overridden",
+            "parser_content: dynamic source keeps assignment and architecture append ordering",
+            "parser_content: conditional source integrity arrays are deferred as one family",
+            "PackageBuilder resolves issue 1750 source command substitution after review",
+            "PackageBuilder evaluates conditional source and checksum arrays atomically",
+            "PackageBuilder preserves generic shell-created scalar defaults for lifecycle steps",
+            "PackageBuilder preserves generic conditional indexed arrays for lifecycle steps",
+            "PackageBuilder remaps shell-resolved split package names by reviewed order",
+            "PackageBuilder builds members added by sandbox-evaluated pkgname",
+            "PackageBuilder explicitly selects a member added by evaluated pkgname",
+            "PackageBuilder rejects an explicitly selected disabled dynamic member",
+            "PackageBuilder requires supplemental review for a dynamically discovered local source",
+            "dynamic indexed array output preserves values and unsets with structural bounds",
+            "dynamic scalar output preserves values, newlines, empty strings, and unsets",
+            ".SRCINFO writer preserves global package and architecture scopes",
         },
     });
     const run_pkgbuild_review_tests = b.addRunArtifact(pkgbuild_review_tests);
@@ -281,6 +331,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
     downloader_test_module.addImport("operation_context", operation_context_mod);
+    downloader_test_module.addImport("ShellyHttp", shelly_http.module("ShellyHttp"));
     const downloader_tests = b.addTest(.{ .name = "downloader-test", .root_module = downloader_test_module });
     const run_downloader_tests = b.addRunArtifact(downloader_tests);
     const downloader_test_step = b.step("downloader-test", "Run safe downloader and cancellation tests");
@@ -327,10 +378,14 @@ pub fn build(b: *std.Build) void {
             "get_required_packages returns NoHandle when the handle is null",
             "get_required_packages rejects empty package and database names",
             "get_required_packages returns owned local reverse dependencies",
+            "Package owned reverse dependency queries return local required and optional names",
+            "installed package snapshots selectively include direct reverse dependencies",
             "get_required_packages returns an empty result for an unknown package",
             "get_required_packages rejects an unknown sync database",
             "get_required_packages resolves a named sync database",
             "Manager.init rejects a temp root that aliases DBPath without deleting the local database",
+            "Manager.init emits a successful configure operation when a context is provided",
+            "remove_packages emits the database lock failure through its operation context",
             "get_single_installed_package returns a package when it exists",
             "get_installed_packages lists packages from a temporary database",
             "get_single_installed_package matches an entry from get_installed_packages",
@@ -338,11 +393,17 @@ pub fn build(b: *std.Build) void {
             "fetchCallback accepts prepared cache entries and rejects missing artifacts",
             "parses repositories, servers, siglevel and usage",
             "hold package mutations rewrite HoldPkg and preserve shelly",
+            "add_repository appends a repository section to the config file",
+            "add_repository rejects duplicate and invalid repository names",
+            "add_repository omits empty siglevel and usage directives",
+            "remove_repository deletes only the matching section",
+            "remove_repository is a no-op for unknown repositories",
             "Manager hold APIs mutate HoldPkg while retaining shelly",
             "dependency query APIs resolve exact, versioned, and virtual remote packages",
             "install_packages predownloads prepared repository packages before commit",
             "install_packages exposes its prepared plan and decline prevents downloads",
             "install_local_packages installs multiple archives in a DB-only transaction",
+            "install_local_packages predownloads repository dependencies before commit",
             "Manager.init applies configured libalpm options and callback contexts",
             "ALPM queries honor shared cancellation",
             "single-server repositories receive a three second setup timeout",
@@ -351,6 +412,9 @@ pub fn build(b: *std.Build) void {
             "database batch barrier synchronizes its directory",
             "process-wide address-family default is configurable",
             "onDownloadEvent does not duplicate progress when a common operation is attached",
+            "OperationScope does not duplicate a detailed ALPM error",
+            "OperationScope emits one generic ALPM error when no detail was reported",
+            "nested OperationScopes do not duplicate a detailed ALPM error",
         },
     });
     const run_alpm_query_tests = b.addRunArtifact(alpm_query_tests);
@@ -360,7 +424,11 @@ pub fn build(b: *std.Build) void {
     const required_packages_tests = b.addTest(.{
         .name = "required-packages-test",
         .root_module = mod,
-        .filters = &.{"get_required_packages"},
+        .filters = &.{
+            "get_required_packages",
+            "Package owned reverse dependency queries",
+            "installed package snapshots selectively include direct reverse dependencies",
+        },
     });
     const run_required_packages_tests = b.addRunArtifact(required_packages_tests);
     const required_packages_test_step = b.step(
@@ -373,9 +441,15 @@ pub fn build(b: *std.Build) void {
         .name = "alpm-sync-test",
         .root_module = mod,
         .filters = &.{
-            "database signature downloads are reserved for required signatures",
+            "database signature policy distinguishes disabled optional and required",
+            "optional database signatures are retained beside world-readable databases",
+            "optional missing database signature succeeds and removes a stale sibling",
+            "required missing database signature fails without leaving a database",
+            "invalid optional database signature is fatal and cleaned up",
             "Manager.sync downloads the configured database into DBPath/sync",
             "Manager.sync exposes cancellable logical database downloads during mirror failover",
+            "refresh reloads an externally replaced sync database cache",
+            "refresh reports a detailed reinitialization failure",
         },
     });
     const run_alpm_sync_tests = b.addRunArtifact(alpm_sync_tests);
@@ -497,14 +571,139 @@ pub fn build(b: *std.Build) void {
             "installed AUR metadata uses local version and install reason",
             "AUR update projection compares remote and installed versions",
             "AUR git remote and VCS suffix parsing mirror the C# manager",
+            "AUR git remote parsing honors the configured base boundary",
+            "base normalization trims separators and rejects empty values",
+            "official base preserves the historical RPC endpoint and custom bases use /rpc",
+            "git remote derivation appends only safe package bases",
+            "unsafe package bases cannot escape the AUR cache",
+            "RPC client keeps an owned copy of its configured endpoint",
+            "custom AUR base fetches PKGBUILDs from its Git checkout",
+            "custom AUR base PKGBUILD failures stay actionable",
+            "custom AUR base ignores unverified cached SRCINFO provenance",
+            "endpoint switching replaces a checkout with a mismatched origin",
+            "endpoint switching does not trust the previous service checkout",
             "VCS source parser replicates git source filtering and variable expansion",
+            "parser_content:",
+            "resolve_string: Bash case conversion operators",
+            "resolve_string: case conversion preserves unknown variables and supports patterns",
+            "architecture-specific build dependencies merge active suffixes",
+            "dependency resolution excludes version-compatible outputs from the same PKGBUILD",
+            "architecture directives enforce makepkg rules",
+            "split architecture overrides validate every member and inherit empty arrays",
+            "package metadata schema matches makepkg package overrides",
+            "package metadata decoder preserves empty and multiline values",
+            "package metadata decoder rejects type mismatch records",
+            "signed Git source parser accepts query before or after fragment",
+            "bare Git protocol source parser preserves location and supports metadata",
+            "detached source pairing handles exact renamed and compressed payload names",
+            "isExtractableArchive recognizes archive suffixes case-insensitively",
+            "archiveLinkTarget contains relative traversal and rebases absolute targets",
+            "is_inside_conditional_block:",
+            "parse_array: Cachy-style comments do not hide unconditional package names",
+            "source PGP status",
+            "source PGP pin validation",
+            "source PGP verifier validates pinned-untrusted detached signatures without private keys",
+            "package signer rejects missing keys without creating a signature",
+            "install script discovers every libalpm hook and preserves exact bytes",
+            "install script uses the last duplicate hook definition",
+            "install script classifies helpers hooks and top-level code",
+            "install script scanner covers top-level helpers and hooks",
             "VCS store round trips the C# compatible JSON shape and cleans orphans",
             "VCS package checks execute concurrently and retain per-package results",
             "VCS checks retry and baseline transiently failed sources",
             "helper cache identity recognizes installed split-package members",
+            "prepared non-chroot split package builds use the custom builder",
             "all requested PKGBUILDs are reviewed before the first build",
+            "AUR package failures are emitted after all builds and fail the operation",
+            "AUR package preparation failure does not stop valid packages",
+            "build-only dependencies are removed after a failed build",
+            "PackageBuilder init keeps the provided collaborators",
+            "non-root builder guard rejects root effective uid",
+            "PackageBuilder rejects a PKGBUILD changed after review",
+            "PackageBuilder resolves issue 1750 source command substitution after review",
+            "PackageBuilder preserves generic shell-created scalar defaults for lifecycle steps",
+            "PackageBuilder preserves generic conditional indexed arrays for lifecycle steps",
+            "PackageBuilder remaps shell-resolved split package names by reviewed order",
+            "PackageBuilder builds members added by sandbox-evaluated pkgname",
+            "PackageBuilder explicitly selects a member added by evaluated pkgname",
+            "PackageBuilder rejects an explicitly selected disabled dynamic member",
+            "PackageBuilder requires supplemental review for a dynamically discovered local source",
+            "PackageBuilder rejects a legacy unwritable package tree",
+            "PackageBuilder cannot perform privileged package filesystem operations",
+            "PackageBuilder simulates root ownership without host chown",
+            "PackageBuilder preserves non-root virtual ownership and special modes",
+            "PackageBuilder virtual ownership follows identities and recursive snapshots",
+            "virtual ownership identities distinguish reused inode numbers",
+            "PackageBuilder isolates virtual ownership between split members",
+            "PackageBuilder rejects malformed virtual ownership",
+            "PackageBuilder rejects unresolved and out-of-package virtual ownership",
+            "PackageBuilder runs source-less execution steps inside srcdir",
+            "PackageBuilder provides makepkg messaging helpers to lifecycle steps",
+            "PackageBuilder emits makepkg-compatible BUILDINFO and MTREE metadata",
+            "PackageBuilder exports configured build environment to lifecycle steps",
+            "PackageBuilder honors PKGBUILD build flag make flag and LTO negations",
+            "PackageBuilder packages exact reviewed install and changelog files",
+            "PackageBuilder strips ELF debug sections unless PKGBUILD disables strip",
+            "PackageBuilder runs local declarations and reviewed helper functions inside package steps",
+            "PackageBuilder accepts b2 checksums and honors noextract",
+            "PackageBuilder stages and verifies local sources before build steps",
+            "PackageBuilder runs verify after integrity checks and before extraction",
+            "PackageBuilder verify failure preserves the committed src tree",
+            "PackageBuilder supports noverify and PGP-skip verify policies",
+            "PackageBuilder runs verify once for all split package members",
+            "PackageBuilder verifies pinned detached signatures from the user keyring",
+            "PackageBuilder rejects bad signatures atomically unless explicitly skipped",
+            "PackageBuilder verifies signatures over compressed payload contents",
+            "PackageBuilder verifies signed Git sources requested with signed",
+            "PackageBuilder signs published packages with the configured signing key",
+            "PackageBuilder fails atomically when the signing key is unavailable",
+            "PackageBuilder leaves packages unsigned when signing is disabled",
+            "PackageBuilder rejects a source checksum mismatch without committing srcdir",
+            "PackageBuilder extracts source archives into srcdir",
+            "PackageBuilder preserves source archive modification timestamps",
+            "PackageBuilder extracts VSIX sources into srcdir",
+            "PackageBuilder rebases Zoom absolute source archive link inside srcdir",
+            "PackageBuilder rejects source archive links that escape the extraction root",
+            "PackageBuilder rejects source archive link destination collisions",
+            "PackageBuilder extracts Debian sources before package steps",
+            "PackageBuilder honors noextract for Debian sources",
+            "PackageBuilder downloads renamed file sources before build steps",
+            "PackageBuilder rejects unsupported source protocols",
+            "PackageBuilder cancels source preparation without committing srcdir",
+            "PackageBuilder runs relative VCS paths from srcdir before pkgver",
+            "PackageBuilder verifies real checksums for pinned VCS sources",
+            "PackageBuilder applies generic patch arrays and propagates dynamic pkgver",
+            "PackageBuilder rejects invalid dynamic pkgver output",
+            "PackageBuilder tees stdout and stderr to a successful durable log",
+            "PackageBuilder retains failed and cancelled build logs",
+            "PackageBuilder fails before PKGBUILD execution when log destination is unusable",
+            "PackageBuilder reports failure when a step exits non-zero",
+            "PackageBuilder reports failure instead of crashing without execution steps",
+            "PackageBuilder builds all requested split members after shared steps run once",
+            "PackageBuilder keeps shared split builds under the global pkgname",
+            "PackageBuilder preserves selected split metadata in PKGINFO",
+            "PackageBuilder isolates unset metadata between split members",
+            "PackageBuilder enforces makepkg package function contracts",
+            "PackageBuilder rejects wrong metadata types and skips unsupported split architectures",
+            "PackageBuilder honors check and overwrite policies",
+            "PackageBuilder cleans work directories only after successful configured builds",
+            "PackageBuilder rolls back completed split artifacts when a later member fails",
+            "PackageBuilder builds a real package from the repository PKGBUILD-bin",
+            "PackageBuilder wraps lifecycle steps through the sandbox wrapper when enabled",
+            "PackageBuilder records a sandbox hint when a confined step fails",
+            "sandbox policy denies paths outside the allow-list",
+            "fullAccessMaskForAbi grows with the ABI version",
+            "parseWrapperArguments splits policy paths and child argv",
+            "parseWrapperArguments rejects malformed wrapper input",
+            "buildWrappedCommand interleaves policy paths before the child argv",
+            "archive writer preserves tree modes and symlinks while forcing root ownership",
+            "archive virtual ownership is shared by package and mtree writers",
             "AUR operation-hooked public APIs compile",
+            "coordinator child build arguments bind review package set and policies",
+            "clean invoking-user build command drops the elevated environment",
             "build progress parser recognizes makepkg percentage lines",
+            "build environment exports flags hosts and compiler wrapper paths",
+            "disabled build environment removes inherited flags and hosts",
             "streaming process execution forwards stdout stderr and a final unterminated line",
             "streaming process execution delivers output before the child exits",
             "streaming process execution terminates when the shared operation is cancelled",
@@ -520,23 +719,48 @@ pub fn build(b: *std.Build) void {
         .filters = &.{
             "AppImage dispatcher forwards typed status and download progress",
             "AppImage classification is case insensitive and extension based",
+            "AppImage metadata discovery rejects symlinks outside the extraction root",
             "test isAppImage",
             "get_update returns optional owned results for configured providers",
+            "providerUpdateOrWarn",
             "get_updates returns an owned update list",
             "AppImage update manager forwards downloader progress",
             "AppImage updates honor shared cancellation",
             "update: returns false when app not found in db",
-            "getAppImagesFromLocalDb maps C# AppImage V2 fields",
-            "getAppImagesFromLocalDb normalizes nullable C# strings",
-            "getAppImagesFromLocalDb maps every C# update type",
-            "getAppImagesFromLocalDb rejects unsupported C# update type",
-            "getAppImagesFromLocalDb migrates C# database and second load is native",
+            "parse_github_response:",
+            "parse_gitlab_response:",
+            "updateIsAvailable:",
+            "releaseTagMatches:",
+            "configureUpdates:",
+            "build_static_url:",
+            "normalizeStaticVersion:",
+            "contentTypeIsNotAppImage:",
+            "configure_updates persists a normalized Forgejo release-page URL",
+            "configure_updates leaves the database unchanged when Forgejo validation fails",
+            "getAppImagesFromLocalDb ignores unknown fields from a newer database",
             "getAppImagesFromLocalDb leaves native database unchanged",
-            "getAppImagesFromLocalDb leaves malformed C# database unchanged",
+            "getAppImagesFromLocalDb leaves a malformed database unchanged",
             "removeAppImageFromLocalDb removes an orphaned entry by name",
+            "syncAppImageMeta removes a stale entry when the AppImage file is missing",
             "installAppImage preserves an existing install when staged validation fails",
             "installAppImage atomically replaces a validated AppImage",
+            "installAppImage follows a symlinked install directory",
+            "installAppImage creates a missing directory beneath a symlinked parent",
+            "installAppImage reads desktop metadata and icons through standard AppImage symlinks",
+            "installAppImage commits and reports diagnostics when cache refreshes fail",
+            "installAppImage sanitizes a bundled icon filename containing spaces",
+            "cache refresh reports a missing optional utility without failing",
             "installAppImage restores the previous binary when database commit fails",
+            "writeDesktopEntry repairs omitted authoritative keys and escapes executable paths",
+            "writeDesktopEntry emits unquoted TryExec for existing and omitted source keys",
+            "update: automated update commits despite cache refresh failure",
+            "update follows a symlinked install directory",
+            "update: preserves GitHub provider configuration",
+            "update: preserves stable desktop filename when display name changes",
+            "update: preserves Exec= field codes",
+            "update: failed database commit rolls back binary and desktop",
+            "update: no embedded desktop file uses fallback entry",
+            "update: sync and automated update produce equivalent metadata",
         },
     });
     const run_appimage_tests = b.addRunArtifact(appimage_tests);

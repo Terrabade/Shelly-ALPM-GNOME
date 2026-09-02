@@ -1,17 +1,30 @@
 const std = @import("std");
 const Zigalpm = @import("Zigalpm");
-const config_manager = @import("../config/manager.zig");
+const test_support = @import("test_support.zig");
 const output = @import("../output/config.zig");
+const colors = @import("../output/colors.zig");
+const detail_output = @import("../output/detail.zig");
+const format = @import("../output/format.zig");
 const table = @import("../output/table.zig");
 const parser = @import("../cli/parser.zig");
 const runtime = @import("../runtime/context.zig");
 const spec = @import("../cli/spec.zig");
+const aur_url = @import("../config/aur_url.zig");
+
+const joined = format.joined;
+const nonNegative = format.nonNegative;
+const loadSizeDisplay = format.loadSizeDisplay;
+const formatSize = format.formatSize;
+const formatDateTime = format.formatDateTime;
+const formatLongDate = format.formatLongDate;
+const formatIsoDateTime = format.formatIsoDateTime;
+const truncate = format.truncate;
 
 const standard_command_path = "shelly search standard";
 const aur_command_path = "shelly search aur";
 const flatpak_command_path = "shelly search flatpak";
 
-const StandardPackage = struct {
+pub const StandardPackage = struct {
     name: []const u8,
     version: []const u8,
     size: i64 = 0,
@@ -24,6 +37,7 @@ const StandardPackage = struct {
     provides: []const []const u8 = &.{},
     depends: []const []const u8 = &.{},
     optional_depends: []const []const u8 = &.{},
+    optional_depends_installed: []const bool = &.{},
     conflicts: []const []const u8 = &.{},
     install_reason: []const u8 = "Unknown",
     install_date: ?i64 = null,
@@ -39,7 +53,7 @@ const LocalPackage = struct {
     size: u64,
 };
 
-const AurPackage = struct {
+pub const AurPackage = struct {
     id: i64 = 0,
     name: []const u8,
     package_base_id: i64 = 0,
@@ -64,6 +78,8 @@ const AurPackage = struct {
     groups: ?[]const []const u8 = null,
     licenses: ?[]const []const u8 = null,
     keywords: ?[]const []const u8 = null,
+    required_by: ?[]const []const u8 = null,
+    optional_for: ?[]const []const u8 = null,
     explicit: bool = false,
 };
 
@@ -108,6 +124,7 @@ const AurResult = struct {
     packages: []const AurPackage = &.{},
     standard_packages: []const StandardPackage = &.{},
     pkgbuilds: ?[]const PackageBuild = null,
+    detail: ?AurPackage = null,
 };
 
 const FlatpakResult = struct {
@@ -125,31 +142,36 @@ const Result = union(enum) {
     flatpak: FlatpakResult,
 };
 
-const Runner = struct {
-    data: ?*anyopaque = null,
-    call: *const fn (
-        data: ?*anyopaque,
+const Real = struct {
+    fn search(
+        _: Real,
         context: *runtime.RuntimeContext,
         invocation: *const parser.Invocation,
-    ) anyerror!Result,
+    ) !Result {
+        return runRealSearch(context, invocation);
+    }
 };
-
-const real_runner: Runner = .{ .call = runRealSearch };
 
 pub fn dispatch(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
 ) !?u8 {
     if (!isSearchPath(invocation.command.path)) return null;
-    return try executeWithRunner(context, invocation, real_runner);
+    return try executeWithRunner(context, invocation, Real{});
 }
 
 fn executeWithRunner(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
-    runner: Runner,
-) !u8 {
+    runner: anytype,
+) anyerror!u8 {
     if (std.mem.eql(u8, invocation.command.path, aur_command_path)) {
+        if (optionEnabled(invocation, "--detail")) {
+            if (optionEnabled(invocation, "--pkgbuild"))
+                return writeFailure(context, invocation, "Cannot combine --detail with --pkgbuild.");
+            if (optionEnabled(invocation, "--standard"))
+                return writeFailure(context, invocation, "Cannot combine --detail with --standard.");
+        }
         if (optionEnabled(invocation, "--pkgbuild")) {
             if (optionEnabled(invocation, "--standard"))
                 return writeFailure(context, invocation, "Cannot combine --pkgbuild with --standard.");
@@ -181,17 +203,18 @@ fn executeWithRunner(
         return writeFailure(context, invocation, "Page and limit must be greater than zero.");
     }
 
-    const result = runner.call(runner.data, context, invocation) catch |err| {
-        if (Zigalpm.flatpak.errors.unavailableMessage(err)) |message|
+    const result = runner.search(context, invocation) catch |err| {
+        const failure: anyerror = err;
+        if (Zigalpm.flatpak.errors.unavailableMessage(failure)) |message|
             return writeFailure(context, invocation, message);
-        const message = switch (err) {
+        const message = switch (failure) {
             error.NoPackageSpecified => "No package specified",
             error.PackageNotFound => try std.fmt.allocPrint(
                 context.allocator,
                 "No package named {s} found",
                 .{if (invocation.positionals.len > 0) invocation.positionals[0] else ""},
             ),
-            else => try std.fmt.allocPrint(context.allocator, "Search failed: {t}", .{err}),
+            else => try std.fmt.allocPrint(context.allocator, "Search failed: {t}", .{failure}),
         };
         return writeFailure(context, invocation, message);
     };
@@ -216,7 +239,6 @@ fn writeFailure(
 }
 
 fn runRealSearch(
-    _: ?*anyopaque,
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
 ) !Result {
@@ -249,14 +271,13 @@ fn runStandard(
         available = true;
         detail = query != null and std.mem.trim(u8, query.?, " \t\r\n").len != 0;
     }
+    if (detail) available = true;
     if (group) available = true;
 
     const manager = try Zigalpm.AlpmManager.init(
         context.allocator,
         context.environ,
-        null,
-        false,
-        null,
+        .{ .use_root = false },
     );
     defer manager.deinit();
     if (show_hidden and !manager.show_hidden_packages) _ = manager.toggle_hidden_packages();
@@ -306,6 +327,11 @@ fn runStandard(
             var pkg = package;
             if (std.ascii.eqlIgnoreCase(package.name, wanted)) {
                 pkg.required_by = try manager.get_required_packages(package.name, package.repository);
+                pkg.optional_depends_installed = try optionalDependencyInstalledStates(
+                    context.allocator,
+                    manager,
+                    package.optional_depends,
+                );
                 return .{ .mode = .detail, .detail = pkg };
             }
         }
@@ -409,24 +435,39 @@ fn runAur(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
 ) !AurResult {
-    var manager = try Zigalpm.AurManager.init(context.allocator, context.environ, .{});
+    const aur_base = try aur_url.resolveFor(context, invocation);
+    var manager = try Zigalpm.AurManager.init(context.allocator, context.environ, .{
+        .aur_git_base_url = aur_base,
+    });
     defer manager.deinit();
 
     if (optionEnabled(invocation, "--pkgbuild")) {
         const builds = try context.allocator.alloc(PackageBuild, invocation.positionals.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (builds[0..initialized]) |build| {
+                context.allocator.free(build.name);
+                if (build.pkgbuild) |pkgbuild| context.allocator.free(pkgbuild);
+            }
+            context.allocator.free(builds);
+        }
         for (invocation.positionals, builds) |package, *build| {
-            build.* = .{
-                .name = try context.allocator.dupe(u8, package),
-                .pkgbuild = manager.fetchPkgbuild(package) catch null,
+            const name = try context.allocator.dupe(u8, package);
+            const pkgbuild = manager.fetchPkgbuild(package) catch |err| {
+                context.allocator.free(name);
+                return err;
             };
+            build.* = .{ .name = name, .pkgbuild = pkgbuild };
+            initialized += 1;
         }
         return .{ .pkgbuilds = builds };
     }
 
+    const detail = optionEnabled(invocation, "--detail");
     const query = try joinedQuery(context.allocator, invocation.positionals);
 
     var standard_packages: std.ArrayList(StandardPackage) = .empty;
-    if (optionEnabled(invocation, "--standard")) {
+    if (optionEnabled(invocation, "--standard") and !detail) {
         const values = try manager.alpm.get_available_packages();
         defer Zigalpm.alpm.OwnedPackage.deinitSlice(context.allocator, values);
         for (values) |value| {
@@ -442,6 +483,15 @@ fn runAur(
     const packages = try context.allocator.alloc(AurPackage, values.len);
     for (values, packages) |value, *destination|
         destination.* = try copyAurPackage(context.allocator, value);
+
+    if (detail) {
+        for (packages) |package| {
+            if (std.ascii.eqlIgnoreCase(package.name, query))
+                return .{ .detail = package };
+        }
+        return error.PackageNotFound;
+    }
+
     return .{
         .packages = packages,
         .standard_packages = try standard_packages.toOwnedSlice(context.allocator),
@@ -511,7 +561,8 @@ fn enrichFlatpakRemoteInfo(
         var info = manager.get_remote_ref_info_flatpak(
             remote,
             id,
-            "stable",
+            // Empty branch: let the backend resolve the branch.
+            "",
             package.scope,
         ) catch continue;
         defer info.deinit(context.allocator);
@@ -573,7 +624,7 @@ fn renderStandard(
         .groups => {
             var rows: std.ArrayList([]const []const u8) = .empty;
             for (result.groups) |group_name| try rows.append(context.allocator, try row(context.allocator, &.{group_name}));
-            try table.write(context.allocator, context.stdout, &.{"Group"}, rows.items, output.supportsAnsi(context));
+            try table.write(context, &.{"Group"}, rows.items);
             try context.stdout.writeByte('\n');
         },
         .detail => try writePackageDetail(context, result.detail.?),
@@ -585,7 +636,7 @@ fn renderStandard(
                     package.name,
                     try formatSize(context.allocator, size_display, package.size),
                 }));
-                try table.write(context.allocator, context.stdout, &.{ "Name", "Size" }, rows.items, output.supportsAnsi(context));
+                try table.write(context, &.{ "Name", "Size" }, rows.items);
                 try context.stdout.writeByte('\n');
             }
             if (result.packages.len > 0) {
@@ -598,11 +649,9 @@ fn renderStandard(
                     truncate(package.description, 50),
                 }));
                 try table.write(
-                    context.allocator,
-                    context.stdout,
+                    context,
                     &.{ "Name", "Repository", "Version", "Size", "Description" },
                     rows.items,
-                    output.supportsAnsi(context),
                 );
                 try context.stdout.writeByte('\n');
             }
@@ -621,6 +670,24 @@ fn renderAur(
     result: AurResult,
 ) !void {
     if (result.pkgbuilds) |builds| return renderPkgbuilds(context, invocation, builds);
+    if (result.detail) |package| {
+        if (invocation.globals.ui_mode) {
+            var payload = std.Io.Writer.Allocating.init(context.allocator);
+            defer payload.deinit();
+            const single = [_]AurPackage{package};
+            try writeAurPackagesJson(&payload.writer, &single);
+            try output.writeFrame(context, payload.writer.buffered());
+            return;
+        }
+        if (invocation.globals.json) {
+            const single = [_]AurPackage{package};
+            try writeAurPackagesJson(context.stdout, &single);
+            try context.stdout.writeByte('\n');
+            return;
+        }
+        try writeAurPackageDetail(context, package);
+        return;
+    }
     if (invocation.globals.ui_mode) {
         var payload = std.Io.Writer.Allocating.init(context.allocator);
         defer payload.deinit();
@@ -663,11 +730,9 @@ fn renderAur(
         }));
     }
     try table.write(
-        context.allocator,
-        context.stdout,
+        context,
         &.{ "Name", "Version", "Maintainer/Repository", "Last Updated/Build Date", "Description" },
         rows.items,
-        output.supportsAnsi(context),
     );
     try context.stdout.writeByte('\n');
     try context.stdout.print("Total results: {d}\n", .{result.packages.len + result.standard_packages.len});
@@ -693,16 +758,10 @@ fn renderPkgbuilds(
 
     for (builds) |build| {
         const pkgbuild = build.pkgbuild orelse {
-            if (output.supportsAnsi(context))
-                try context.stdout.print("\x1b[31mFailed to get PKGBUILD for: {s}\x1b[0m\n", .{build.name})
-            else
-                try context.stdout.print("Failed to get PKGBUILD for: {s}\n", .{build.name});
+            try colors.printLine(context, .err, "Failed to get PKGBUILD for: {s}", .{build.name});
             continue;
         };
-        if (output.supportsAnsi(context))
-            try context.stdout.print("\x1b[33mPackage build for: {s}\x1b[0m\n", .{build.name})
-        else
-            try context.stdout.print("Package build for: {s}\n", .{build.name});
+        try colors.printLine(context, .warning, "Package build for: {s}", .{build.name});
         try context.stdout.writeAll(pkgbuild);
         if (!std.mem.endsWith(u8, pkgbuild, "\n")) try context.stdout.writeByte('\n');
     }
@@ -744,55 +803,19 @@ fn renderFlatpak(
         try joined(context.allocator, package.permissions),
     }));
     try table.write(
-        context.allocator,
-        context.stdout,
+        context,
         &.{ "Name", "AppId", "Summary", "Remote", "Download Size", "Installed Size", "Permissions" },
         rows.items,
-        output.supportsAnsi(context),
     );
     try context.stdout.writeByte('\n');
 }
 
 fn writePackageDetail(context: *runtime.RuntimeContext, package: StandardPackage) !void {
-    const size_display = try loadSizeDisplay(context);
-    try coloredLine(context, "Name", package.name, "\x1b[38;2;0;128;0m");
-    try coloredLine(context, "Version", package.version, "\x1b[38;2;0;0;255m");
-    try coloredLine(context, "Description", package.description, "\x1b[38;2;0;0;255m");
-    try coloredLine(context, "URL", package.url, "\x1b[38;2;0;0;255m");
-    try coloredLine(context, "Licenses", try joined(context.allocator, package.licenses), "\x1b[38;2;0;0;255m");
-    try coloredLine(context, "Groups", try joined(context.allocator, package.groups), "\x1b[38;2;0;0;255m");
-    try coloredLine(context, "Provides", try joined(context.allocator, package.provides), "\x1b[38;2;0;0;255m");
-    try coloredLine(context, "Depends On", try joined(context.allocator, package.depends), "\x1b[38;2;0;0;255m");
-    try coloredLine(context, "Optional Depends", try joined(context.allocator, package.optional_depends), "\x1b[38;2;0;0;255m");
-    try coloredLine(context, "Required By", try joined(context.allocator, package.required_by), "\x1b[38;2;0;0;255m");
-    try coloredLine(context, "Conflicts With", try joined(context.allocator, package.conflicts), "\x1b[38;2;0;0;255m");
-    try coloredLine(context, "Replaces", try joined(context.allocator, package.replaces), "\x1b[38;2;0;0;255m");
-    try coloredLine(
-        context,
-        "Installed Size",
-        try formatSize(context.allocator, size_display, nonNegative(package.installed_size)),
-        "\x1b[38;2;0;0;255m",
-    );
-    try coloredLine(context, "Build Date", try formatLongDate(context.allocator, package.build_date), "\x1b[38;2;0;0;255m");
-    try coloredLine(
-        context,
-        "Install Date",
-        if (package.install_date) |date| try formatLongDate(context.allocator, date) else "Not Installed",
-        "\x1b[38;2;0;0;255m",
-    );
-    try coloredLine(context, "Install Reason", package.install_reason, "\x1b[38;2;0;0;255m");
+    return detail_output.writePackageDetail(context, package);
 }
 
-fn coloredLine(
-    context: *runtime.RuntimeContext,
-    label: []const u8,
-    value: []const u8,
-    color: []const u8,
-) !void {
-    if (output.supportsAnsi(context))
-        try context.stdout.print("{s}{s}: {s}\x1b[0m\n", .{ color, label, value })
-    else
-        try context.stdout.print("{s}: {s}\n", .{ label, value });
+fn writeAurPackageDetail(context: *runtime.RuntimeContext, package: AurPackage) !void {
+    return detail_output.writeAurPackageDetail(context, package);
 }
 
 fn writeStandardResultJson(writer: *std.Io.Writer, result: StandardResult) !void {
@@ -854,6 +877,7 @@ fn writeStandardPackageJsonWith(json: *std.json.Stringify, package: StandardPack
     try field(json, "Provides", package.provides);
     try field(json, "Depends", package.depends);
     try field(json, "OptDepends", package.optional_depends);
+    try field(json, "OptDependsInstalled", package.optional_depends_installed);
     try field(json, "Conflicts", package.conflicts);
     try field(json, "PackageFile", null);
     try field(json, "InstallReason", package.install_reason);
@@ -919,6 +943,8 @@ fn writeAurPackagesJson(writer: *std.Io.Writer, packages: []const AurPackage) !v
         try field(&json, "Groups", package.groups);
         try field(&json, "License", package.licenses);
         try field(&json, "Keywords", package.keywords);
+        try field(&json, "RequiredBy", package.required_by);
+        try field(&json, "OptionalFor", package.optional_for);
         try field(&json, "Explicit", package.explicit);
         try json.endObject();
     }
@@ -1005,6 +1031,31 @@ fn copyStandardPackage(
     };
 }
 
+fn optionalDependencyInstalledStates(
+    allocator: std.mem.Allocator,
+    manager: *Zigalpm.AlpmManager,
+    optional_dependencies: []const []const u8,
+) ![]bool {
+    const states = try allocator.alloc(bool, optional_dependencies.len);
+    errdefer allocator.free(states);
+    for (optional_dependencies, states) |raw, *installed| {
+        const dependency = optionalDependencyExpression(raw);
+        if (dependency.len == 0) {
+            installed.* = false;
+            continue;
+        }
+        const dependency_z = try allocator.dupeZ(u8, dependency);
+        defer allocator.free(dependency_z);
+        installed.* = manager.is_dependency_satisfied_by_installed_packages(dependency_z) catch false;
+    }
+    return states;
+}
+
+fn optionalDependencyExpression(raw: []const u8) []const u8 {
+    const description = std.mem.indexOf(u8, raw, ": ") orelse raw.len;
+    return std.mem.trim(u8, raw[0..description], " \t\r\n");
+}
+
 fn copyAurPackage(allocator: std.mem.Allocator, package: Zigalpm.aur.models.Package) !AurPackage {
     return .{
         .id = package.id,
@@ -1031,6 +1082,8 @@ fn copyAurPackage(allocator: std.mem.Allocator, package: Zigalpm.aur.models.Pack
         .groups = try copyOptionalStrings(allocator, package.groups),
         .licenses = try copyOptionalStrings(allocator, package.licenses),
         .keywords = try copyOptionalStrings(allocator, package.keywords),
+        .required_by = try copyOptionalStrings(allocator, package.required_by),
+        .optional_for = try copyOptionalStrings(allocator, package.optional_for),
         .explicit = package.explicit,
     };
 }
@@ -1039,7 +1092,7 @@ fn copyOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]cons
     return if (value) |text| try allocator.dupe(u8, text) else null;
 }
 
-fn copyOptionalStrings(allocator: std.mem.Allocator, value: ?[][]u8) !?[]const []const u8 {
+fn copyOptionalStrings(allocator: std.mem.Allocator, value: ?[]const []const u8) !?[]const []const u8 {
     return if (value) |items| try copyStrings(allocator, items) else null;
 }
 
@@ -1200,174 +1253,57 @@ fn joinedQuery(allocator: std.mem.Allocator, values: []const []const u8) ![]cons
     return std.mem.join(allocator, " ", values);
 }
 
-fn joined(allocator: std.mem.Allocator, values: []const []const u8) ![]const u8 {
-    return std.mem.join(allocator, ",", values);
-}
-
 fn row(allocator: std.mem.Allocator, values: []const []const u8) ![]const []const u8 {
     return allocator.dupe([]const u8, values);
 }
 
-fn truncate(value: []const u8, maximum: usize) []const u8 {
-    return if (value.len <= maximum) value else value[0..maximum];
-}
-
-fn nonNegative(value: i64) u64 {
-    return if (value <= 0) 0 else @intCast(value);
-}
-
-const SizeDisplay = enum { bytes, megabytes, gigabytes };
-
-fn loadSizeDisplay(context: *runtime.RuntimeContext) !SizeDisplay {
-    const manager = config_manager.Manager.init(context);
-    const config = manager.read() catch return .megabytes;
-    const value = config.values.get("FileSizeDisplay") orelse return .megabytes;
-    if (value != .string) return .megabytes;
-    if (std.ascii.eqlIgnoreCase(value.string, "Bytes")) return .bytes;
-    if (std.ascii.eqlIgnoreCase(value.string, "Gigabytes")) return .gigabytes;
-    return .megabytes;
-}
-
-fn formatSize(allocator: std.mem.Allocator, display: SizeDisplay, bytes: u64) ![]const u8 {
-    return switch (display) {
-        .bytes => std.fmt.allocPrint(allocator, "{d} B", .{bytes}),
-        .megabytes => std.fmt.allocPrint(allocator, "{d:.2} MiB", .{@as(f64, @floatFromInt(bytes)) / 1048576.0}),
-        .gigabytes => std.fmt.allocPrint(allocator, "{d:.2} GiB", .{@as(f64, @floatFromInt(bytes)) / 1073741824.0}),
-    };
-}
-
-fn formatDateTime(allocator: std.mem.Allocator, seconds: i64) ![]const u8 {
-    if (seconds < 0) return allocator.dupe(u8, "1970-01-01 00:00:00");
-    const epoch: std.time.epoch.EpochSeconds = .{ .secs = @intCast(seconds) };
-    const year_day = epoch.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch.getDaySeconds();
-    return std.fmt.allocPrint(
-        allocator,
-        "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}",
-        .{
-            year_day.year,
-            month_day.month.numeric(),
-            month_day.day_index + 1,
-            day_seconds.getHoursIntoDay(),
-            day_seconds.getMinutesIntoHour(),
-            day_seconds.getSecondsIntoMinute(),
-        },
-    );
-}
-
-fn formatLongDate(allocator: std.mem.Allocator, seconds: i64) ![]const u8 {
-    if (seconds < 0) return allocator.dupe(u8, "Thursday, January 1, 1970");
-    const epoch: std.time.epoch.EpochSeconds = .{ .secs = @intCast(seconds) };
-    const epoch_day = epoch.getEpochDay();
-    const year_day = epoch_day.calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const weekdays = [_][]const u8{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
-    const months = [_][]const u8{
-        "January", "February", "March",     "April",   "May",      "June",
-        "July",    "August",   "September", "October", "November", "December",
-    };
-    return std.fmt.allocPrint(
-        allocator,
-        "{s}, {s} {d}, {d}",
-        .{
-            weekdays[(epoch_day.day + 4) % 7],
-            months[month_day.month.numeric() - 1],
-            month_day.day_index + 1,
-            year_day.year,
-        },
-    );
-}
-
-fn formatIsoDateTime(buffer: []u8, seconds: i64) ![]const u8 {
-    if (seconds < 0) return std.fmt.bufPrint(buffer, "1970-01-01T00:00:00", .{});
-    const epoch: std.time.epoch.EpochSeconds = .{ .secs = @intCast(seconds) };
-    const year_day = epoch.getEpochDay().calculateYearDay();
-    const month_day = year_day.calculateMonthDay();
-    const day_seconds = epoch.getDaySeconds();
-    return std.fmt.bufPrint(
-        buffer,
-        "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}",
-        .{
-            year_day.year,
-            month_day.month.numeric(),
-            month_day.day_index + 1,
-            day_seconds.getHoursIntoDay(),
-            day_seconds.getMinutesIntoHour(),
-            day_seconds.getSecondsIntoMinute(),
-        },
-    );
-}
-
 test "search routes all action-first types through one handler" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
 
-    const Capture = struct { calls: usize = 0 };
+    const Capture = struct {
+        calls: usize = 0,
+
+        fn search(self: *@This(), _: *runtime.RuntimeContext, invocation: *const parser.Invocation) !Result {
+            self.calls += 1;
+            if (std.mem.eql(u8, invocation.command.path, standard_command_path))
+                return .{ .standard = .{ .requested_packages = true } };
+            if (std.mem.eql(u8, invocation.command.path, aur_command_path))
+                return .{ .aur = .{ .packages = &.{.{ .name = "yay", .version = "1" }} } };
+            return .{ .flatpak = .{
+                .query = "editor",
+                .packages = &.{},
+                .page = 1,
+                .limit = 21,
+                .total_pages = 0,
+                .total_hits = 0,
+            } };
+        }
+    };
     var capture: Capture = .{};
-    const runner: Runner = .{
-        .data = &capture,
-        .call = struct {
-            fn run(data: ?*anyopaque, _: *runtime.RuntimeContext, invocation: *const parser.Invocation) !Result {
-                const observed: *Capture = @ptrCast(@alignCast(data.?));
-                observed.calls += 1;
-                if (std.mem.eql(u8, invocation.command.path, standard_command_path))
-                    return .{ .standard = .{ .requested_packages = true } };
-                if (std.mem.eql(u8, invocation.command.path, aur_command_path))
-                    return .{ .aur = .{ .packages = &.{.{ .name = "yay", .version = "1" }} } };
-                return .{ .flatpak = .{
-                    .query = "editor",
-                    .packages = &.{},
-                    .page = 1,
-                    .limit = 21,
-                    .total_pages = 0,
-                    .total_hits = 0,
-                } };
-            }
-        }.run,
-    };
 
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
-
-    const standard = try parser.parse(arena.allocator(), &manifest, &.{ "search", "standard", "--available", "vim" });
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &standard.dispatch, runner));
-    stdout.writer.end = 0;
-    const aur = try parser.parse(arena.allocator(), &manifest, &.{ "search", "aur", "yay" });
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &aur.dispatch, runner));
-    stdout.writer.end = 0;
-    const flatpak = try parser.parse(arena.allocator(), &manifest, &.{ "search", "flatpak", "editor" });
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &flatpak.dispatch, runner));
+    const standard = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "standard", "--available", "vim" });
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &standard.dispatch, &capture));
+    tc.stdout.writer.end = 0;
+    const aur = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "aur", "yay" });
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &aur.dispatch, &capture));
+    tc.stdout.writer.end = 0;
+    const flatpak = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "flatpak", "editor" });
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &flatpak.dispatch, &capture));
     try std.testing.expectEqual(@as(usize, 3), capture.calls);
 }
 
 test "standard output preserves C# table columns and ranked result order" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    const outcome = try parser.parse(arena.allocator(), &manifest, &.{ "search", "standard", "--available", "discord" });
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "standard", "--available", "discord" });
 
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
-    const runner: Runner = .{ .call = struct {
-        fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
+    const StandardFixture = struct {
+        fn search(_: @This(), _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
             return .{ .standard = .{
                 .packages = &.{
                     .{ .name = "discord", .repository = "extra", .version = "1", .description = "Chat" },
@@ -1376,46 +1312,53 @@ test "standard output preserves C# table columns and ranked result order" {
                 .requested_packages = true,
             } };
         }
-    }.run };
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
-    const rendered = stdout.writer.buffered();
+    };
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, StandardFixture{}));
+    const rendered = tc.stdout.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "│ Name") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Repository") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "discord").? < std.mem.indexOf(u8, rendered, "webcord").?);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Total: 2 packages") != null);
 }
 
-test "AUR standard merge and Flatpak paging are serialized without subprocesses" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
+test "standard package detail serializes optional dependency installation state" {
+    var output_buffer = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer output_buffer.deinit();
+    try writeStandardPackageJson(&output_buffer.writer, .{
+        .name = "editor",
+        .version = "1.0",
+        .optional_depends = &.{ "spellcheck: Spell checking", "plugins>=2: Plugin support" },
+        .optional_depends_installed = &.{ true, false },
+    });
 
-    const aur = try parser.parse(arena.allocator(), &manifest, &.{ "search", "aur", "--standard", "yay" });
-    const aur_runner: Runner = .{ .call = struct {
-        fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
+    const rendered = output_buffer.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"OptDependsInstalled\":[true,false]") != null);
+    try std.testing.expectEqualStrings("plugins>=1:2", optionalDependencyExpression("plugins>=1:2: Plugin support"));
+    try std.testing.expectEqualStrings("spellcheck", optionalDependencyExpression("spellcheck: Spell checking"));
+}
+
+test "AUR standard merge and Flatpak paging are serialized without subprocesses" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+
+    const aur = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "aur", "--standard", "yay" });
+    const AurFixture = struct {
+        fn search(_: @This(), _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
             return .{ .aur = .{
                 .packages = &.{.{ .name = "yay", .version = "12", .maintainer = "dev" }},
                 .standard_packages = &.{.{ .name = "yay-bin", .version = "1", .repository = "extra" }},
             } };
         }
-    }.run };
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &aur.dispatch, aur_runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Total results: 2") != null);
+    };
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &aur.dispatch, AurFixture{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Total results: 2") != null);
 
-    stdout.writer.end = 0;
-    const flatpak = try parser.parse(arena.allocator(), &manifest, &.{ "search", "flatpak", "--page", "2", "--limit", "1", "editor", "--json" });
-    const flatpak_runner: Runner = .{ .call = struct {
-        fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
+    tc.stdout.writer.end = 0;
+    const flatpak = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "flatpak", "--page", "2", "--limit", "1", "editor", "--json" });
+    const FlatpakFixture = struct {
+        fn search(_: @This(), _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
             return .{ .flatpak = .{
                 .query = "editor",
                 .packages = &.{.{
@@ -1433,39 +1376,63 @@ test "AUR standard merge and Flatpak paging are serialized without subprocesses"
                 .total_hits = 3,
             } };
         }
-    }.run };
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &flatpak.dispatch, flatpak_runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "\"page\":2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "org.example.Editor") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "\"download_size\":1048576") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "\"installed_size\":2097152") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "\"permissions\":[\"shared=network\",\"sockets=wayland\"]") != null);
+    };
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &flatpak.dispatch, FlatpakFixture{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "\"page\":2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "org.example.Editor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "\"download_size\":1048576") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "\"installed_size\":2097152") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "\"permissions\":[\"shared=network\",\"sockets=wayland\"]") != null);
 
-    stdout.writer.end = 0;
-    const flatpak_plain = try parser.parse(arena.allocator(), &manifest, &.{ "search", "flatpak", "editor" });
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &flatpak_plain.dispatch, flatpak_runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Download Size") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Installed Size") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "shared=network") != null);
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "sockets=wayland") != null);
+    tc.stdout.writer.end = 0;
+    const flatpak_plain = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "flatpak", "editor" });
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &flatpak_plain.dispatch, FlatpakFixture{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Download Size") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Installed Size") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "shared=network") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "sockets=wayland") != null);
+}
+
+test "interactive AUR search table stays within terminal width" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    var environment = std.process.Environ.Map.init(tc.arena.allocator());
+    try environment.put("COLUMNS", "80");
+    tc.context.environment = &environment;
+    tc.context.stdout_is_tty = true;
+
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const invocation = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "aur", "codelldb-bin" });
+    const Fixture = struct {
+        fn search(_: @This(), _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
+            return .{ .aur = .{ .packages = &.{.{
+                .name = "codelldb-bin",
+                .version = "1.12.3-1",
+                .maintainer = "dmitmel",
+                .last_modified = 1_777_000_000,
+                .description = "A native debugger extension for VSCode based on LLDB. Also known as CodeLLDB.",
+            }} } };
+        }
+    };
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &invocation.dispatch, Fixture{}));
+
+    const rendered = tc.stdout.writer.buffered();
+    var lines = std.mem.splitScalar(u8, rendered, '\n');
+    while (lines.next()) |line|
+        try std.testing.expect((try std.unicode.utf8CountCodepoints(line)) <= 79);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "codelldb-bin") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "VSCode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Total results: 1") != null);
 }
 
 test "AUR pkgbuild search displays fetched content and structured output" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
-    };
-    const runner: Runner = .{ .call = struct {
-        fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, invocation: *const parser.Invocation) !Result {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const PkgbuildFixture = struct {
+        fn search(_: @This(), _: *runtime.RuntimeContext, invocation: *const parser.Invocation) !Result {
             try std.testing.expect(optionEnabled(invocation, "--pkgbuild"));
             try std.testing.expectEqual(@as(usize, 2), invocation.positionals.len);
             return .{ .aur = .{ .pkgbuilds = &.{
@@ -1473,68 +1440,123 @@ test "AUR pkgbuild search displays fetched content and structured output" {
                 .{ .name = "missing", .pkgbuild = null },
             } } };
         }
-    }.run };
+    };
 
     var outcome = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "search", "aur", "--pkgbuild", "yay", "missing" },
     );
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
-    var rendered = stdout.writer.buffered();
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, PkgbuildFixture{}));
+    var rendered = tc.stdout.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Package build for: yay") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "pkgname=yay\npkgver=12") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Failed to get PKGBUILD for: missing") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Total results") == null);
 
-    stdout.writer.end = 0;
+    tc.stdout.writer.end = 0;
     outcome = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "search", "aur", "-p", "yay", "missing", "--json" },
     );
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, runner));
-    rendered = stdout.writer.buffered();
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, PkgbuildFixture{}));
+    rendered = tc.stdout.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"Name\":\"yay\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"PkgBuild\":\"pkgname=yay\\npkgver=12\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"PkgBuild\":null") != null);
 }
 
-test "search validates AUR query length and positive pagination before backend execution" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const manifest = try spec.Manifest.load(arena.allocator());
-    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stdout.deinit();
-    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
-    defer stderr.deinit();
-    var context: runtime.RuntimeContext = .{
-        .allocator = arena.allocator(),
-        .io = std.testing.io,
-        .stdout = &stdout.writer,
-        .stderr = &stderr.writer,
+test "AUR detail search renders package metadata and structured output" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const DetailFixture = struct {
+        fn search(_: @This(), _: *runtime.RuntimeContext, invocation: *const parser.Invocation) !Result {
+            try std.testing.expect(optionEnabled(invocation, "--detail"));
+            return .{ .aur = .{
+                .detail = .{
+                    .name = "yay",
+                    .version = "12",
+                    .package_base = "yay",
+                    .maintainer = "dev",
+                    .required_by = &.{ "aur-helper-ui", "desktop-meta" },
+                    .optional_for = &.{"shell-extras"},
+                },
+            } };
+        }
     };
-    const runner: Runner = .{ .call = struct {
-        fn run(_: ?*anyopaque, _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
+
+    var outcome = try parser.parse(
+        tc.arena.allocator(),
+        &manifest,
+        &.{ "search", "aur", "--detail", "yay" },
+    );
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, DetailFixture{}));
+    var rendered = tc.stdout.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Total results") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Required By") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "aur-helper-ui") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Optional For") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "shell-extras") != null);
+
+    tc.stdout.writer.end = 0;
+    outcome = try parser.parse(
+        tc.arena.allocator(),
+        &manifest,
+        &.{ "search", "aur", "-d", "yay", "--json" },
+    );
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, DetailFixture{}));
+    rendered = tc.stdout.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"Name\":\"yay\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"PackageBase\":\"yay\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"RequiredBy\":[\"aur-helper-ui\",\"desktop-meta\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"OptionalFor\":[\"shell-extras\"]") != null);
+}
+
+test "search validates AUR query length and positive pagination before backend execution" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const ShouldNotRun = struct {
+        fn search(_: @This(), _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
             return error.ShouldNotRun;
         }
-    }.run };
+    };
 
-    const short_aur = try parser.parse(arena.allocator(), &manifest, &.{ "search", "aur", "x" });
-    try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&context, &short_aur.dispatch, runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "at least 2 characters") != null);
-    stdout.writer.end = 0;
+    const short_aur = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "aur", "x" });
+    try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&tc.context, &short_aur.dispatch, ShouldNotRun{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "at least 2 characters") != null);
+    tc.stdout.writer.end = 0;
     const conflicting_aur = try parser.parse(
-        arena.allocator(),
+        tc.arena.allocator(),
         &manifest,
         &.{ "search", "aur", "--pkgbuild", "--standard", "yay" },
     );
-    try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&context, &conflicting_aur.dispatch, runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "Cannot combine --pkgbuild with --standard") != null);
-    stdout.writer.end = 0;
-    const bad_page = try parser.parse(arena.allocator(), &manifest, &.{ "search", "flatpak", "editor", "--page", "0" });
-    try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&context, &bad_page.dispatch, runner));
-    try std.testing.expect(std.mem.indexOf(u8, stdout.writer.buffered(), "greater than zero") != null);
+    try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&tc.context, &conflicting_aur.dispatch, ShouldNotRun{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Cannot combine --pkgbuild with --standard") != null);
+    tc.stdout.writer.end = 0;
+    const detail_pkgbuild = try parser.parse(
+        tc.arena.allocator(),
+        &manifest,
+        &.{ "search", "aur", "--detail", "--pkgbuild", "yay" },
+    );
+    try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&tc.context, &detail_pkgbuild.dispatch, ShouldNotRun{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Cannot combine --detail with --pkgbuild") != null);
+    tc.stdout.writer.end = 0;
+    const detail_standard = try parser.parse(
+        tc.arena.allocator(),
+        &manifest,
+        &.{ "search", "aur", "--detail", "--standard", "yay" },
+    );
+    try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&tc.context, &detail_standard.dispatch, ShouldNotRun{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Cannot combine --detail with --standard") != null);
+    tc.stdout.writer.end = 0;
+    const bad_page = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "flatpak", "editor", "--page", "0" });
+    try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&tc.context, &bad_page.dispatch, ShouldNotRun{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "greater than zero") != null);
 }
 
 test "package scoring matches the C# ranking tiers" {

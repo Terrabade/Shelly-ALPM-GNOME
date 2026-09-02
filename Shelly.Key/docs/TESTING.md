@@ -26,9 +26,15 @@ ls -l /tmp/test-gnupg/
 | Path             | Mode   |
 | ---------------- | ------ |
 | `gnupg/`         | `0755` |
+| `pubring.gpg`    | `0644` |
+| `secring.gpg`    | `0600` |
 | `trustdb.gpg`    | `0644` |
 | `gpg.conf`       | `0644` |
 | `gpg-agent.conf` | `0644` |
+
+`pubring.gpg` must contain the generated public master key and
+`pubring.kbx` must not be created. This is the legacy OpenPGP keyring layout
+used by pacman and read directly by libalpm.
 
 #### Config files
 

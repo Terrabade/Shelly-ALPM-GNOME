@@ -107,6 +107,13 @@ pub const PackageDetail = extern struct {
         add_spec_row(p.spec_box, translations._("Last Modified"), c_string.cstr(&buf, formatIsoDateTime(&time_buf, package.LastModified) catch ""));
         add_spec_row(p.spec_box, translations._("First Submitted"), c_string.cstr(&buf, formatIsoDateTime(&time_buf, package.FirstSubmitted) catch ""));
 
+        add_url_spec_row(p.spec_box, translations._("URL"), if (package.Url) |u| c_string.cstr(&buf, u) else "");
+
+        const allocator = (p.arena orelse return).allocator();
+
+        const combined = std.mem.concat(allocator, u8, &.{ "https://aur.archlinux.org/packages/", package.Name }) catch "";
+        add_url_spec_row(p.spec_box, translations._("AUR"), c_string.cstr(&buf, combined));
+
         const alloc = (p.arena orelse return).allocator();
         add_spec_list(p.spec_box, alloc, translations._("Licenses"), if (package.License) |license| license else &.{});
 
@@ -161,6 +168,32 @@ pub const PackageDetail = extern struct {
         gtk.Label.setEllipsize(val, .end);
         gtk.Widget.addCssClass(val.as(gtk.Widget), "spec-value");
         gtk.Box.append(row, val.as(gtk.Widget));
+        gtk.Box.append(box, row.as(gtk.Widget));
+    }
+
+    fn add_url_spec_row(box: *gtk.Box, label: []const u8, value: [:0]const u8) void {
+        var lbuf: [64]u8 = undefined;
+        const row = gtk.Box.new(.horizontal, 8);
+        gtk.Widget.setMarginTop(row.as(gtk.Widget), 10);
+        gtk.Widget.setMarginBottom(row.as(gtk.Widget), 10);
+        gtk.Widget.addCssClass(row.as(gtk.Widget), "spec-row");
+        const key = gtk.Label.new(c_string.cstr(&lbuf, label));
+        gtk.Widget.setHalign(key.as(gtk.Widget), .start);
+        gtk.Label.setXalign(key, 0);
+        gtk.Widget.addCssClass(key.as(gtk.Widget), "dim-label");
+        gtk.Box.append(row, key.as(gtk.Widget));
+
+        var mbuf: [256]u8 = undefined;
+        const markup = std.fmt.bufPrintZ(&mbuf, "<a href=\"{s}\">{s}</a>", .{ value, value }) catch value;
+        const val = gtk.Label.new(null);
+        gtk.Label.setMarkup(val, markup);
+        gtk.Widget.setHalign(val.as(gtk.Widget), .end);
+        gtk.Widget.setHexpand(val.as(gtk.Widget), 1);
+        gtk.Label.setXalign(val, 1);
+        gtk.Label.setEllipsize(val, .end);
+
+        gtk.Box.append(row, val.as(gtk.Widget));
+
         gtk.Box.append(box, row.as(gtk.Widget));
     }
 

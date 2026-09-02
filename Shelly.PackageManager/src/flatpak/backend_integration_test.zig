@@ -18,6 +18,8 @@ const EventCapture = struct {
     statuses: std.atomic.Value(u64) = .init(0),
     progress: std.atomic.Value(u64) = .init(0),
     percentage: std.atomic.Value(u8) = .init(0),
+    saw_stage: std.atomic.Value(bool) = .init(false),
+    saw_subject: std.atomic.Value(bool) = .init(false),
 
     fn status(data: ?*anyopaque, _: events.StatusArgs) void {
         const self: *EventCapture = @ptrCast(@alignCast(data orelse return));
@@ -28,6 +30,18 @@ const EventCapture = struct {
         const self: *EventCapture = @ptrCast(@alignCast(data orelse return));
         _ = self.progress.fetchAdd(1, .acq_rel);
         self.percentage.store(args.percentage, .release);
+        self.saw_stage.store(
+            std.mem.eql(u8, args.status, "Downloading"),
+            .release,
+        );
+        self.saw_subject.store(
+            std.mem.eql(
+                u8,
+                args.name,
+                "runtime/org.example.Platform/x86_64/stable",
+            ),
+            .release,
+        );
     }
 
     fn cancelled(_: ?*anyopaque) bool {
@@ -103,6 +117,8 @@ test "PackageManager client owns responses and bridges errors events and cancell
     try std.testing.expect(capture.statuses.load(.acquire) > 0);
     try std.testing.expect(capture.progress.load(.acquire) > 0);
     try std.testing.expectEqual(@as(u8, 50), capture.percentage.load(.acquire));
+    try std.testing.expect(capture.saw_stage.load(.acquire));
+    try std.testing.expect(capture.saw_subject.load(.acquire));
 
     try std.testing.expectError(
         errors.Error.FlatpakOperationFailed,

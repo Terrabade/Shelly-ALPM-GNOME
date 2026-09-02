@@ -193,8 +193,8 @@ fn forwardEvent(target: EventTarget, event: wire.EventEnvelope) void {
                 .message = event.message,
             }),
             .progress => dispatcher.raiseProgress(.{
-                .name = event.message,
-                .status = event.code,
+                .name = event.subject orelse event.message,
+                .status = event.stage orelse event.code,
                 .percentage = percentage(event.percentage),
             }),
             .failure => dispatcher.raiseStatus(.{
@@ -214,11 +214,11 @@ fn forwardEvent(target: EventTarget, event: wire.EventEnvelope) void {
             event.native_code,
         ),
         .progress => operation.progress(.{
-            .stage = event.code,
+            .stage = event.stage orelse event.code,
             .completed = event.completed,
             .total = event.total,
             .percentage = event.percentage,
-            .message = event.message,
+            .message = event.subject orelse event.message,
             .native_code = event.native_code,
         }),
         .failure => operation.reportError(

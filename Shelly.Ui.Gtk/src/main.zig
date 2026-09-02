@@ -1,4 +1,5 @@
 const std = @import("std");
+const HttpClient = @import("ShellyHttp");
 const bindings = @import("Shelly_Ui_Gtk");
 const gtk = bindings.gtk;
 const adw = bindings.adw;
@@ -10,45 +11,70 @@ const ShellyWindow = @import("shelly_window.zig").ShellyWindow;
 const runtime = @import("services/runtime.zig");
 const translations = @import("helpers/translations.zig");
 const tray_service = @import("services/tray_service.zig");
+const options = @import("options");
 const IconDownloadService = @import("services/icon_fetcher.zig").downloadIconsInBackground;
+
+var did_activate: bool = false;
 
 pub fn main(init: std.process.Init) void {
     runtime.io = init.io;
     runtime.environ_map = init.environ_map;
+    HttpClient.setDefaultProxyEnvironment(init.environ_map);
 
     if (!translations.init()) {
         std.log.warn("translations: failed to initialize gettext", .{});
     }
-
-    IconDownloadService(std.heap.c_allocator, runtime.io);
+    if (!options.skip_background_services) {
+        IconDownloadService(std.heap.c_allocator, runtime.io);
+    }
 
     // Libadwaita port: AdwApplication initialises libadwaita and makes the UI
     // follow GNOME's light/dark preference and accent colour.
-    const app = adw.Application.new("com.shellyorg.shelly", .{});
+    const app = adw.Application.new("com.shellyorg.shelly", .{
+        .handles_command_line = true,
+    });
     defer app.unref();
-
     const gapp = gobject.ext.as(gio.Application, app);
 
-    const registered = gio.Application.register(gapp, null, null);
-    std.debug.print("registered = {}\n", .{registered});
-    std.debug.print("is_remote = {}\n", .{
-        gio.Application.getIsRemote(gapp),
-    });
+    _ = gio.Application.signals.startup.connect(app, ?*anyopaque, &startup, null, .{});
+    _ = gio.Application.signals.activate.connect(app, ?*anyopaque, &activate, null, .{});
+    _ = gio.Application.signals.command_line.connect(app, ?*anyopaque, &commandLine, null, .{});
 
-    _ = gio.Application.signals.activate.connect(
-        app,
-        ?*anyopaque,
-        &activate,
-        null,
-        .{},
+    const argv_vector = init.minimal.args.vector;
+    const status = gio.Application.run(
+        gapp,
+        @intCast(argv_vector.len),
+        @ptrCast(@constCast(argv_vector.ptr)),
     );
 
-    const status = gio.Application.run(gapp, 0, null);
-
-    tryStopTray(runtime.io, std.heap.c_allocator);
-
+    if (did_activate) {
+        tryStopTray(runtime.io, std.heap.c_allocator);
+    }
     runtime.teardownConfig(std.heap.c_allocator);
     std.process.exit(@intCast(status));
+}
+
+fn commandLine(
+    app: *adw.Application,
+    cmdline: *gio.ApplicationCommandLine,
+    _: ?*anyopaque,
+) callconv(.c) c_int {
+    var argc: c_int = 0;
+    const argv = gio.ApplicationCommandLine.getArguments(cmdline, &argc);
+    defer glib.strfreev(@ptrCast(argv));
+
+    var i: usize = 1;
+    while (i < @as(usize, @intCast(argc))) : (i += 1) {
+        const arg = std.mem.span(argv[i]);
+
+        if (std.mem.eql(u8, arg, "--tray-updates")) {
+            runtime.pending_navigate_updates = true;
+        }
+    }
+
+    gio.Application.activate(app.as(gio.Application));
+    gio.ApplicationCommandLine.setExitStatus(cmdline, 0);
+    return 0;
 }
 
 fn tryStopTray(io: std.Io, alloc: std.mem.Allocator) void {
@@ -59,11 +85,44 @@ fn tryStopTray(io: std.Io, alloc: std.mem.Allocator) void {
     if (should_stop) _ = tray_service.end(io, alloc);
 }
 
+fn quitActivated(_: *gio.SimpleAction, _: ?*glib.Variant, app: *gtk.Application) callconv(.c) void {
+    app.as(gio.Application).quit();
+}
+
+// The signal handlers take *adw.Application because the instance they are
+// connected to is one: zig-gobject types the callback on the instance's exact
+// type. Everything below wants the GtkApplication view, hence the upcast.
+fn startup(app: *adw.Application, _: ?*anyopaque) callconv(.c) void {
+    const gtk_app = gobject.ext.as(gtk.Application, app);
+
+    const quit_action = gio.SimpleAction.new("quit", null);
+    defer quit_action.unref();
+    _ = gio.SimpleAction.signals.activate.connect(
+        quit_action,
+        *gtk.Application,
+        &quitActivated,
+        gtk_app,
+        .{},
+    );
+    gtk_app.as(gio.ActionMap).addAction(quit_action.as(gio.Action));
+    const accels = [_:null]?[*:0]const u8{ "<Control>q", "<Control>w", null };
+    gtk.Application.setAccelsForAction(gtk_app, "app.quit", &accels);
+}
+
 fn activate(app: *adw.Application, _: ?*anyopaque) callconv(.c) void {
     const gtk_app = gobject.ext.as(gtk.Application, app);
 
+    did_activate = true;
+
     if (gtk.Application.getActiveWindow(gtk_app)) |window| {
         gtk.Window.present(window);
+
+        if (runtime.pending_navigate_updates) {
+            runtime.pending_navigate_updates = false;
+            if (gobject.ext.cast(ShellyWindow, window)) |shelly_window| {
+                shelly_window.navigateToUpdates();
+            }
+        }
         return;
     }
 
@@ -84,9 +143,33 @@ fn activate(app: *adw.Application, _: ?*anyopaque) callconv(.c) void {
         std.log.warn("settings: failed to load config service: {t}", .{err});
     };
 
-    tryStartTray(runtime.io, std.heap.c_allocator);
+    if (runtime.config) |svc| {
+        const cfg = svc.get() catch |err| {
+            std.log.warn("settings: failed to get config: {t}", .{err});
+            return;
+        };
+
+        if (cfg.Culture.len > 0) {
+            var cul_buf: [256:0]u8 = undefined;
+            @memcpy(cul_buf[0..cfg.Culture.len], cfg.Culture);
+            cul_buf[cfg.Culture.len] = 0;
+            const cul = cul_buf[0..cfg.Culture.len :0];
+            const ok = translations.initWithLocale(cul);
+            std.log.info("[i18n] init ok={}, culture={s}\n", .{ ok, cul });
+        }
+    }
+
+    if (!options.skip_background_services) tryStartTray(runtime.io, std.heap.c_allocator);
+
+    setupGnomeThemePreference();
 
     const window = ShellyWindow.new(gtk_app);
+
+    if (runtime.pending_navigate_updates) {
+        runtime.pending_navigate_updates = false;
+        window.navigateToUpdates();
+    }
+
     gtk.Window.present(gobject.ext.as(gtk.Window, window));
 }
 
@@ -98,9 +181,46 @@ fn tryStartTray(io: std.Io, alloc: std.mem.Allocator) void {
     tray_service.start(io, alloc);
 }
 
+fn setupGnomeThemePreference() void {
+    const desktop = runtime.environ_map.get("XDG_CURRENT_DESKTOP") orelse return;
+
+    std.debug.print("desktop = {s}\n", .{desktop});
+
+    if (!std.mem.containsAtLeast(u8, desktop, 1, "GNOME")) {
+        return;
+    }
+
+    const settings = gio.Settings.new("org.gnome.desktop.interface");
+
+    const scheme = settings.getString("color-scheme");
+
+    const prefer_dark = std.mem.eql(u8, std.mem.span(scheme), "prefer-dark");
+
+    std.debug.print("prefer_dark = {}\n", .{prefer_dark});
+
+    if (prefer_dark) {
+        const gtk_settings = gtk.Settings.getDefault() orelse {
+            std.debug.print("Failed to fetch GtkSettings layout.\n", .{});
+            return;
+        };
+        const base_object = @as(*gobject.Object, @ptrCast(@alignCast(gtk_settings)));
+        var value = std.mem.zeroes(gobject.Value);
+        const bool_type = gobject.typeFromName("gboolean");
+        _ = value.init(bool_type);
+        value.setBoolean(1);
+        base_object.setProperty("gtk-application-prefer-dark-theme", &value);
+    }
+
+    _ = glib.setenv(
+        "GTK_APPLICATION_PREFER_DARK_THEME",
+        if (prefer_dark) "1" else "0",
+        1,
+    );
+}
+
 test {
     _ = @import("services/icon_resolver.zig");
-    _ = @import("services/config_resolver.zig");
+    _ = @import("services/ui_config_resolver.zig");
     _ = @import("services/shelly_cli.zig");
     _ = @import("services/tray_service.zig");
     _ = @import("g_objects/appstream_app_object.zig");
@@ -112,5 +232,7 @@ test {
     _ = @import("services/flathub_api.zig");
     _ = @import("models/aur_package.zig");
     _ = @import("g_objects/aur_package_object.zig");
+    _ = @import("models/search_result.zig");
+    _ = @import("g_objects/search_result_object.zig");
     _ = @import("pages/transaction_page.zig");
 }

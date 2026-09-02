@@ -10,6 +10,8 @@ const EventCapture = struct {
     failure: std.atomic.Value(u64) = .init(0),
     completed: std.atomic.Value(u64) = .init(0),
     saw_half_progress: std.atomic.Value(bool) = .init(false),
+    saw_progress_stage: std.atomic.Value(bool) = .init(false),
+    saw_progress_subject: std.atomic.Value(bool) = .init(false),
 };
 
 const OpenedApi = struct {
@@ -60,6 +62,20 @@ fn captureEvent(
             _ = capture.progress.fetchAdd(1, .acq_rel);
             if (parsed.value.percentage == 50)
                 capture.saw_half_progress.store(true, .release);
+            if (parsed.value.stage) |stage|
+                capture.saw_progress_stage.store(
+                    std.mem.eql(u8, stage, "Downloading"),
+                    .release,
+                );
+            if (parsed.value.subject) |subject|
+                capture.saw_progress_subject.store(
+                    std.mem.eql(
+                        u8,
+                        subject,
+                        "runtime/org.example.Platform/x86_64/stable",
+                    ),
+                    .release,
+                );
         },
         .failure => _ = capture.failure.fetchAdd(1, .acq_rel),
         .completed => _ = capture.completed.fetchAdd(1, .acq_rel),
@@ -186,6 +202,8 @@ test "fake shared backend covers the complete loader and ownership contract" {
     try std.testing.expectEqual(@as(u64, 1), capture.progress.load(.acquire));
     try std.testing.expectEqual(@as(u64, 1), capture.completed.load(.acquire));
     try std.testing.expect(capture.saw_half_progress.load(.acquire));
+    try std.testing.expect(capture.saw_progress_stage.load(.acquire));
+    try std.testing.expect(capture.saw_progress_subject.load(.acquire));
 
     response = try execute(&api, handle, 12, "fake.error");
     header = try parseHeader(response.slice());

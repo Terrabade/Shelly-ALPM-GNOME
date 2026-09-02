@@ -2,7 +2,7 @@ const std = @import("std");
 const bindings = @import("../../bindings.zig");
 const events = @import("../../events.zig");
 const xdg_paths = @import("../../../shared/xdg_paths.zig").xdg_paths;
-const HttpClient = @import("../../../shared/http_client.zig");
+const HttpClient = @import("ShellyHttp");
 
 const notice_url = "https://iso-stats.cachyos.org/api/v2/last_update_notice";
 const no_notice = "No notice found";

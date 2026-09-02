@@ -1,0 +1,48 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the Shelly Notifications package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Shelly Notifications 0.0.1\n"
+"Report-Msgid-Bugs-To: https://github.com/Seafoam-Labs/conch/issues\n"
+"POT-Creation-Date: 2026-08-03 19:39+0300\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "updates available"
+msgstr ""
+
+msgid "Updates available"
+msgstr ""
+
+msgid "Open Shelly"
+msgstr ""
+
+msgid "Update Packages"
+msgstr ""
+
+msgid "Check for updates"
+msgstr ""
+
+msgid "Last Check: Never"
+msgstr ""
+
+msgid "No updates"
+msgstr ""
+
+msgid "Exit"
+msgstr ""
+
+msgid "Last Check: never"
+msgstr ""
+
+msgid "Last Check:"
+msgstr ""
