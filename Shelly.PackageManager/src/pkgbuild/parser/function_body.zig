@@ -3,6 +3,16 @@ const std = @import("std");
 const shell_scan = @import("shell_scan.zig");
 const PkgbuildParser = @import("parser.zig").PkgbuildParser;
 
+/// Resolve from the authoritative reviewed snapshot when supplied. In
+/// particular, do not resurrect a static declaration removed with unset -f.
+pub fn resolved_function_body(self: PkgbuildParser, content: []const u8, name: []const u8) !?[]const u8 {
+    if (self.dynamic_functions) |functions| {
+        const definition = functions.get(name) orelse return null;
+        return extract_function_body(definition, name);
+    }
+    return extract_function_body(content, name);
+}
+
 pub fn selected_package_body(self: PkgbuildParser, content: []const u8) !?[]const u8 {
     return selected_package_body_with_vars(self, content, null);
 }
@@ -26,7 +36,7 @@ pub fn selected_package_body_with_vars(
     // package member is selected.
     if (self.selected_package_name == null) return null;
     if (try selected_scoped_package_body(self, content, vars)) |body| return body;
-    return try extract_function_body(content, "package");
+    return try resolved_function_body(self, content, "package");
 }
 
 /// Like selected_package_body_with_vars, but does not fall back to package().
@@ -45,14 +55,25 @@ pub fn selected_scoped_package_body(
     );
     defer self.allocator.free(function_name);
 
+    if (self.dynamic_functions) |functions| {
+        const definition = functions.get(function_name) orelse return null;
+        // CachyOS wrappers embed a private helper declaration then call it.
+        // Preserve their existing metadata projection, using the helper frozen
+        // into this evaluated wrapper rather than a stale source declaration.
+        if (vars) |values| if (values.get("pkgbase")) |pkgbase| {
+            if (try generated_helper_body(self, content, definition, package_name, pkgbase)) |body| return body;
+        };
+        return extract_function_body(definition, function_name);
+    }
     if (try extract_function_body(content, function_name)) |body| return body;
     const pkgbase = (vars orelse return null).get("pkgbase") orelse return null;
-    return try generated_helper_body(self, content, package_name, pkgbase);
+    return try generated_helper_body(self, content, content, package_name, pkgbase);
 }
 
 fn generated_helper_body(
     self: PkgbuildParser,
     content: []const u8,
+    definitions: []const u8,
     package_name: []const u8,
     pkgbase: []const u8,
 ) !?[]const u8 {
@@ -66,7 +87,7 @@ fn generated_helper_body(
     const suffix = package_name[pkgbase.len..];
     const helper_name = try std.fmt.allocPrint(self.allocator, "_package{s}", .{suffix});
     defer self.allocator.free(helper_name);
-    return try extract_function_body(content, helper_name);
+    return try extract_function_body(definitions, helper_name);
 }
 
 fn has_generated_helper_dispatch(content: []const u8) bool {
@@ -86,6 +107,16 @@ fn has_generated_helper_dispatch(content: []const u8) bool {
             has_call = true;
     }
     return has_eval and has_declaration and has_call;
+}
+
+/// End offset includes the closing delimiter; unlike the extracted body it
+/// does not depend on trimming whitespace inside the definition.
+pub fn function_end(content: []const u8, name: []const u8) !?usize {
+    const header = (try match_at_line_start(content, 0, name)) orelse return null;
+    return 1 + switch (header.delimiter) {
+        .brace => try find_brace_body_end(content, header.body_start),
+        .subshell => try find_subshell_body_end(content, header.body_start),
+    };
 }
 
 pub fn extract_function_body(content: []const u8, function_name: []const u8) !?[]const u8 {
@@ -134,11 +165,14 @@ const function_header = struct {
 };
 
 /// Finds the closing brace of a Bash brace-group function body. Braces only
-/// affect the nesting depth when they are shell reserved words; quoted text,
-/// comments, heredocs, expansions, and substitutions are skipped as opaque
-/// regions so data such as a sed expression cannot consume later functions.
+/// affect the nesting depth when they are shell reserved words, which needs
+/// command position as well as a following delimiter; word-initial braces
+/// anywhere else are brace expansion. Quoted text, comments, heredocs,
+/// expansions, and substitutions are skipped as opaque regions so data such as
+/// a sed expression cannot consume later functions.
 fn find_brace_body_end(content: []const u8, start: usize) function_scan_error!usize {
     var depth: usize = 1;
+    var command_start = true;
     var word_start = true;
     var pending: [max_pending_heredocs]pending_heredoc = undefined;
     var pending_count: usize = 0;
@@ -149,6 +183,7 @@ fn find_brace_body_end(content: []const u8, start: usize) function_scan_error!us
 
         if (c == '\n') {
             i += 1;
+            command_start = true;
             word_start = true;
             if (pending_count > 0) {
                 i = skip_heredoc_bodies(content, i, pending[0..pending_count]);
@@ -168,61 +203,75 @@ fn find_brace_body_end(content: []const u8, start: usize) function_scan_error!us
         if (c == '\\' and i + 1 < content.len) {
             const escaped_newline = content[i + 1] == '\n';
             i += 2;
-            if (!escaped_newline) word_start = false;
+            if (!escaped_newline) {
+                command_start = false;
+                word_start = false;
+            }
             continue;
         }
         if (c == '\'') {
             i = skip_single_quote(content, i + 1);
+            command_start = false;
             word_start = false;
             continue;
         }
         if (c == '"') {
             i = try skip_double_quote(content, i + 1);
+            command_start = false;
             word_start = false;
             continue;
         }
         if (c == '`') {
             i = skip_backtick(content, i + 1);
+            command_start = false;
             word_start = false;
             continue;
         }
 
         if (c == '$' and i + 2 < content.len and content[i + 1] == '(' and content[i + 2] == '(') {
             i = try skip_arithmetic(content, i + 3, 2);
+            command_start = false;
             word_start = false;
             continue;
         }
         if (c == '(' and i + 1 < content.len and content[i + 1] == '(') {
             i = try skip_arithmetic(content, i + 2, 2);
+            command_start = false;
             word_start = false;
             continue;
         }
         if (c == '$' and i + 1 < content.len and content[i + 1] == '(') {
             const close = try find_subshell_body_end(content, i + 2);
             i = if (close < content.len) close + 1 else close;
+            command_start = false;
             word_start = false;
             continue;
         }
         if (c == '$' and i + 1 < content.len and content[i + 1] == '{') {
             i = try skip_parameter_expansion(content, i + 2);
+            command_start = false;
             word_start = false;
             continue;
         }
 
+        // The previous-byte check rejects the second `<` of a here-string
+        // (`<<<`), which would otherwise parse as a quoted heredoc.
         if (c == '<' and i + 1 < content.len and content[i + 1] == '<' and
-            (i + 2 >= content.len or content[i + 2] != '<'))
+            (i + 2 >= content.len or content[i + 2] != '<') and
+            (i == 0 or content[i - 1] != '<'))
         {
             if (parse_heredoc_declaration(content, i + 2)) |declaration| {
                 if (pending_count == pending.len) return error.TooManyHeredocs;
                 pending[pending_count] = declaration;
                 pending_count += 1;
                 i = declaration.end;
+                command_start = false;
                 word_start = false;
                 continue;
             }
         }
 
-        if ((c == '{' or c == '}') and is_structural_brace(content, i, word_start)) {
+        if ((c == '{' or c == '}') and is_structural_brace(content, i, command_start)) {
             if (c == '{') {
                 depth += 1;
             } else {
@@ -230,28 +279,59 @@ fn find_brace_body_end(content: []const u8, start: usize) function_scan_error!us
                 if (depth == 0) return i;
             }
             i += 1;
+            command_start = true;
             word_start = true;
             continue;
         }
 
-        if (std.mem.indexOfScalar(u8, ";&|()<>", c) != null) {
+        if (std.mem.indexOfScalar(u8, ";&|()", c) != null) {
+            i += 1;
+            command_start = true;
+            word_start = true;
+            continue;
+        }
+        if (c == '<' or c == '>') {
             i += 1;
             word_start = true;
             continue;
         }
 
-        i += 1;
+        const token_start = i;
+        while (i < content.len and !is_shell_token_delimiter(content[i])) {
+            if (content[i] == '\\' and i + 1 < content.len) i += 1;
+            i += 1;
+        }
+        if (i == token_start) {
+            i += 1;
+            command_start = false;
+            word_start = false;
+            continue;
+        }
+
+        const token = content[token_start..i];
+        if (command_start and is_assignment_word(token)) {
+            // Assignment prefixes do not consume command position.
+        } else if (is_command_prefix_keyword(token)) {
+            command_start = true;
+        } else {
+            command_start = false;
+        }
         word_start = false;
     }
 
     return content.len;
 }
 
-fn is_structural_brace(content: []const u8, index: usize, word_start: bool) bool {
-    if (!word_start or index + 1 == content.len) return word_start;
+/// A brace is a reserved word only in command position, and only when a byte
+/// that may follow it comes next. The two sets differ: Bash accepts `{(`,
+/// `{<in cat` and `}>out`, but rejects `{{`, `{}`, `{;` and `}}`.
+fn is_structural_brace(content: []const u8, index: usize, command_position: bool) bool {
+    if (!command_position) return false;
+    if (index + 1 == content.len) return true;
+    const followers = if (content[index] == '{') "(<>" else ";&|)<>";
     const next = content[index + 1];
     return std.ascii.isWhitespace(next) or
-        std.mem.indexOfScalar(u8, ";&|(){}<>", next) != null;
+        std.mem.indexOfScalar(u8, followers, next) != null;
 }
 
 const max_pending_heredocs = 16;
@@ -339,8 +419,11 @@ fn find_subshell_body_end(content: []const u8, start: usize) function_scan_error
             continue;
         }
 
+        // The previous-byte check rejects the second `<` of a here-string
+        // (`<<<`), which would otherwise parse as a quoted heredoc.
         if (c == '<' and i + 1 < content.len and content[i + 1] == '<' and
-            (i + 2 >= content.len or content[i + 2] != '<'))
+            (i + 2 >= content.len or content[i + 2] != '<') and
+            (i == 0 or content[i - 1] != '<'))
         {
             if (parse_heredoc_declaration(content, i + 2)) |declaration| {
                 if (pending_count == pending.len) return error.TooManyHeredocs;
@@ -551,7 +634,7 @@ fn is_assignment_word(word: []const u8) bool {
 }
 
 fn is_command_prefix_keyword(token: []const u8) bool {
-    inline for (.{ "then", "else", "elif", "do", "in" }) |keyword|
+    inline for (.{ "!", "if", "then", "else", "elif", "while", "until", "do", "time", "in" }) |keyword|
         if (std.mem.eql(u8, token, keyword)) return true;
     return false;
 }
@@ -744,6 +827,70 @@ test "extract_function_body: nested braces are balanced correctly" {
     );
 }
 
+test "extract_function_body: brace expansion does not leak depth past the closing brace" {
+    const content =
+        \\package() {
+        \\  install -vDm 644 {{CHANGES,RELEASE}.txt,README.rst} -t "$pkgdir/usr/share/doc/$pkgname/"
+        \\  find "$pkgdir" -name 'docbook' -type d -exec rm -frv {} +
+        \\}
+        \\build() { echo build; }
+    ;
+    const result = (try extract_function_body(content, "package")).?;
+    try std.testing.expectEqualStrings(
+        \\install -vDm 644 {{CHANGES,RELEASE}.txt,README.rst} -t "$pkgdir/usr/share/doc/$pkgname/"
+        \\  find "$pkgdir" -name 'docbook' -type d -exec rm -frv {} +
+    , result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "build()") == null);
+}
+
+test "extract_function_body: brace expansion in an assignment prefix is not a group" {
+    const content =
+        \\package() {
+        \\  VAR={{CHANGES,RELEASE}.txt} env -i make install
+        \\}
+        \\build() { echo build; }
+    ;
+    const result = (try extract_function_body(content, "package")).?;
+    try std.testing.expectEqualStrings(
+        \\VAR={{CHANGES,RELEASE}.txt} env -i make install
+    , result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "build()") == null);
+}
+
+test "extract_function_body: brace words outside command position are not groups" {
+    const content =
+        \\package() {
+        \\  printf '%s\n' NOTES{ END }
+        \\}
+        \\build() { echo build; }
+    ;
+    const result = (try extract_function_body(content, "package")).?;
+    try std.testing.expectEqualStrings(
+        \\printf '%s\n' NOTES{ END }
+    , result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "build()") == null);
+}
+
+test "extract_function_body: negated and conditional brace groups stay balanced" {
+    const content =
+        \\package() {
+        \\  if ! { [[ -L /proc/self/ns/user ]] && unshare --user true; }; then
+        \\    chmod 4755 "${pkgdir}/opt/Grok Bot/chrome-sandbox"
+        \\  fi
+        \\  while ! {
+        \\    true
+        \\  }; do
+        \\    break
+        \\  done
+        \\}
+        \\build() { echo build; }
+    ;
+    const result = (try extract_function_body(content, "package")).?;
+    try std.testing.expect(std.mem.indexOf(u8, result, "chrome-sandbox") != null);
+    try std.testing.expect(std.mem.endsWith(u8, result, "done"));
+    try std.testing.expect(std.mem.indexOf(u8, result, "build()") == null);
+}
+
 test "extract_function_body: Equicord sed expressions do not consume later functions" {
     const content =
         \\prepare() {
@@ -874,6 +1021,38 @@ test "parser_content: unclosed subshell consumes to end of content" {
     const content = "build() (\n  return 1;";
     const result = try extract_function_body(content, "build");
     try std.testing.expectEqualStrings("return 1;", result.?);
+}
+
+test "parser_content: here-string does not open a heredoc in brace bodies" {
+    // Issue 1848: the second `<` of `<<<` re-triggered heredoc detection,
+    // swallowing the rest of the file into a phantom heredoc body.
+    const content =
+        \\build() {
+        \\  mapfile -t deps <<< "$(sed -n '/dependencies:/,/^$/ {/dependencies:/d; p }' list.txt)"
+        \\  echo done
+        \\}
+        \\package() { echo package; }
+    ;
+    const result = (try extract_function_body(content, "build")).?;
+    try std.testing.expectEqualStrings(
+        \\mapfile -t deps <<< "$(sed -n '/dependencies:/,/^$/ {/dependencies:/d; p }' list.txt)"
+        \\  echo done
+    , result);
+}
+
+test "parser_content: here-string does not open a heredoc in subshell bodies" {
+    const content =
+        \\build() (
+        \\  mapfile -t deps <<< "$dependency_list"
+        \\  echo done
+        \\)
+        \\package() { echo package; }
+    ;
+    const result = (try extract_function_body(content, "build")).?;
+    try std.testing.expectEqualStrings(
+        \\mapfile -t deps <<< "$dependency_list"
+        \\  echo done
+    , result);
 }
 
 test "parser_content: non-compound function delimiters remain unsupported" {

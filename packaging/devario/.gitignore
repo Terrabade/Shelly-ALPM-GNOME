@@ -1,0 +1,6 @@
+/Shelly-ALPM/
+/src/
+/pkg/
+/*.pkg.tar*
+/*.src.tar*
+/*.log

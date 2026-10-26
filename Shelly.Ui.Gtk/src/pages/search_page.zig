@@ -1,10 +1,12 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const bindings = @import("Shelly_Ui_Gtk");
 const gtk = bindings.gtk;
 const gio = bindings.gio;
 const glib = bindings.glib;
 const gobject = bindings.gobject;
 const support = @import("support.zig");
+const features = @import("../services/build_features.zig");
 const SearchResultObject = @import("../g_objects/search_result_object.zig").SearchResultObject;
 const search_model = @import("../models/search_result.zig");
 const SearchResult = search_model.SearchResult;
@@ -19,6 +21,7 @@ const ShellyCommands = @import("../services/shelly_operation.zig").ShellyCommand
 const ShellyConfig = @import("../models/shelly_config.zig").ShellyConfig;
 const runtime = @import("../services/runtime.zig");
 const translations = @import("../helpers/translations.zig");
+const a11y = @import("../helpers/a11y.zig");
 const sorters = @import("../helpers/sorters.zig");
 
 pub const ShellySearchPage = extern struct {
@@ -124,6 +127,15 @@ pub const ShellySearchPage = extern struct {
         p.check_map = .empty;
         p.pending_installs = .empty;
 
+        if (features.builtWithAtollOnly) {
+            const search_hint = translations._("Search standard repositories, Atoll and Flatpak");
+            gtk.SearchEntry.setPlaceholderText(p.search_entry, search_hint);
+            a11y.setName(p.search_entry.as(gtk.Widget), search_hint);
+            gtk.Button.setLabel(p.aur_toggle.as(gtk.Button), translations._(features.aur_source_name));
+            gtk.Widget.setTooltipText(p.aur_toggle.as(gtk.Widget), translations._("Show results from Atoll"));
+            gtk.Label.setLabel(p.placeholder_subtitle, translations._("Search the standard repositories, Atoll, and Flatpak all at once. Type a name to begin."));
+        }
+
         p.list_store = gio.ListStore.new(SearchResultObject.getGObjectType());
 
         p.source_filter = gtk.CustomFilter.new(&source_filter_match, self, null);
@@ -224,7 +236,7 @@ pub const ShellySearchPage = extern struct {
             },
             .prompt => self.show_placeholder("system-search-symbolic", translations._("Search everywhere"), translations._("Search standard repositories, the AUR and Flatpak at once. Type a name to begin.")),
             .empty => self.show_placeholder("edit-find-symbolic", translations._("No packages found"), translations._("Try a shorter or more general keyword.")),
-            .err => self.show_placeholder("dialog-error-symbolic", translations._("Search failed"), translations._("Check your connection and try again.")),
+            .err => self.show_placeholder("dialog-error-symbolic", translations._("Could not search the selected sources."), translations._("Check your connection and try again.")),
         }
     }
 
@@ -241,7 +253,7 @@ pub const ShellySearchPage = extern struct {
     fn source_label(pkg: *const SearchResultObject) [:0]const u8 {
         return switch (pkg.getSource()) {
             .standard => translations._("Standard"),
-            .aur => translations._("AUR"),
+            .aur => translations._(features.aur_source_name),
             .flatpak => translations._("Flatpak"),
         };
     }
@@ -324,14 +336,17 @@ pub const ShellySearchPage = extern struct {
 
                 const ood_icon = gtk.Image.newFromIconName("dialog-warning-symbolic");
                 gtk.Widget.setTooltipText(ood_icon.as(gtk.Widget), translations._("Flagged out of date"));
+                a11y.setName(ood_icon.as(gtk.Widget), translations._("Flagged out of date"));
                 gtk.Box.append(title_box, ood_icon.as(gtk.Widget));
 
                 const installed_icon = gtk.Image.newFromIconName("object-select-symbolic");
                 gtk.Widget.setTooltipText(installed_icon.as(gtk.Widget), translations._("Installed"));
+                a11y.setName(installed_icon.as(gtk.Widget), translations._("Installed"));
                 gtk.Box.append(title_box, installed_icon.as(gtk.Widget));
 
                 const verified_icon = gtk.Image.newFromIconName("security-high-symbolic");
                 gtk.Widget.setTooltipText(verified_icon.as(gtk.Widget), translations._("Verified"));
+                a11y.setName(verified_icon.as(gtk.Widget), translations._("Verified"));
                 gtk.Box.append(title_box, verified_icon.as(gtk.Widget));
 
                 gtk.Box.append(box, title_box.as(gtk.Widget));
@@ -400,6 +415,7 @@ pub const ShellySearchPage = extern struct {
         const check = gobject.ext.cast(gtk.CheckButton, child) orelse return;
 
         page.priv().check_map.put(std.heap.c_allocator, pkg, check) catch {};
+        a11y.setName(check.as(gtk.Widget), pkg.getName());
         set_sync_active(check, pkg.isSelected());
     }
 
@@ -507,14 +523,14 @@ pub const ShellySearchPage = extern struct {
         const p = self.priv();
         var buf: [64]u8 = undefined;
         gtk.Button.setLabel(p.standard_toggle.as(gtk.Button), std.fmt.bufPrintZ(&buf, "{s} \u{00b7} {d}", .{ translations._("Standard"), standard_count }) catch translations._("Standard"));
-        gtk.Button.setLabel(p.aur_toggle.as(gtk.Button), std.fmt.bufPrintZ(&buf, "{s} \u{00b7} {d}", .{ translations._("AUR"), aur_count }) catch translations._("AUR"));
+        gtk.Button.setLabel(p.aur_toggle.as(gtk.Button), std.fmt.bufPrintZ(&buf, "{s} \u{00b7} {d}", .{ translations._(features.aur_source_name), aur_count }) catch translations._(features.aur_source_name));
         gtk.Button.setLabel(p.flatpak_toggle.as(gtk.Button), std.fmt.bufPrintZ(&buf, "{s} \u{00b7} {d}", .{ translations._("Flatpak"), flatpak_count }) catch translations._("Flatpak"));
     }
 
     fn reset_source_labels(self: *Self) void {
         const p = self.priv();
         gtk.Button.setLabel(p.standard_toggle.as(gtk.Button), translations._("Standard"));
-        gtk.Button.setLabel(p.aur_toggle.as(gtk.Button), translations._("AUR"));
+        gtk.Button.setLabel(p.aur_toggle.as(gtk.Button), translations._(features.aur_source_name));
         gtk.Button.setLabel(p.flatpak_toggle.as(gtk.Button), translations._("Flatpak"));
     }
 
@@ -611,7 +627,7 @@ pub const ShellySearchPage = extern struct {
     ) void {
         const svc = runtime.config orelse return;
         svc.updateField(field, value) catch |err| {
-            std.log.err("search page: failed to update config: {t}", .{err});
+            std.log.err("Could not update setting {0f}. {1s}\n\nTechnical details: {2s}", .{ diagnostics.safe(@tagName(field)), diagnostics.cause(err), @errorName(err) });
         };
     }
 
@@ -720,7 +736,7 @@ pub const ShellySearchPage = extern struct {
         switch (source) {
             .standard => {
                 const parsed = cli.search_standard(query) catch |err| {
-                    std.debug.print("search standard failed: {t}\n", .{err});
+                    std.debug.print("Could not search standard repositories. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
                     return;
                 };
                 var seen = std.StringHashMap(void).init(alloc);
@@ -740,7 +756,7 @@ pub const ShellySearchPage = extern struct {
             },
             .aur => {
                 const parsed = cli.search_aur(query) catch |err| {
-                    std.debug.print("search aur failed: {t}\n", .{err});
+                    std.debug.print("Could not search the AUR. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
                     return;
                 };
                 for (parsed.value) |pkg| {
@@ -750,7 +766,7 @@ pub const ShellySearchPage = extern struct {
                         .install_target = alloc.dupeZ(u8, pkg.Name) catch continue,
                         .version = alloc.dupeZ(u8, pkg.Version) catch continue,
                         .description = if (pkg.Description) |value| alloc.dupeZ(u8, value) catch "" else "",
-                        .repository = alloc.dupeZ(u8, "AUR") catch continue,
+                        .repository = alloc.dupeZ(u8, features.aur_source_name) catch continue,
                         .out_of_date = pkg.OutOfDate != null,
                         .aur = pkg,
                     }) catch continue;
@@ -758,7 +774,7 @@ pub const ShellySearchPage = extern struct {
             },
             .flatpak => {
                 const parsed = cli.search_flatpak(query) catch |err| {
-                    std.debug.print("search flatpak failed: {t}\n", .{err});
+                    std.debug.print("Could not search Flatpak remotes. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
                     return;
                 };
                 for (parsed.value.hits) |hit| {
@@ -1041,7 +1057,7 @@ pub const ShellySearchPage = extern struct {
         const argv = switch (next.source) {
             .standard => ShellyCommands.install(std.heap.c_allocator, next.names),
             .aur => ShellyCommands.install_aur(std.heap.c_allocator, next.names),
-            .flatpak => ShellyCommands.install_flatpak(std.heap.c_allocator, next.names[0], .system, next.remote),
+            .flatpak => ShellyCommands.installFlatpak(std.heap.c_allocator, next.names[0], .system, next.remote),
         } catch {
             self.drainPendingInstalls();
             p.install_running = false;

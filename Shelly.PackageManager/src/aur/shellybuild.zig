@@ -1,9 +1,16 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const toml = @import("toml");
 const process_runner = @import("builder.zig");
+const compression = @import("archive").compression_policy;
 
 pub const system_path = "/etc/shellybuild.conf";
 pub const file_name = "shellybuild.conf";
+
+pub const EnvironmentAssignment = struct {
+    name: []const u8,
+    value: []const u8,
+};
 
 pub const BuildConfiguration = struct {
     carch: []const u8,
@@ -18,11 +25,20 @@ pub const BuildConfiguration = struct {
     ccache: bool,
     distcc: bool,
     distcc_hosts: []const []const u8,
+    extra_path: []const []const u8 = &.{},
+    env: []const EnvironmentAssignment = &.{},
 };
 
 pub const PackageConfiguration = struct {
     packager: []const u8,
     extension: []const u8,
+    /// Architecture recorded in the assembled package (`.PKGINFO` `arch`,
+    /// `.BUILDINFO` `pkgarch` and the file name), like makepkg's
+    /// PACKAGECARCH. Only the packaging stage sees it: PKGBUILD evaluation,
+    /// `$CARCH`, `*_$CARCH` arrays and the `arch=()` check keep `build.carch`.
+    /// Unset means `build.carch`.
+    carch: ?[]const u8 = null,
+    compression_level: ?compression.Preset = null,
     options: []const []const u8,
     strip_binaries: []const []const u8,
     strip_shared: []const []const u8,
@@ -60,11 +76,15 @@ const BuildLayer = struct {
     ccache: ?bool = null,
     distcc: ?bool = null,
     distcc_hosts: ?[]const []const u8 = null,
+    extra_path: ?[]const []const u8 = null,
+    env: ?toml.Table = null,
 };
 
 const PackageLayer = struct {
     packager: ?[]const u8 = null,
     extension: ?[]const u8 = null,
+    carch: ?[]const u8 = null,
+    compression_level: ?i64 = null,
     options: ?[]const []const u8 = null,
     strip_binaries: ?[]const []const u8 = null,
     strip_shared: ?[]const []const u8 = null,
@@ -123,13 +143,27 @@ pub const ShellyBuildConfiguration = struct {
         defer if (system_content) |content| allocator.free(content);
         const user_content = try readOptionalFile(io, allocator, configured_user_path);
         defer if (user_content) |content| allocator.free(content);
-        return initFromBuffers(allocator, system_content, user_content);
+        var diagnostic: std.Io.Writer.Allocating = .init(allocator);
+        defer diagnostic.deinit();
+        return initFromBuffersWithDiagnostic(allocator, system_content, user_content, &diagnostic.writer) catch |err| {
+            if (diagnostic.written().len != 0) std.log.err("{s}", .{diagnostic.written()});
+            return err;
+        };
     }
 
     pub fn initFromBuffers(
         allocator: std.mem.Allocator,
         system_content: ?[]const u8,
         user_content: ?[]const u8,
+    ) !*Self {
+        return initFromBuffersWithDiagnostic(allocator, system_content, user_content, null);
+    }
+
+    fn initFromBuffersWithDiagnostic(
+        allocator: std.mem.Allocator,
+        system_content: ?[]const u8,
+        user_content: ?[]const u8,
+        diagnostic: ?*std.Io.Writer,
     ) !*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
@@ -174,8 +208,8 @@ pub const ShellyBuildConfiguration = struct {
         };
         errdefer self.arena.deinit();
 
-        if (system_content) |content| try self.applyBuffer(content);
-        if (user_content) |content| try self.applyBuffer(content);
+        if (system_content) |content| try self.applyBuffer(content, diagnostic);
+        if (user_content) |content| try self.applyBuffer(content, diagnostic);
         try self.validate();
         return self;
     }
@@ -186,8 +220,8 @@ pub const ShellyBuildConfiguration = struct {
         allocator.destroy(self);
     }
 
-    fn applyBuffer(self: *Self, content: []const u8) !void {
-        try validateKnownKeys(self.backing_allocator, content);
+    fn applyBuffer(self: *Self, content: []const u8, diagnostic: ?*std.Io.Writer) !void {
+        try validateKnownKeys(self.backing_allocator, content, diagnostic);
         var parser = toml.Parser(ConfigurationLayer).init(self.backing_allocator);
         defer parser.deinit();
         var parsed = parser.parseString(content) catch return error.InvalidConfiguration;
@@ -208,10 +242,25 @@ pub const ShellyBuildConfiguration = struct {
             if (build.ccache) |value| self.build.ccache = value;
             if (build.distcc) |value| self.build.distcc = value;
             if (build.distcc_hosts) |value| self.build.distcc_hosts = try duplicateStrings(allocator, value);
+            if (build.extra_path) |value| self.build.extra_path = try duplicateStrings(allocator, value);
+            if (build.env) |table| {
+                const assignments = try allocator.alloc(EnvironmentAssignment, table.count());
+                var entries = table.iterator();
+                var index: usize = 0;
+                while (entries.next()) |entry| : (index += 1) {
+                    assignments[index] = .{
+                        .name = try allocator.dupe(u8, entry.key_ptr.*),
+                        .value = try allocator.dupe(u8, entry.value_ptr.string),
+                    };
+                }
+                self.build.env = assignments;
+            }
         }
         if (layer.package) |package| {
             if (package.packager) |value| self.package.packager = try allocator.dupe(u8, value);
             if (package.extension) |value| self.package.extension = try allocator.dupe(u8, value);
+            if (package.carch) |value| self.package.carch = try allocator.dupe(u8, value);
+            if (package.compression_level) |value| self.package.compression_level = try compression.Preset.fromInt(value);
             if (package.options) |value| self.package.options = try duplicateStrings(allocator, value);
             if (package.strip_binaries) |value| self.package.strip_binaries = try duplicateStrings(allocator, value);
             if (package.strip_shared) |value| self.package.strip_shared = try duplicateStrings(allocator, value);
@@ -232,14 +281,23 @@ pub const ShellyBuildConfiguration = struct {
         }
     }
 
+    /// Architecture written into built packages: `package.carch` when set,
+    /// otherwise `build.carch`.
+    pub fn packageCarch(self: *const Self) []const u8 {
+        return self.package.carch orelse self.build.carch;
+    }
+
     fn validate(self: *const Self) !void {
         if (self.build.carch.len == 0 or self.build.chost.len == 0)
             return error.InvalidConfiguration;
+        if (self.package.carch) |carch| try validatePackageArchitecture(carch);
+        for (self.build.extra_path) |path| try process_runner.build_path.validateEntry(path);
         for (self.package.options) |option| {
             if (!isValidPackageOption(option)) return error.InvalidPackageOption;
         }
         if (!isValidPackageExtension(self.package.extension))
             return error.InvalidPackageExtension;
+        try @import("archive").validateCompression(self.package.extension, self.package.compression_level);
         if (self.package.sign_key) |key| {
             if (key.len == 0) return error.InvalidConfiguration;
         }
@@ -289,7 +347,7 @@ fn duplicateStrings(allocator: std.mem.Allocator, values: []const []const u8) ![
     return duplicated;
 }
 
-fn validateKnownKeys(allocator: std.mem.Allocator, content: []const u8) !void {
+fn validateKnownKeys(allocator: std.mem.Allocator, content: []const u8, diagnostic: ?*std.Io.Writer) !void {
     var parser = toml.Parser(toml.Table).init(allocator);
     defer parser.deinit();
     var parsed = parser.parseString(content) catch return error.InvalidConfiguration;
@@ -313,14 +371,75 @@ fn validateKnownKeys(allocator: std.mem.Allocator, content: []const u8) !void {
         var fields = table.iterator();
         while (fields.next()) |field| {
             if (!containsString(allowed, field.key_ptr.*)) return error.UnknownConfigurationKey;
+            if (std.mem.eql(u8, entry.key_ptr.*, "package") and std.mem.eql(u8, field.key_ptr.*, "compression_level")) {
+                const level = switch (field.value_ptr.*) {
+                    .integer => |value| value,
+                    else => return error.InvalidCompressionLevel,
+                };
+                _ = try compression.Preset.fromInt(level);
+            }
+            if (std.mem.eql(u8, entry.key_ptr.*, "build") and std.mem.eql(u8, field.key_ptr.*, "env")) {
+                const environment = switch (field.value_ptr.*) {
+                    .table => |value| value,
+                    else => {
+                        if (diagnostic) |writer| try writer.writeAll("build.env must be a table of string values.");
+                        return error.InvalidBuildEnvironment;
+                    },
+                };
+                var variables = environment.iterator();
+                while (variables.next()) |variable| {
+                    const name = variable.key_ptr.*;
+                    const value = switch (variable.value_ptr.*) {
+                        .string => |value| value,
+                        else => {
+                            try writeEnvironmentDiagnostic(diagnostic, name, "expected a string value");
+                            return error.InvalidBuildEnvironment;
+                        },
+                    };
+                    validateEnvironmentAssignment(.{ .name = name, .value = value }) catch |err| {
+                        try writeEnvironmentDiagnostic(diagnostic, name, environmentErrorReason(err));
+                        return err;
+                    };
+                }
+            }
         }
     }
 }
 
-const build_keys: []const []const u8 = &.{ "carch", "chost", "cppflags", "cflags", "cxxflags", "ldflags", "ltoflags", "makeflags", "check", "ccache", "distcc", "distcc_hosts" };
-const package_keys: []const []const u8 = &.{ "packager", "extension", "options", "strip_binaries", "strip_shared", "strip_static", "sign", "sign_key" };
+const build_keys: []const []const u8 = &.{ "carch", "chost", "cppflags", "cflags", "cxxflags", "ldflags", "ltoflags", "makeflags", "check", "ccache", "distcc", "distcc_hosts", "extra_path", "env" };
+const package_keys: []const []const u8 = &.{ "packager", "extension", "carch", "compression_level", "options", "strip_binaries", "strip_shared", "strip_static", "sign", "sign_key" };
 const destination_keys: []const []const u8 = &.{ "build", "packages", "sources", "logs" };
 const sandbox_keys: []const []const u8 = &.{ "enabled", "extra_read", "extra_write" };
+
+pub fn validateEnvironmentAssignment(assignment: EnvironmentAssignment) !void {
+    const name = assignment.name;
+    if (name.len == 0 or (!std.ascii.isAlphabetic(name[0]) and name[0] != '_'))
+        return error.InvalidBuildEnvironment;
+    for (name) |byte| {
+        if (!std.ascii.isAlphanumeric(byte) and byte != '_') return error.InvalidBuildEnvironment;
+    }
+    if (std.mem.indexOfScalar(u8, assignment.value, 0) != null) return error.InvalidBuildEnvironment;
+    if (containsString(&.{
+        "PATH",     "HOME",         "USER",              "LOGNAME", "SHELL",    "PWD",       "OLDPWD",
+        "CPPFLAGS", "CFLAGS",       "CXXFLAGS",          "LDFLAGS", "LTOFLAGS", "MAKEFLAGS", "CHOST",
+        "CARCH",    "DISTCC_HOSTS", "SOURCE_DATE_EPOCH", "ENV",     "BASHOPTS", "SHELLOPTS", "IFS",
+        "CDPATH",   "GCONV_PATH",   "LOCPATH",           "SRCDEST",
+    }, name)) return error.ReservedBuildEnvironmentVariable;
+    for ([_][]const u8{ "SHELLY_", "SUDO_", "DOAS_", "PKEXEC_", "XDG_", "DBUS_", "BASH_", "LD_", "DYLD_" }) |prefix| {
+        if (std.mem.startsWith(u8, name, prefix)) return error.ReservedBuildEnvironmentVariable;
+    }
+}
+
+pub fn environmentErrorReason(err: anyerror) []const u8 {
+    return switch (err) {
+        error.ReservedBuildEnvironmentVariable => "reserved for Shelly or process startup; use build.extra_path for PATH, destinations.sources for SRCDEST, and the dedicated build settings for compiler flags",
+        else => "names must match [A-Za-z_][A-Za-z0-9_]* and values must not contain NUL",
+    };
+}
+
+fn writeEnvironmentDiagnostic(writer: ?*std.Io.Writer, name: []const u8, reason: []const u8) !void {
+    if (writer) |output| try output.print("Invalid build.env variable '{f}': {s}.", .{ diagnostics.safe(name), reason });
+}
 
 fn containsString(values: []const []const u8, expected: []const u8) bool {
     for (values) |value| if (std.mem.eql(u8, value, expected)) return true;
@@ -329,6 +448,17 @@ fn containsString(values: []const []const u8, expected: []const u8) bool {
 
 fn isValidPackageOption(option: []const u8) bool {
     return containsString(&.{ "strip", "docs", "libtool", "staticlibs", "emptydirs", "zipman", "purge", "debug", "lto", "autodeps", "buildflags", "makeflags" }, option);
+}
+
+/// Mirrors makepkg's `arch` entry lint ([[:alnum:]_]+). The value becomes a
+/// file-name component, so anything else could break `name-ver-rel-arch` parsing
+/// or escape the package directory. `any` is reserved for packages that declare it.
+pub fn validatePackageArchitecture(architecture: []const u8) !void {
+    if (architecture.len == 0 or std.mem.eql(u8, architecture, "any"))
+        return error.InvalidPackageArchitecture;
+    for (architecture) |byte| {
+        if (!std.ascii.isAlphanumeric(byte) and byte != '_') return error.InvalidPackageArchitecture;
+    }
 }
 
 fn isValidPackageExtension(extension: []const u8) bool {
@@ -388,6 +518,71 @@ test "shellybuild comment-only sections do not override compiled defaults" {
     try expectOptionalUnset(config.destinations.packages);
     try expectOptionalUnset(config.destinations.sources);
     try expectOptionalUnset(config.destinations.logs);
+}
+
+test "shellybuild compression presets merge without changing omitted defaults" {
+    const allocator = std.testing.allocator;
+    const defaults = try ShellyBuildConfiguration.initFromBuffers(allocator, null, null);
+    defer defaults.deinit();
+    try std.testing.expect(defaults.package.compression_level == null);
+    const system = "[package]\ncompression_level = 2\n";
+    const inherited = try ShellyBuildConfiguration.initFromBuffers(allocator, system, "[package]\npackager = 'User'\n");
+    defer inherited.deinit();
+    try std.testing.expectEqual(compression.Preset.fast, inherited.package.compression_level.?);
+    for (1..6) |level| {
+        const user = try std.fmt.allocPrint(allocator, "[package]\ncompression_level = {d}\n", .{level});
+        defer allocator.free(user);
+        const config = try ShellyBuildConfiguration.initFromBuffers(allocator, system, user);
+        defer config.deinit();
+        try std.testing.expectEqual(level, @intFromEnum(config.package.compression_level.?));
+        try std.testing.expectEqualStrings(".pkg.tar.zst", config.package.extension);
+    }
+}
+
+test "shellybuild compression rejects invalid types ranges and unsupported formats" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "0", "6", "-1", "9223372036854775807", "3.0", "true", "'3'", "[]" }) |value| {
+        const content = try std.fmt.allocPrint(allocator, "[package]\ncompression_level = {s}\n", .{value});
+        defer allocator.free(content);
+        try std.testing.expectError(error.InvalidCompressionLevel, ShellyBuildConfiguration.initFromBuffers(allocator, content, null));
+    }
+    try std.testing.expectError(error.UnsupportedCompressionPresetFormat, ShellyBuildConfiguration.initFromBuffers(
+        allocator,
+        "[package]\nextension = '.pkg.tar.lz4'\ncompression_level = 3\n",
+        null,
+    ));
+}
+
+test "shellybuild package carch defaults to build carch and merges by layer" {
+    const allocator = std.testing.allocator;
+    const defaults = try ShellyBuildConfiguration.initFromBuffers(allocator, null, null);
+    defer defaults.deinit();
+    try expectOptionalUnset(defaults.package.carch);
+    try std.testing.expectEqualStrings("x86_64", defaults.packageCarch());
+
+    const system = "[package]\ncarch = 'x86_64_v3'\n";
+    const inherited = try ShellyBuildConfiguration.initFromBuffers(allocator, system, "[package]\npackager = 'User'\n");
+    defer inherited.deinit();
+    try std.testing.expectEqualStrings("x86_64", inherited.build.carch);
+    try std.testing.expectEqualStrings("x86_64_v3", inherited.packageCarch());
+
+    const overridden = try ShellyBuildConfiguration.initFromBuffers(allocator, system, "[package]\ncarch = 'x86_64_v4'\n");
+    defer overridden.deinit();
+    try std.testing.expectEqualStrings("x86_64_v4", overridden.packageCarch());
+
+    const custom_build = try ShellyBuildConfiguration.initFromBuffers(allocator, "[build]\ncarch = 'aarch64'\n", null);
+    defer custom_build.deinit();
+    try std.testing.expectEqualStrings("aarch64", custom_build.packageCarch());
+}
+
+test "shellybuild package carch rejects values unsafe for package file names" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "''", "'any'", "'x86-64'", "'x86_64/v3'", "'../x86_64'", "'x86_64 v3'", "'x86_64.v3'" }) |value| {
+        const content = try std.fmt.allocPrint(allocator, "[package]\ncarch = {s}\n", .{value});
+        defer allocator.free(content);
+        try std.testing.expectError(error.InvalidPackageArchitecture, ShellyBuildConfiguration.initFromBuffers(allocator, content, null));
+    }
+    try std.testing.expectError(error.InvalidConfiguration, ShellyBuildConfiguration.initFromBuffers(allocator, "[package]\ncarch = 3\n", null));
 }
 
 test "shellybuild merges system and user files field by field" {
@@ -565,4 +760,101 @@ test "shellybuild elevated path ignores the coordinator XDG directory" {
     const path = try resolveUserConfigurationPath(std.testing.allocator, std.testing.io, elevated_environ);
     defer std.testing.allocator.free(path);
     try std.testing.expectEqualStrings("/home/invoker/.config/shelly/shellybuild.conf", path);
+}
+
+test "shellybuild extra_path defaults and user replacement follow configuration precedence" {
+    const defaults = try ShellyBuildConfiguration.initFromBuffers(std.testing.allocator, null, null);
+    defer defaults.deinit();
+    try std.testing.expectEqual(@as(usize, 0), defaults.build.extra_path.len);
+    const system = "[build]\nextra_path = [\"/opt/system/bin\"]\ncflags = [\"-O3\"]\n";
+    const inherited = try ShellyBuildConfiguration.initFromBuffers(std.testing.allocator, system, "[build]\ncheck = false\n");
+    defer inherited.deinit();
+    try std.testing.expectEqualStrings("/opt/system/bin", inherited.build.extra_path[0]);
+    const replaced = try ShellyBuildConfiguration.initFromBuffers(std.testing.allocator, system, "[build]\nextra_path = [\"/opt/user/bin\", \"/opt/other/bin\"]\n");
+    defer replaced.deinit();
+    try std.testing.expectEqual(@as(usize, 2), replaced.build.extra_path.len);
+    try std.testing.expectEqualStrings("/opt/user/bin", replaced.build.extra_path[0]);
+    try std.testing.expectEqualStrings("-O3", replaced.build.cflags[0]);
+    const cleared = try ShellyBuildConfiguration.initFromBuffers(std.testing.allocator, system, "[build]\nextra_path = []\n");
+    defer cleared.deinit();
+    try std.testing.expectEqual(@as(usize, 0), cleared.build.extra_path.len);
+}
+
+test "shellybuild extra_path rejects relative empty colon and NUL entries" {
+    for ([_][]const u8{ "", "bin", "~/bin", "$HOME/bin", "/opt/bin:/usr/bin", "/opt/\\u0000bin" }) |entry| {
+        const content = try std.fmt.allocPrint(std.testing.allocator, "[build]\nextra_path = [\"{s}\"]\n", .{entry});
+        defer std.testing.allocator.free(content);
+        try std.testing.expectError(error.InvalidBuildPath, ShellyBuildConfiguration.initFromBuffers(std.testing.allocator, content, null));
+    }
+    try std.testing.expectError(error.InvalidConfiguration, ShellyBuildConfiguration.initFromBuffers(std.testing.allocator, "[build]\nextra_path = \"/opt/bin\"\n", null));
+}
+
+test "shellybuild env accepts literal strings and replaces the system table" {
+    const allocator = std.testing.allocator;
+    const defaults = try ShellyBuildConfiguration.initFromBuffers(allocator, null, null);
+    defer defaults.deinit();
+    try std.testing.expectEqual(@as(usize, 0), defaults.build.env.len);
+    const system = "[build]\nenv = { JAVA_HOME = '/opt/java', REMOVE_ME = 'system' }\ncflags = ['-O3']\n";
+    const inherited = try ShellyBuildConfiguration.initFromBuffers(allocator, system, "[build]\ncheck = false\n");
+    defer inherited.deinit();
+    try std.testing.expectEqual(@as(usize, 2), inherited.build.env.len);
+    const replaced = try ShellyBuildConfiguration.initFromBuffers(allocator, system,
+        \\[build.env]
+        \\JAVA_HOME = '/opt/user java'
+        \\LITERAL = '$HOME/~/$(touch should-not-run); "quoted"'
+        \\EMPTY = ''
+        \\LANG = 'C.UTF-8'
+        \\_custom2 = '∂'
+    );
+    defer replaced.deinit();
+    try std.testing.expectEqual(@as(usize, 5), replaced.build.env.len);
+    try std.testing.expectEqualStrings("-O3", replaced.build.cflags[0]);
+    var values = std.process.Environ.Map.init(allocator);
+    defer values.deinit();
+    for (replaced.build.env) |assignment| try values.put(assignment.name, assignment.value);
+    try std.testing.expect(values.get("REMOVE_ME") == null);
+    try std.testing.expectEqualStrings("/opt/user java", values.get("JAVA_HOME").?);
+    try std.testing.expectEqualStrings("$HOME/~/$(touch should-not-run); \"quoted\"", values.get("LITERAL").?);
+    try std.testing.expectEqualStrings("", values.get("EMPTY").?);
+    try std.testing.expectEqualStrings("C.UTF-8", values.get("LANG").?);
+    try std.testing.expectEqualStrings("∂", values.get("_custom2").?);
+    const cleared = try ShellyBuildConfiguration.initFromBuffers(allocator, system, "[build]\nenv = {}\n");
+    defer cleared.deinit();
+    try std.testing.expectEqual(@as(usize, 0), cleared.build.env.len);
+}
+
+test "shellybuild env rejects invalid tables names values and reserved variables" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{
+        "[build]\nenv = 'invalid'\n",
+        "[build]\nenv = []\n",
+        "[build.env]\nBAD = 42\n",
+        "[build.env]\nBAD = true\n",
+        "[build.env]\nBAD = {}\n",
+        "[build.env]\nBAD = []\n",
+        "[build.env]\n'' = 'bad'\n",
+        "[build.env]\n'1BAD' = 'bad'\n",
+        "[build.env]\n'BAD-NAME' = 'bad'\n",
+        "[build.env]\n'BAD=NAME' = 'bad'\n",
+        "[build.env]\n'∂' = 'bad'\n",
+        "[build.env]\nBAD = \"nul\\u0000value\"\n",
+    }) |content|
+        try std.testing.expectError(error.InvalidBuildEnvironment, ShellyBuildConfiguration.initFromBuffers(allocator, content, null));
+    for ([_][]const u8{
+        "PATH",                  "HOME",         "USER",              "LOGNAME",    "SHELL",           "PWD",                      "OLDPWD",
+        "CPPFLAGS",              "CFLAGS",       "CXXFLAGS",          "LDFLAGS",    "LTOFLAGS",        "MAKEFLAGS",                "CHOST",
+        "CARCH",                 "DISTCC_HOSTS", "SOURCE_DATE_EPOCH", "ENV",        "BASH_ENV",        "BASHOPTS",                 "SHELLOPTS",
+        "IFS",                   "CDPATH",       "GCONV_PATH",        "LOCPATH",    "LD_PRELOAD",      "LD_LIBRARY_PATH",          "LD_AUDIT",
+        "DYLD_INSERT_LIBRARIES", "SUDO_USER",    "DOAS_USER",         "PKEXEC_UID", "XDG_CONFIG_HOME", "DBUS_SESSION_BUS_ADDRESS", "SHELLY_ELEVATOR",
+        "SRCDEST",
+    }) |name| {
+        const content = try std.fmt.allocPrint(allocator, "[build.env]\n{s} = 'private-value'\n", .{name});
+        defer allocator.free(content);
+        var diagnostic: std.Io.Writer.Allocating = .init(allocator);
+        defer diagnostic.deinit();
+        try std.testing.expectError(error.ReservedBuildEnvironmentVariable, ShellyBuildConfiguration.initFromBuffersWithDiagnostic(allocator, content, null, &diagnostic.writer));
+        try std.testing.expect(std.mem.indexOf(u8, diagnostic.written(), name) != null);
+        try std.testing.expect(std.mem.indexOf(u8, diagnostic.written(), "private-value") == null);
+    }
+    try std.testing.expectError(error.UnknownConfigurationKey, ShellyBuildConfiguration.initFromBuffers(allocator, "[build]\nenvv = {}\n", null));
 }

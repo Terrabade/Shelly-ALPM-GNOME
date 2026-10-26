@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const HttpClient = @import("ShellyHttp");
 const bindings = @import("Shelly_Ui_Gtk");
 const gtk = bindings.gtk;
@@ -10,11 +11,19 @@ const gobject = bindings.gobject;
 const ShellyWindow = @import("shelly_window.zig").ShellyWindow;
 const runtime = @import("services/runtime.zig");
 const translations = @import("helpers/translations.zig");
+const deep_link = @import("helpers/deep_link.zig");
 const tray_service = @import("services/tray_service.zig");
-const options = @import("options");
+const features = @import("services/build_features.zig");
 const IconDownloadService = @import("services/icon_fetcher.zig").downloadIconsInBackground;
 
 var did_activate: bool = false;
+var requested_page: ?deep_link.PageTarget = null;
+var app_id_buffer: [deep_link.max_app_id_len + 1]u8 = undefined;
+var requested_app_id: ?[:0]const u8 = null;
+var app_path_buffer: [deep_link.max_file_path_len + 1]u8 = undefined;
+var requested_app_path: ?[:0]const u8 = null;
+var appimage_path_buffer: [deep_link.max_file_path_len + 1]u8 = undefined;
+var requested_appimage_path: ?[:0]const u8 = null;
 
 pub fn main(init: std.process.Init) void {
     runtime.io = init.io;
@@ -22,10 +31,10 @@ pub fn main(init: std.process.Init) void {
     HttpClient.setDefaultProxyEnvironment(init.environ_map);
 
     if (!translations.init()) {
-        std.log.warn("translations: failed to initialize gettext", .{});
+        std.log.warn("Could not initialize translations. Shelly may display untranslated text.", .{});
     }
-    if (!options.skip_background_services) {
-        IconDownloadService(std.heap.c_allocator, runtime.io);
+    if (features.builtWithBackgroundServices) {
+        IconDownloadService(std.heap.c_allocator, runtime.io, shellyIconsEnabled());
     }
 
     // Libadwaita port: AdwApplication initialises libadwaita and makes the UI
@@ -59,22 +68,81 @@ fn commandLine(
     cmdline: *gio.ApplicationCommandLine,
     _: ?*anyopaque,
 ) callconv(.c) c_int {
+    requested_page = null;
+    requested_app_id = null;
+    requested_app_path = null;
+    requested_appimage_path = null;
     var argc: c_int = 0;
     const argv = gio.ApplicationCommandLine.getArguments(cmdline, &argc);
+    const argc_usize = @as(usize, @intCast(argc));
     defer glib.strfreev(@ptrCast(argv));
 
     var i: usize = 1;
-    while (i < @as(usize, @intCast(argc))) : (i += 1) {
+    while (i < argc_usize) : (i += 1) {
         const arg = std.mem.span(argv[i]);
 
         if (std.mem.eql(u8, arg, "--tray-updates")) {
-            runtime.pending_navigate_updates = true;
+            requested_page = .updates;
+            continue;
         }
+
+        if (std.mem.eql(u8, arg, "--page")) {
+            if (i + 1 < argc_usize) {
+                i += 1;
+                requested_page =
+                    deep_link.parsePageTarget(std.mem.span(argv[i]));
+            } else {
+                std.log.warn("Option '--page' requires a page name. See 'shelly-ui --help' for usage.", .{});
+            }
+            continue;
+        }
+
+        if (deep_link.extractFlatpakAppId(arg, &app_id_buffer)) |id| {
+            requested_app_id = id;
+        }
+
+        if (deep_link.extractLocalFlatpakFile(arg, &app_path_buffer)) |app_path| {
+            requested_app_path = app_path;
+        }
+
+        if (deep_link.extractLocalAppImageFile(arg, &appimage_path_buffer)) |appimage_path| {
+            requested_appimage_path = appimage_path;
+        }
+    }
+
+    if (requested_app_path) |app_path| {
+        runtime.queueLocalFlatpakPath(app_path);
+    } else if (requested_appimage_path) |appimage_path| {
+        runtime.queueLocalAppImagePath(appimage_path);
+    } else if (requested_app_id) |id| {
+        runtime.queueFlatpakApp(id);
+    } else if (requested_page) |page| {
+        runtime.queuePage(page);
     }
 
     gio.Application.activate(app.as(gio.Application));
     gio.ApplicationCommandLine.setExitStatus(cmdline, 0);
     return 0;
+}
+
+fn dispatchPendingNavigation(window: *ShellyWindow) void {
+    const request = runtime.takePendingNavigation() orelse return;
+
+    const navigated = switch (request) {
+        .page => |target| window.navigateTo(target),
+        .flatpak_app => |app| window.openFlatpakApp(app.id()),
+        .local_flatpak_file => |file| window.openFlatpakLocalFile(file.path()),
+        .local_appimage_file => |file| window.openAppImageLocalFile(file.path()),
+    };
+
+    if (!navigated) {
+        std.log.warn("Could not open the requested page because it is disabled or unavailable. Enable the corresponding support in settings or choose another page.", .{});
+    }
+}
+
+fn shellyIconsEnabled() bool {
+    _ = runtime.setupConfig(std.heap.c_allocator) catch return true;
+    return runtime.shellyIconsEnabled();
 }
 
 fn tryStopTray(io: std.Io, alloc: std.mem.Allocator) void {
@@ -114,18 +182,13 @@ fn activate(app: *adw.Application, _: ?*anyopaque) callconv(.c) void {
 
     did_activate = true;
 
-    if (gtk.Application.getActiveWindow(gtk_app)) |window| {
-        gtk.Window.present(window);
-
-        if (runtime.pending_navigate_updates) {
-            runtime.pending_navigate_updates = false;
-            if (gobject.ext.cast(ShellyWindow, window)) |shelly_window| {
-                shelly_window.navigateToUpdates();
-            }
+    if (gtk.Application.getActiveWindow(gtk_app)) |gtk_window| {
+        if (gobject.ext.cast(ShellyWindow, gtk_window)) |window| {
+            dispatchPendingNavigation(window);
         }
+        gtk.Window.present(gtk_window);
         return;
     }
-
     const provider = gtk.CssProvider.new();
     gtk.CssProvider.loadFromResource(provider, "/com/shellyorg/shelly/style.css");
     gtk.StyleContext.addProviderForDisplay(
@@ -140,12 +203,12 @@ fn activate(app: *adw.Application, _: ?*anyopaque) callconv(.c) void {
     }
 
     _ = runtime.setupConfig(std.heap.c_allocator) catch |err| {
-        std.log.warn("settings: failed to load config service: {t}", .{err});
+        std.log.warn("Could not open the settings service. {0s}\n\nTechnical details: {1s}", .{ diagnostics.cause(err), @errorName(err) });
     };
 
     if (runtime.config) |svc| {
         const cfg = svc.get() catch |err| {
-            std.log.warn("settings: failed to get config: {t}", .{err});
+            std.log.warn("Could not load settings from the configured file. {0s}\n\nTechnical details: {1s}", .{ diagnostics.cause(err), @errorName(err) });
             return;
         };
 
@@ -159,18 +222,13 @@ fn activate(app: *adw.Application, _: ?*anyopaque) callconv(.c) void {
         }
     }
 
-    if (!options.skip_background_services) tryStartTray(runtime.io, std.heap.c_allocator);
+    if (features.builtWithBackgroundServices) tryStartTray(runtime.io, std.heap.c_allocator);
 
     setupGnomeThemePreference();
 
     const window = ShellyWindow.new(gtk_app);
-
-    if (runtime.pending_navigate_updates) {
-        runtime.pending_navigate_updates = false;
-        window.navigateToUpdates();
-    }
-
-    gtk.Window.present(gobject.ext.as(gtk.Window, window));
+    dispatchPendingNavigation(window);
+    gtk.Window.present(window.as(gtk.Window));
 }
 
 fn tryStartTray(io: std.Io, alloc: std.mem.Allocator) void {
@@ -200,7 +258,7 @@ fn setupGnomeThemePreference() void {
 
     if (prefer_dark) {
         const gtk_settings = gtk.Settings.getDefault() orelse {
-            std.debug.print("Failed to fetch GtkSettings layout.\n", .{});
+            std.debug.print("Could not read the desktop theme settings. Shelly will use the available theme defaults.\n", .{});
             return;
         };
         const base_object = @as(*gobject.Object, @ptrCast(@alignCast(gtk_settings)));
@@ -223,13 +281,16 @@ test {
     _ = @import("services/ui_config_resolver.zig");
     _ = @import("services/shelly_cli.zig");
     _ = @import("services/tray_service.zig");
+    _ = @import("helpers/a11y.zig");
     _ = @import("g_objects/appstream_app_object.zig");
     _ = @import("helpers/custom_ui_comps/carousel.zig");
     _ = @import("helpers/custom_ui_comps/carousel_indicator_dots.zig");
     _ = @import("pages/flatpak/flatpak_install_view.zig");
     _ = @import("helpers/ui_decode.zig");
     _ = @import("helpers/datetime.zig");
+    _ = @import("helpers/deep_link.zig");
     _ = @import("services/flathub_api.zig");
+    _ = @import("services/atoll_api.zig");
     _ = @import("models/aur_package.zig");
     _ = @import("g_objects/aur_package_object.zig");
     _ = @import("models/search_result.zig");

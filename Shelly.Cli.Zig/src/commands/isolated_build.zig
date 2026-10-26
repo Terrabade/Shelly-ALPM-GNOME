@@ -5,15 +5,67 @@
 //! bind mounted into the container.
 
 const std = @import("std");
+const diagnostics = @import("diagnostics");
+const PackageManager = @import("PackageManager");
+const build_root = PackageManager.Manager.bootstrap.build_root;
 
 pub const build_uid = "1000";
 pub const build_user = "shelly-build";
 pub const guest_source = "/build/source";
 pub const guest_artifacts = "/build/artifacts";
+
+/// Package identity retained from native backend validation. Filenames are kept
+/// separately from package names because archive naming is not an API.
+pub const ValidatedArtifact = struct {
+    package_name: []u8,
+    filename: []u8,
+
+    pub fn deinit(self: ValidatedArtifact, allocator: std.mem.Allocator) void {
+        allocator.free(self.package_name);
+        allocator.free(self.filename);
+    }
+};
+
+pub fn deinitValidatedArtifacts(allocator: std.mem.Allocator, artifacts: []ValidatedArtifact) void {
+    for (artifacts) |artifact| artifact.deinit(allocator);
+    allocator.free(artifacts);
+}
+
+pub const ExportedArtifact = struct {
+    package_name: []u8,
+    path: []u8,
+
+    pub fn deinit(self: ExportedArtifact, allocator: std.mem.Allocator) void {
+        allocator.free(self.package_name);
+        allocator.free(self.path);
+    }
+};
+
+pub fn deinitExportedArtifacts(allocator: std.mem.Allocator, artifacts: []ExportedArtifact) void {
+    for (artifacts) |artifact| artifact.deinit(allocator);
+    allocator.free(artifacts);
+}
 const guest_executable_relative = "usr/local/libexec/shelly/shelly";
 pub const guest_executable = "/" ++ guest_executable_relative;
+const source_keys_relative = "usr/local/libexec/shelly/source-keys.asc";
+pub const guest_source_keys = "/" ++ source_keys_relative;
 
 const operation_parent = "/var/lib/shelly/build-roots/v1/operations";
+
+const BootstrapOutputContext = struct {
+    operation: *const PackageManager.Operation,
+    stage: []const u8 = "build.isolation.bootstrap",
+
+    fn handle(data: ?*anyopaque, stream: PackageManager.process_runner.StreamKind, line: []const u8) void {
+        const self: *BootstrapOutputContext = @ptrCast(@alignCast(data.?));
+        self.operation.status(
+            if (stream == .stderr) .warning else .information,
+            line,
+            self.stage,
+            null,
+        );
+    }
+};
 
 pub const Root = struct {
     allocator: std.mem.Allocator,
@@ -26,13 +78,7 @@ pub const Root = struct {
     succeeded: bool = false,
 
     pub fn create(allocator: std.mem.Allocator, io: std.Io) !Root {
-        try std.Io.Dir.cwd().createDirPath(io, operation_parent);
-        try std.Io.Dir.cwd().setFilePermissions(
-            io,
-            operation_parent,
-            .fromMode(0o700),
-            .{},
-        );
+        try createPrivateDirectory(io, operation_parent);
 
         var random: [16]u8 = undefined;
         io.random(&random);
@@ -44,9 +90,8 @@ pub const Root = struct {
         );
         errdefer allocator.free(operation_path);
         try validateOperationPath(operation_path);
-        try std.Io.Dir.cwd().createDirPath(io, operation_path);
         errdefer std.Io.Dir.cwd().deleteTree(io, operation_path) catch {};
-        try std.Io.Dir.cwd().setFilePermissions(io, operation_path, .fromMode(0o700), .{});
+        try createPrivateDirectory(io, operation_path);
 
         const root_path = try std.fs.path.join(allocator, &.{ operation_path, "root" });
         errdefer allocator.free(root_path);
@@ -54,8 +99,16 @@ pub const Root = struct {
         errdefer allocator.free(source_path);
         const artifact_path = try std.fs.path.join(allocator, &.{ root_path, "build/artifacts" });
         errdefer allocator.free(artifact_path);
+        try createGuestLayout(allocator, io, root_path);
         try std.Io.Dir.cwd().createDirPath(io, source_path);
         try std.Io.Dir.cwd().createDirPath(io, artifact_path);
+        const marker_path = try std.fs.path.join(allocator, &.{ root_path, PackageManager.Manager.bootstrap.marker_name });
+        defer allocator.free(marker_path);
+        try std.Io.Dir.cwd().writeFile(io, .{
+            .sub_path = marker_path,
+            .data = "managed by shelly isolated build\n",
+            .flags = .{ .permissions = .fromMode(0o600) },
+        });
 
         return .{
             .allocator = allocator,
@@ -77,40 +130,93 @@ pub const Root = struct {
         self.* = undefined;
     }
 
-    /// Bootstraps a clean Arch root. pacstrap is restricted to provisioning;
-    /// the package build itself is always Shelly's native builder in nspawn.
-    pub fn bootstrap(self: *Root, extra_packages: []const []const u8) !void {
-        var argv: std.ArrayList([]const u8) = .empty;
-        defer argv.deinit(self.allocator);
-        try argv.appendSlice(self.allocator, &.{
-            "/usr/bin/pacstrap",
-            "-C",
-            "/etc/pacman.conf",
-            "-c",
+    /// Bootstraps a clean Arch root through Shelly's selected native backend. The
+    /// helper process is isolated in a private mount/PID namespace so package
+    /// scriptlets receive the standard virtual filesystems without introducing
+    /// mounts into the coordinator's namespace.
+    pub fn bootstrap(
+        self: *Root,
+        environ: std.process.Environ,
+        executable: []const u8,
+        extra_packages: []const []const u8,
+        config_path: ?[]const u8,
+        operation: *const PackageManager.Operation,
+    ) !void {
+        return self.bootstrapImpl(environ, executable, extra_packages, config_path, null, operation);
+    }
+
+    pub fn bootstrapPlanned(self: *Root, environ: std.process.Environ, executable: []const u8, config_path: ?[]const u8, plan: []const u8, operation: *const PackageManager.Operation) !void {
+        return self.bootstrapImpl(environ, executable, &.{}, config_path, plan, operation);
+    }
+
+    fn bootstrapImpl(self: *Root, environ: std.process.Environ, executable: []const u8, extra_packages: []const []const u8, config_path: ?[]const u8, plan: ?[]const u8, operation: *const PackageManager.Operation) !void {
+        try self.validateRuntimeAt(environ, operation, executable);
+        const Configuration = PackageManager.Manager.configuration.Configuration;
+        var config = try (if (config_path != null) &Configuration.parseStrict else &Configuration.parse)(
+            self.allocator,
+            self.io,
+            config_path orelse PackageManager.paths.config_file,
+        );
+        defer config.deinitialize();
+        if (plan) |bytes| {
+            var arena = std.heap.ArenaAllocator.init(self.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            const parsed = try std.json.parseFromSlice(PackageManager.Manager.build_plan.Plan, a, bytes, .{});
+            try parsed.value.validate(a);
+            const digest = try PackageManager.Manager.build_plan.configurationDigest(a, &config);
+            if (!std.mem.eql(u8, digest, parsed.value.configurationDigest)) return error.DependencyPlanMismatch;
+        }
+        const argv = try shellystrapArgumentsWithConfig(
+            self.allocator,
+            executable,
             self.root_path,
-            "base",
-            "base-devel",
-            "git",
-            "ca-certificates",
-        });
-        try argv.appendSlice(self.allocator, extra_packages);
-        try runInherited(self.io, argv.items);
+            extra_packages,
+            config_path,
+            config.gpg_directory,
+        );
+        defer self.allocator.free(argv);
+        var planned_arguments: std.ArrayList([]const u8) = .empty;
+        defer planned_arguments.deinit(self.allocator);
+        const plan_path = try std.fs.path.join(self.allocator, &.{ self.operation_path, "dependency-plan.json" });
+        defer self.allocator.free(plan_path);
+        if (plan) |bytes| {
+            try std.Io.Dir.cwd().writeFile(self.io, .{ .sub_path = plan_path, .data = bytes, .flags = .{ .permissions = .fromMode(0o600) } });
+            for (argv) |argument| {
+                if (std.mem.eql(u8, argument, "--")) try planned_arguments.appendSlice(self.allocator, &.{ "--dependency-plan", plan_path });
+                try planned_arguments.append(self.allocator, argument);
+            }
+        }
+        var output_context: BootstrapOutputContext = .{ .operation = operation };
+        const exit_code = try PackageManager.process_runner.runStreamingWithEnvironmentOperation(
+            self.allocator,
+            self.io,
+            environ,
+            if (plan != null) planned_arguments.items else argv,
+            null,
+            null,
+            .{ .function = BootstrapOutputContext.handle, .data = &output_context },
+            operation,
+        );
+        try checkIsolatedExit(operation, .bootstrap, exit_code);
+
+        const marker_path = try self.rootJoin(PackageManager.Manager.bootstrap.marker_name);
+        defer self.allocator.free(marker_path);
+        std.Io.Dir.cwd().deleteFile(self.io, marker_path) catch {};
 
         const root_argument = try std.fmt.allocPrint(self.allocator, "--root={s}", .{self.root_path});
         defer self.allocator.free(root_argument);
-        try runInherited(self.io, &.{
+        try self.runCancellable(environ, &.{
             "/usr/bin/systemd-sysusers",
             root_argument,
             "--inline",
             "g shelly-build 1000",
             "--inline",
             "u shelly-build 1000:1000 \"Shelly build user\" /home/shelly-build /usr/bin/bash",
-        });
+        }, operation, .setup);
 
         const home_path = try self.rootJoin("home/shelly-build");
         defer self.allocator.free(home_path);
-        const executable_directory = try self.rootJoin("usr/local/libexec/shelly");
-        defer self.allocator.free(executable_directory);
         const work_path = try self.rootJoin("build/work");
         defer self.allocator.free(work_path);
         const sources_path = try self.rootJoin("build/sources");
@@ -118,11 +224,11 @@ pub const Root = struct {
         const logs_path = try self.rootJoin("build/logs");
         defer self.allocator.free(logs_path);
         try std.Io.Dir.cwd().createDirPath(self.io, home_path);
-        try std.Io.Dir.cwd().createDirPath(self.io, executable_directory);
+        try self.prepareExecutableDirectory();
         try std.Io.Dir.cwd().createDirPath(self.io, work_path);
         try std.Io.Dir.cwd().createDirPath(self.io, sources_path);
         try std.Io.Dir.cwd().createDirPath(self.io, logs_path);
-        try runInherited(self.io, &.{
+        try self.runCancellable(environ, &.{
             "/usr/bin/chown",
             "-R",
             "--",
@@ -133,7 +239,7 @@ pub const Root = struct {
             sources_path,
             logs_path,
             home_path,
-        });
+        }, operation, .setup);
     }
 
     /// Materializes only byte-exact inputs accepted by the host review. This
@@ -141,19 +247,21 @@ pub const Root = struct {
     /// guest, and makes the guest digest check independent of copy timing.
     pub fn stageReviewedInputs(
         self: *Root,
+        environ: std.process.Environ,
         pkgbuild_contents: []const u8,
         reviewed_files: anytype,
+        operation: *const PackageManager.Operation,
     ) !void {
         try self.writeReviewedInput("PKGBUILD", pkgbuild_contents, 0o644);
         for (reviewed_files) |file|
             try self.writeReviewedInput(file.name, file.contents, file.permissions);
-        try runInherited(self.io, &.{
+        try self.runCancellable(environ, &.{
             "/usr/bin/chown",
             "-R",
             "--",
             "1000:1000",
             self.source_path,
-        });
+        }, operation, .setup);
     }
 
     fn writeReviewedInput(
@@ -167,46 +275,128 @@ pub const Root = struct {
         defer self.allocator.free(path);
         if (std.fs.path.dirname(path)) |parent|
             try std.Io.Dir.cwd().createDirPath(self.io, parent);
-        try std.Io.Dir.cwd().writeFile(self.io, .{
-            .sub_path = path,
-            .data = contents,
-            .flags = .{ .permissions = .fromMode(permissions & 0o777) },
+        const file = try std.Io.Dir.cwd().createFile(self.io, path, .{
+            .permissions = .fromMode(0o600),
         });
+        defer file.close(self.io);
+        try file.writeStreamingAll(self.io, contents);
+        // Permissions are part of the review digest and must survive umask.
+        try file.setPermissions(self.io, .fromMode(permissions & 0o777));
     }
 
     pub fn stageExecutable(self: *Root, executable: []const u8) !void {
         // nspawn mounts a fresh tmpfs on /run, so coordinator payloads staged
         // there would be hidden before execve(). /usr/local remains part of
         // the operation-scoped root and is not exported from the guest.
+        try self.prepareExecutableDirectory();
         const destination = try self.rootJoin(guest_executable_relative);
         defer self.allocator.free(destination);
         try std.Io.Dir.copyFile(.cwd(), executable, .cwd(), destination, self.io, .{});
         try std.Io.Dir.cwd().setFilePermissions(self.io, destination, .fromMode(0o755), .{});
     }
 
+    pub fn stageSourcePgpKeys(self: *Root, contents: []const u8) !void {
+        try self.prepareExecutableDirectory();
+        const path = try self.rootJoin(source_keys_relative);
+        defer self.allocator.free(path);
+        const file = try std.Io.Dir.cwd().createFile(self.io, path, .{ .permissions = .fromMode(0o600) });
+        defer file.close(self.io);
+        try file.writeStreamingAll(self.io, contents);
+        // Public keys are read by the unprivileged guest, outside the reviewed source tree.
+        try file.setPermissions(self.io, .fromMode(0o644));
+    }
+
+    /// Check the complete dynamic dependency closure inside the guest before
+    /// starting the build. Both worker modes use the staged executable.
+    pub fn validateRuntime(self: *Root, environ: std.process.Environ, operation: *const PackageManager.Operation) !void {
+        try self.validateRuntimeAt(environ, operation, null);
+    }
+
+    // Inspect host executables before provisioning, then repeat against guest
+    // libraries after staging.
+    fn validateRuntimeAt(self: *Root, environ: std.process.Environ, operation: *const PackageManager.Operation, host_executable: ?[]const u8) !void {
+        if (comptime !build_root.rlpm_only) return;
+        const Capture = struct {
+            operation: *const PackageManager.Operation,
+            missing: bool = false,
+            forbidden: bool = false,
+            static: bool = false,
+            fn line(data: ?*anyopaque, _: PackageManager.process_runner.StreamKind, value: []const u8) void {
+                const capture: *@This() = @ptrCast(@alignCast(data.?));
+                capture.static = capture.static or std.mem.indexOf(u8, value, "not a dynamic executable") != null or std.mem.indexOf(u8, value, "statically linked") != null;
+                const missing = std.mem.indexOf(u8, value, "not found") != null;
+                const forbidden = std.mem.indexOf(u8, value, "libalpm.so") != null;
+                capture.missing = capture.missing or missing;
+                capture.forbidden = capture.forbidden or forbidden;
+                if (missing or forbidden) capture.operation.status(.warning, value, "build.isolation.runtime", null);
+            }
+        };
+        const path = host_executable orelse guest_executable;
+        var capture: Capture = .{ .operation = operation };
+        const argv: []const []const u8 = if (host_executable != null)
+            &.{ "/usr/bin/env", "LC_ALL=C", "/usr/bin/ldd", path }
+        else
+            &.{ "/usr/bin/chroot", self.root_path, "/usr/bin/env", "LC_ALL=C", "/usr/bin/ldd", path };
+        const status = try PackageManager.process_runner.runStreamingWithEnvironmentOperation(
+            self.allocator,
+            self.io,
+            environ,
+            argv,
+            null,
+            null,
+            .{ .function = Capture.line, .data = &capture },
+            operation,
+        );
+        try operation.checkCancelled();
+        if (capture.forbidden) return error.UnexpectedBuildRuntimeDependency;
+        if (capture.missing or (status != 0 and !capture.static)) return error.MissingBuildRuntime;
+    }
+
     pub fn writeBuildConfiguration(self: *Root, contents: []const u8) !void {
         const path = try self.rootJoin("etc/shellybuild.conf");
         defer self.allocator.free(path);
-        try std.Io.Dir.cwd().writeFile(self.io, .{
-            .sub_path = path,
-            .data = contents,
-            .flags = .{ .permissions = .fromMode(0o644) },
+        const file = try std.Io.Dir.cwd().createFile(self.io, path, .{
+            .permissions = .fromMode(0o600),
         });
+        defer file.close(self.io);
+        try file.writeStreamingAll(self.io, contents);
+        // Creation modes are filtered by umask, and existing files retain
+        // their old mode. The unprivileged guest must be able to read both.
+        try file.setPermissions(self.io, .fromMode(0o644));
     }
 
-    pub fn run(self: *Root, child_arguments: []const []const u8) !void {
+    pub fn run(
+        self: *Root,
+        environ: std.process.Environ,
+        child_arguments: []const []const u8,
+        operation: *const PackageManager.Operation,
+    ) !void {
         const argv = try nspawnArguments(self.allocator, self.root_path, child_arguments);
         defer self.allocator.free(argv);
-        try runInherited(self.io, argv);
+        try self.runCancellable(environ, argv, operation, .build);
+    }
+
+    pub fn readPkgverChange(self: *Root, original: []const u8) !?[]u8 {
+        var directory = try std.Io.Dir.cwd().openDir(self.io, self.source_path, .{ .follow_symlinks = false });
+        defer directory.close(self.io);
+        const file = try directory.openFile(self.io, "PKGBUILD", .{ .follow_symlinks = false });
+        defer file.close(self.io);
+        if ((try file.stat(self.io)).kind != .file) return error.InvalidPkgbuildPath;
+        var buffer: [4096]u8 = undefined;
+        var reader = file.reader(self.io, &buffer);
+        const updated = try reader.interface.allocRemaining(self.allocator, .limited(32 * 1024 * 1024));
+        defer self.allocator.free(updated);
+        return PackageManager.builder.pkgver_update.extractChange(self.allocator, original, updated);
     }
 
     pub fn exportArtifacts(
         self: *Root,
         destination: []const u8,
+        validated_artifacts: []const ValidatedArtifact,
         overwrite: bool,
         owner_uid: std.Io.File.Uid,
         owner_gid: std.Io.File.Gid,
-    ) !usize {
+    ) ![]ExportedArtifact {
         var directory = try std.Io.Dir.cwd().openDir(self.io, self.artifact_path, .{ .iterate = true });
         defer directory.close(self.io);
         // The destination must already exist. Opening it once gives every
@@ -214,10 +404,12 @@ pub const Root = struct {
         // untrusted user concurrently changes the path name.
         var destination_directory = try std.Io.Dir.cwd().openDir(self.io, destination, .{ .iterate = true });
         defer destination_directory.close(self.io);
-        var iterator = directory.iterate();
-        var count: usize = 0;
-        while (try iterator.next(self.io)) |entry| {
-            if (entry.kind != .file or !isPackageArtifact(entry.name)) continue;
+        var exported: std.ArrayList(ExportedArtifact) = .empty;
+        errdefer {
+            for (exported.items) |artifact| artifact.deinit(self.allocator);
+            exported.deinit(self.allocator);
+        }
+        for (validated_artifacts) |validated| {
             var random: [16]u8 = undefined;
             self.io.random(&random);
             const suffix = std.fmt.bytesToHex(random, .lower);
@@ -228,15 +420,17 @@ pub const Root = struct {
                 .{suffix},
             );
 
-            var source = try directory.openFile(self.io, entry.name, .{});
-            defer source.close(self.io);
+            var source = try directory.openFile(self.io, validated.filename, .{});
+            var source_open = true;
+            defer if (source_open) source.close(self.io);
             var temporary = try destination_directory.createFile(self.io, temporary_name, .{
                 .exclusive = true,
                 .permissions = .fromMode(0o644),
             });
+            var temporary_open = true;
             var temporary_exists = true;
             defer {
-                temporary.close(self.io);
+                if (temporary_open) temporary.close(self.io);
                 if (temporary_exists)
                     destination_directory.deleteFile(self.io, temporary_name) catch {};
             }
@@ -247,19 +441,26 @@ pub const Root = struct {
             _ = try reader.interface.streamRemaining(&writer.interface);
             try writer.interface.flush();
             try temporary.setOwner(self.io, owner_uid, owner_gid);
+            // Both descriptors are closed before publication, so a returned
+            // artifact is guaranteed to be completely flushed and no guest
+            // archive remains open across the atomic rename.
+            temporary.close(self.io);
+            temporary_open = false;
+            source.close(self.io);
+            source_open = false;
 
             if (overwrite) {
                 try destination_directory.rename(
                     temporary_name,
                     destination_directory,
-                    entry.name,
+                    validated.filename,
                     self.io,
                 );
             } else {
                 destination_directory.renamePreserve(
                     temporary_name,
                     destination_directory,
-                    entry.name,
+                    validated.filename,
                     self.io,
                 ) catch |err| switch (err) {
                     error.PathAlreadyExists => return error.ArtifactAlreadyExists,
@@ -267,16 +468,189 @@ pub const Root = struct {
                 };
             }
             temporary_exists = false;
-            count += 1;
+            const package_name = try self.allocator.dupe(u8, validated.package_name);
+            errdefer self.allocator.free(package_name);
+            const path = try std.fs.path.join(self.allocator, &.{ destination, validated.filename });
+            try exported.append(self.allocator, .{
+                .package_name = package_name,
+                .path = path,
+            });
         }
-        if (count == 0) return error.NoBuildArtifacts;
-        return count;
+        if (exported.items.len == 0) return error.NoBuildArtifacts;
+        return exported.toOwnedSlice(self.allocator);
     }
 
     fn rootJoin(self: *Root, relative: []const u8) ![]u8 {
         return std.fs.path.join(self.allocator, &.{ self.root_path, relative });
     }
+
+    fn prepareExecutableDirectory(self: *Root) !void {
+        // Preserve existing bootstrap-managed ancestors, but make newly
+        // created ones traversable even under a restrictive coordinator umask.
+        for ([_][]const u8{ "usr", "usr/local", "usr/local/libexec", "usr/local/libexec/shelly" }, 0..) |relative, index| {
+            const path = try self.rootJoin(relative);
+            defer self.allocator.free(path);
+            const status = try std.Io.Dir.cwd().createDirPathStatus(self.io, path, .default_dir);
+            if (status == .created or index >= 2)
+                try std.Io.Dir.cwd().setFilePermissions(self.io, path, .fromMode(0o755), .{});
+        }
+    }
+
+    fn runCancellable(
+        self: *Root,
+        environ: std.process.Environ,
+        argv: []const []const u8,
+        operation: *const PackageManager.Operation,
+        stage: IsolatedStage,
+    ) !void {
+        var output_context: BootstrapOutputContext = .{ .operation = operation, .stage = stage.name() };
+        const exit_code = try PackageManager.process_runner.runStreamingWithEnvironmentOperation(
+            self.allocator,
+            self.io,
+            environ,
+            argv,
+            null,
+            null,
+            .{ .function = BootstrapOutputContext.handle, .data = &output_context },
+            operation,
+        );
+        try checkIsolatedExit(operation, stage, exit_code);
+    }
 };
+
+const IsolatedStage = enum {
+    bootstrap,
+    setup,
+    build,
+
+    fn name(self: IsolatedStage) []const u8 {
+        return switch (self) {
+            .bootstrap => "build.isolation.bootstrap",
+            .setup => "build.isolation.setup",
+            .build => "build.isolation.execute",
+        };
+    }
+};
+
+fn checkIsolatedExit(operation: *const PackageManager.Operation, stage: IsolatedStage, exit_code: u8) !void {
+    if (exit_code == 0) return;
+    const failure = switch (stage) {
+        .bootstrap => if (exit_code == PackageManager.Manager.bootstrap.plan_mismatch_exit_code) error.DependencyPlanMismatch else error.IsolatedBootstrapFailed,
+        .setup => error.IsolatedCommandFailed,
+        .build => error.IsolatedBuildFailed,
+    };
+    operation.reportError(failure, diagnostics.cause(failure), stage.name(), exit_code, false);
+    return failure;
+}
+
+test "isolated command failures preserve the stage and native exit code" {
+    const Capture = struct {
+        count: usize = 0,
+        failure: ?anyerror = null,
+        domain: ?[]const u8 = null,
+        code: ?i64 = null,
+
+        fn handle(data: ?*anyopaque, event: PackageManager.OperationEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(data.?));
+            if (event == .failure) {
+                self.count += 1;
+                self.failure = event.failure.err;
+                self.domain = event.failure.domain;
+                self.code = event.failure.native_code;
+            }
+        }
+    };
+    var context = PackageManager.OperationContext.init(std.testing.allocator, std.testing.io);
+    defer context.deinit();
+    var capture: Capture = .{};
+    _ = try context.subscribe(.{ .function = Capture.handle, .data = &capture });
+    var operation = context.begin(.{ .backend = .aur, .kind = .build, .subject = "fixture" });
+    defer operation.finish(.failed);
+    try checkIsolatedExit(&operation, .build, 0);
+    try std.testing.expectEqual(@as(usize, 0), capture.count);
+    try std.testing.expectError(error.IsolatedBuildFailed, checkIsolatedExit(&operation, .build, 23));
+    try std.testing.expectEqual(error.IsolatedBuildFailed, capture.failure.?);
+    try std.testing.expectEqualStrings("build.isolation.execute", capture.domain.?);
+    try std.testing.expectEqual(@as(i64, 23), capture.code.?);
+    try std.testing.expectError(error.IsolatedBootstrapFailed, checkIsolatedExit(&operation, .bootstrap, 7));
+    try std.testing.expectEqualStrings("build.isolation.bootstrap", capture.domain.?);
+    try std.testing.expectEqual(@as(i64, 7), capture.code.?);
+    try std.testing.expectError(error.DependencyPlanMismatch, checkIsolatedExit(&operation, .bootstrap, PackageManager.Manager.bootstrap.plan_mismatch_exit_code));
+    try std.testing.expectError(error.IsolatedCommandFailed, checkIsolatedExit(&operation, .setup, 2));
+    try std.testing.expectEqualStrings("build.isolation.setup", capture.domain.?);
+    try std.testing.expectEqual(@as(i64, 2), capture.code.?);
+}
+
+fn createPrivateDirectory(io: std.Io, path: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(io, path);
+    try std.Io.Dir.cwd().setFilePermissions(io, path, .fromMode(0o700), .{});
+}
+
+fn createGuestLayout(allocator: std.mem.Allocator, io: std.Io, root_path: []const u8) !void {
+    // Only guest traversal directories are public. Their enclosing host
+    // operation directory remains 0700, and build leaf ownership is set later.
+    try std.Io.Dir.cwd().createDirPath(io, root_path);
+    try std.Io.Dir.cwd().setFilePermissions(io, root_path, .fromMode(0o755), .{});
+    const build_path = try std.fs.path.join(allocator, &.{ root_path, "build" });
+    defer allocator.free(build_path);
+    try std.Io.Dir.cwd().createDirPath(io, build_path);
+    try std.Io.Dir.cwd().setFilePermissions(io, build_path, .fromMode(0o755), .{});
+}
+
+/// Constructs the re-exec boundary used instead of pacstrap. All returned
+/// strings are borrowed; only the slice itself is owned by the caller.
+pub fn shellystrapArguments(
+    allocator: std.mem.Allocator,
+    executable: []const u8,
+    root_path: []const u8,
+    extra_packages: []const []const u8,
+) ![]const []const u8 {
+    return shellystrapArgumentsWithConfig(allocator, executable, root_path, extra_packages, null, PackageManager.paths.keyring);
+}
+
+pub fn shellystrapArgumentsWithConfig(
+    allocator: std.mem.Allocator,
+    executable: []const u8,
+    root_path: []const u8,
+    extra_packages: []const []const u8,
+    config_path: ?[]const u8,
+    gpg_directory: []const u8,
+) ![]const []const u8 {
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(allocator);
+    try argv.appendSlice(allocator, &.{
+        "/usr/bin/unshare",
+        "--fork",
+        "--pid",
+        "--mount",
+        "--mount-proc",
+        "--propagation",
+        "private",
+        "--kill-child=KILL",
+        "--forward-signals",
+        executable,
+        PackageManager.Manager.bootstrap.wrapper_argument,
+        "--backend",
+        @tagName(PackageManager.Manager.defaultBackend()),
+        "--root",
+        root_path,
+        "--config",
+        config_path orelse PackageManager.paths.config_file,
+        "--gpgdir",
+        gpg_directory,
+        "--",
+    });
+    const packages_start = argv.items.len;
+    try argv.appendSlice(allocator, build_root.packages);
+    // Reviewed recipe dependencies can already be part of the bootstrap
+    // profile. Submit each exact target once; retain repository qualifiers and
+    // version constraints for the backend to validate.
+    for (extra_packages) |package| {
+        if (!containsArgument(argv.items[packages_start..], package))
+            try argv.append(allocator, package);
+    }
+    return argv.toOwnedSlice(allocator);
+}
 
 pub fn nspawnArguments(
     allocator: std.mem.Allocator,
@@ -342,19 +716,65 @@ pub fn isPackageArtifact(name: []const u8) bool {
     return true;
 }
 
-fn runInherited(io: std.Io, argv: []const []const u8) !void {
-    var child = try std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .inherit,
-        .stdout = .inherit,
-        .stderr = .inherit,
-    });
-    errdefer child.kill(io);
-    const term = try child.wait(io);
-    switch (term) {
-        .exited => |code| if (code != 0) return error.IsolatedCommandFailed,
-        else => return error.IsolatedCommandFailed,
+test "shellystrap invocation uses a private cancellable namespace and native helper" {
+    const root_path = "/var/lib/shelly/build-roots/v1/operations/0123456789abcdef0123456789abcdef/root";
+    const original = PackageManager.Manager.defaultBackend();
+    defer PackageManager.Manager.setDefaultBackend(original) catch unreachable;
+    for ([_]PackageManager.Manager.Backend{ .libalpm, .rlpm }) |backend| {
+        if (!backend.available()) {
+            try std.testing.expectError(error.BackendUnavailable, PackageManager.Manager.setDefaultBackend(backend));
+            continue;
+        }
+        try PackageManager.Manager.setDefaultBackend(backend);
+        const argv = try shellystrapArguments(
+            std.testing.allocator,
+            "/usr/bin/shelly",
+            root_path,
+            &.{ "cmake", "ninja" },
+        );
+        defer std.testing.allocator.free(argv);
+
+        try std.testing.expectEqualStrings("/usr/bin/unshare", argv[0]);
+        try std.testing.expect(containsArgument(argv, "--mount"));
+        try std.testing.expect(containsArgument(argv, "--pid"));
+        try std.testing.expect(containsArgument(argv, "--mount-proc"));
+        try std.testing.expect(containsArgument(argv, @tagName(backend)));
+        try std.testing.expect(containsArgument(argv, "private"));
+        try std.testing.expect(containsArgument(argv, "--kill-child=KILL"));
+        try std.testing.expect(containsArgument(argv, "--forward-signals"));
+        try std.testing.expect(containsArgument(argv, PackageManager.Manager.bootstrap.wrapper_argument));
+        try std.testing.expect(containsArgument(argv, root_path));
+        try std.testing.expectEqual(PackageManager.Manager.libalpm_enabled, containsArgument(argv, "base-devel"));
+        if (comptime build_root.rlpm_only) {
+            try std.testing.expect(!containsArgument(argv, "base"));
+            try std.testing.expect(!containsArgument(argv, "pacman"));
+            try std.testing.expect(!containsArgument(argv, "archlinux-keyring"));
+            for ([_][]const u8{ "gcc", "systemd", "gnupg", "libarchive", "curl", "sqlite" }) |name|
+                try std.testing.expect(containsArgument(argv, name));
+        }
+        try std.testing.expect(containsArgument(argv, "cmake"));
+        try std.testing.expect(containsArgument(argv, "ninja"));
+        try std.testing.expect(!containsArgument(argv, "/usr/bin/pacstrap"));
     }
+}
+
+test "shellystrap merges overlapping recipe dependencies without dropping target constraints" {
+    const argv = try shellystrapArguments(
+        std.testing.allocator,
+        "/usr/bin/shelly",
+        "/var/lib/shelly/build-roots/v1/operations/fixture/root",
+        &.{ "git", "pkgconf", "gettext", "ca-certificates", "cmake", "cmake", "git>=2", "testing/git" },
+    );
+    defer std.testing.allocator.free(argv);
+    const packages = for (argv, 0..) |argument, index| {
+        if (std.mem.eql(u8, argument, "--")) break argv[index + 1 ..];
+    } else unreachable;
+    for (packages, 0..) |package, index|
+        try std.testing.expect(!containsArgument(packages[0..index], package));
+    for (build_root.packages) |package|
+        try std.testing.expect(containsArgument(packages, package));
+    for ([_][]const u8{ "git", "pkgconf", "gettext", "ca-certificates", "cmake", "git>=2", "testing/git" }) |package|
+        try std.testing.expect(containsArgument(packages, package));
 }
 
 test "nspawn invocation is unprivileged namespaced and contains no host binds" {
@@ -388,6 +808,35 @@ test "operation paths are restricted to random children of the managed parent" {
     try std.testing.expectError(error.InvalidIsolationPath, validateOperationPath("/var/lib/shelly/build-roots/v1/operations/../host"));
 }
 
+test "isolated pkgver guest transport rejects unrelated edits and symlinks" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const source_path = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(source_path);
+    var root: Root = .{
+        .allocator = allocator,
+        .io = io,
+        .operation_path = source_path,
+        .root_path = source_path,
+        .source_path = source_path,
+        .artifact_path = source_path,
+    };
+    const original = "pkgname=demo\npkgver=1\npkgrel=7\narch=('any')\npackage() { :; }\n";
+    const updated = try PackageManager.builder.pkgver_update.render(allocator, original, "r2.gabc");
+    defer allocator.free(updated);
+    try temporary.dir.writeFile(io, .{ .sub_path = "PKGBUILD", .data = updated });
+    const version = (try root.readPkgverChange(original)).?;
+    defer allocator.free(version);
+    try std.testing.expectEqualStrings("r2.gabc", version);
+    try temporary.dir.writeFile(io, .{ .sub_path = "PKGBUILD", .data = original ++ "# unrelated edit\n" });
+    try std.testing.expectError(error.ReviewedPkgbuildChanged, root.readPkgverChange(original));
+    try temporary.dir.deleteFile(io, "PKGBUILD");
+    try temporary.dir.symLink(io, "/etc/passwd", "PKGBUILD", .{});
+    try std.testing.expectError(error.SymLinkLoop, root.readPkgverChange(original));
+}
+
 test "reviewed input paths cannot escape the staged source root" {
     try validateReviewedInputPath("patches/fix.patch");
     try validateReviewedInputPath("patches/../fix.patch");
@@ -414,20 +863,320 @@ test "reviewed inputs are materialized with exact bytes and permissions" {
         .artifact_path = unused,
     };
 
-    try root.writeReviewedInput("patches/fix.patch", "reviewed\n", 0o750);
-    const contents = try temporary.dir.readFileAlloc(io, "patches/fix.patch", allocator, .limited(1024));
-    defer allocator.free(contents);
-    try std.testing.expectEqualStrings("reviewed\n", contents);
-    const stat = try temporary.dir.statFile(io, "patches/fix.patch", .{ .follow_symlinks = false });
-    try std.testing.expectEqual(@as(u32, 0o750), stat.permissions.toMode() & 0o777);
+    for ([_]u32{ 0o600, 0o640, 0o644, 0o660, 0o664, 0o750, 0o770 }) |mode| {
+        const name = try std.fmt.allocPrint(allocator, "patches/mode-{o}.patch", .{mode});
+        defer allocator.free(name);
+        try root.writeReviewedInput(name, "reviewed\x00\xff\n", mode);
+        try expectStagedInput(temporary.dir, name, "reviewed\x00\xff\n", mode);
+    }
+    try temporary.dir.writeFile(io, .{ .sub_path = "overwrite.patch", .data = "old longer contents\n" });
+    try temporary.dir.setFilePermissions(io, "overwrite.patch", .fromMode(0o770), .{});
+    try root.writeReviewedInput("overwrite.patch", "short\n", 0o640);
+    try expectStagedInput(temporary.dir, "overwrite.patch", "short\n", 0o640);
+    try root.writeReviewedInput("overwrite.patch", "group writable\n", 0o660);
+    try expectStagedInput(temporary.dir, "overwrite.patch", "group writable\n", 0o660);
     try std.testing.expectError(
         error.FileNotFound,
         temporary.dir.statFile(io, "unreviewed.cache", .{ .follow_symlinks = false }),
     );
 }
 
+fn expectStagedInput(directory: std.Io.Dir, name: []const u8, expected: []const u8, mode: u32) !void {
+    const contents = try directory.readFileAlloc(std.testing.io, name, std.testing.allocator, .limited(1024));
+    defer std.testing.allocator.free(contents);
+    try std.testing.expectEqualStrings(expected, contents);
+    const stat = try directory.statFile(std.testing.io, name, .{ .follow_symlinks = false });
+    try std.testing.expectEqual(mode, stat.permissions.toMode() & 0o777);
+}
+
+test "staged reviewed inputs preserve the host digest and reject real changes" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var host = std.testing.tmpDir(.{});
+    defer host.cleanup();
+    var guest = std.testing.tmpDir(.{});
+    defer guest.cleanup();
+    const host_path = try host.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(host_path);
+    const guest_path = try guest.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(guest_path);
+    const guest_pkgbuild = try std.fs.path.join(allocator, &.{ guest_path, "PKGBUILD" });
+    defer allocator.free(guest_pkgbuild);
+    const content =
+        \\pkgname=staged-review
+        \\pkgver=1
+        \\pkgrel=1
+        \\arch=('any')
+        \\source=('related.txt')
+        \\sha256sums=('SKIP')
+        \\package() { :; }
+    ;
+    try host.dir.writeFile(io, .{ .sub_path = "PKGBUILD", .data = content });
+    try host.dir.writeFile(io, .{ .sub_path = "related.txt", .data = "reviewed\n" });
+    try host.dir.setFilePermissions(io, "related.txt", .fromMode(0o660), .{});
+    var host_build = try (PackageManager.pkgbuild.Parser{ .allocator = allocator, .io = io }).parser_content(content, host_path);
+    defer host_build.deinit(allocator);
+    var review = try PackageManager.builder.preparePkgbuildReview(allocator, io, host_path, content, &.{host_build});
+    defer review.deinit();
+    try std.testing.expectEqual(@as(usize, 1), review.reviewed_files.len);
+    try std.testing.expectEqual(@as(u32, 0o660), review.reviewed_files[0].permissions);
+
+    var unused: [0]u8 = .{};
+    var root: Root = .{
+        .allocator = allocator,
+        .io = io,
+        .operation_path = &unused,
+        .root_path = &unused,
+        .source_path = guest_path,
+        .artifact_path = &unused,
+    };
+    try root.writeReviewedInput("PKGBUILD", content, 0o644);
+    for (review.reviewed_files) |file|
+        try root.writeReviewedInput(file.name, file.contents, file.permissions);
+
+    const staged_content = try guest.dir.readFileAlloc(io, "PKGBUILD", allocator, .limited(1024));
+    defer allocator.free(staged_content);
+    var guest_build = try (PackageManager.pkgbuild.Parser{ .allocator = allocator, .io = io }).parser_content(staged_content, guest_path);
+    defer guest_build.deinit(allocator);
+    var guest_review = try PackageManager.builder.preparePkgbuildReview(allocator, io, guest_path, staged_content, &.{guest_build});
+    defer guest_review.deinit();
+    try std.testing.expectEqualSlices(u8, &review.digest, &guest_review.digest);
+    try review.verifyCurrent(allocator, io, guest_pkgbuild, guest_path);
+
+    try guest.dir.writeFile(io, .{ .sub_path = "related.txt", .data = "changed\n" });
+    try std.testing.expectError(error.ReviewedPkgbuildChanged, review.verifyCurrent(allocator, io, guest_pkgbuild, guest_path));
+    try guest.dir.writeFile(io, .{ .sub_path = "related.txt", .data = "reviewed\n" });
+    try review.verifyCurrent(allocator, io, guest_pkgbuild, guest_path);
+    try guest.dir.setFilePermissions(io, "related.txt", .fromMode(0o640), .{});
+    try std.testing.expectError(error.ReviewedPkgbuildChanged, review.verifyCurrent(allocator, io, guest_pkgbuild, guest_path));
+    try guest.dir.setFilePermissions(io, "related.txt", .fromMode(0o660), .{});
+    try review.verifyCurrent(allocator, io, guest_pkgbuild, guest_path);
+    try guest.dir.writeFile(io, .{ .sub_path = "PKGBUILD", .data = content ++ "\n# changed\n" });
+    try std.testing.expectError(error.ReviewedPkgbuildChanged, review.verifyCurrent(allocator, io, guest_pkgbuild, guest_path));
+}
+
+// Uses the same private-boundary and guest-layout helpers as Root.create,
+// without requiring access to the system operation parent.
+fn permissionTestRoot(parent: []const u8) !Root {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const operations = try std.fs.path.join(allocator, &.{ parent, "operations" });
+    defer allocator.free(operations);
+    try createPrivateDirectory(io, operations);
+    const operation = try std.fs.path.join(allocator, &.{ operations, "test" });
+    errdefer allocator.free(operation);
+    try createPrivateDirectory(io, operation);
+    const root = try std.fs.path.join(allocator, &.{ operation, "root" });
+    errdefer allocator.free(root);
+    try createGuestLayout(allocator, io, root);
+    const source = try std.fs.path.join(allocator, &.{ root, "build/source" });
+    errdefer allocator.free(source);
+    try std.Io.Dir.cwd().createDirPath(io, source);
+    const artifacts = try std.fs.path.join(allocator, &.{ root, "build/artifacts" });
+    errdefer allocator.free(artifacts);
+    try std.Io.Dir.cwd().createDirPath(io, artifacts);
+    return .{
+        .allocator = allocator,
+        .io = io,
+        .operation_path = operation,
+        .root_path = root,
+        .source_path = source,
+        .artifact_path = artifacts,
+    };
+}
+
+fn expectMode(path: []const u8, mode: u32) !void {
+    const stat = try std.Io.Dir.cwd().statFile(std.testing.io, path, .{});
+    try std.testing.expectEqual(mode, stat.permissions.toMode() & 0o7777);
+}
+
+test "isolated guest traversal permissions survive restrictive umasks" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const parent = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(parent);
+    var root = try permissionTestRoot(parent);
+    defer root.deinit();
+    const executable_contents = "#!/bin/sh\nexit 0\n";
+    try temporary.dir.writeFile(io, .{ .sub_path = "builder", .data = executable_contents });
+    const executable_path = try temporary.dir.realPathFileAlloc(io, "builder", allocator);
+    defer allocator.free(executable_path);
+    try root.stageExecutable(executable_path);
+    var guest = try std.Io.Dir.cwd().openDir(io, root.root_path, .{});
+    defer guest.close(io);
+    try expectStagedInput(guest, guest_executable_relative, executable_contents, 0o755);
+    try root.writeReviewedInput("nested/reviewed.txt", "reviewed bytes\n", 0o660);
+
+    for ([_][]const u8{ "", "build", "usr", "usr/local", "usr/local/libexec", "usr/local/libexec/shelly" }) |relative| {
+        const path = try root.rootJoin(relative);
+        defer allocator.free(path);
+        try expectMode(path, 0o755);
+    }
+    try expectMode(root.operation_path, 0o700);
+    try expectMode(std.fs.path.dirname(root.operation_path).?, 0o700);
+
+    // Repair owned traversal paths without recursively changing reviewed files
+    // or changing the existing bootstrap-managed ancestors.
+    for ([_][]const u8{ "", "build", "usr/local/libexec", "usr/local/libexec/shelly" }) |relative| {
+        const path = try root.rootJoin(relative);
+        defer allocator.free(path);
+        try std.Io.Dir.cwd().setFilePermissions(io, path, .fromMode(0o700), .{});
+    }
+    const usr_path = try root.rootJoin("usr");
+    defer allocator.free(usr_path);
+    try std.Io.Dir.cwd().setFilePermissions(io, usr_path, .fromMode(0o2755), .{});
+    const local_path = try root.rootJoin("usr/local");
+    defer allocator.free(local_path);
+    try std.Io.Dir.cwd().setFilePermissions(io, local_path, .fromMode(0o2755), .{});
+    try createGuestLayout(allocator, io, root.root_path);
+    try root.prepareExecutableDirectory();
+    for ([_][]const u8{ "", "build", "usr/local/libexec", "usr/local/libexec/shelly" }) |relative| {
+        const path = try root.rootJoin(relative);
+        defer allocator.free(path);
+        try expectMode(path, 0o755);
+    }
+    try expectMode(usr_path, 0o2755);
+    try expectMode(local_path, 0o2755);
+    try expectMode(root.operation_path, 0o700);
+    try expectMode(std.fs.path.dirname(root.operation_path).?, 0o700);
+    var source = try std.Io.Dir.cwd().openDir(io, root.source_path, .{});
+    defer source.close(io);
+    try expectStagedInput(source, "nested/reviewed.txt", "reviewed bytes\n", 0o660);
+}
+
+test "isolated configuration permissions survive restrictive umasks and replacement" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const parent = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(parent);
+    var root = try permissionTestRoot(parent);
+    defer root.deinit();
+    var directory = try std.Io.Dir.cwd().openDir(io, root.root_path, .{});
+    defer directory.close(io);
+    try directory.createDirPath(io, "etc");
+    const configuration = "[sandbox]\nenabled = false\n";
+    try root.writeBuildConfiguration(configuration);
+    try expectStagedInput(directory, "etc/shellybuild.conf", configuration, 0o644);
+    try directory.setFilePermissions(io, "etc/shellybuild.conf", .fromMode(0o600), .{});
+    const replacement = "[build]\ncheck = false\n";
+    try root.writeBuildConfiguration(replacement);
+    try expectStagedInput(directory, "etc/shellybuild.conf", replacement, 0o644);
+}
+
+test "isolated public source key bundle is readable under restrictive umasks" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const path = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(path);
+    var unused: [0]u8 = .{};
+    var root: Root = .{
+        .allocator = allocator,
+        .io = io,
+        .operation_path = &unused,
+        .root_path = path,
+        .source_path = &unused,
+        .artifact_path = &unused,
+    };
+    try temporary.dir.createDirPath(io, "usr/local/libexec/shelly");
+    const keys = @embedFile("fixtures/source-pgp/public.asc");
+    try root.stageSourcePgpKeys(keys);
+    try expectStagedInput(temporary.dir, source_keys_relative, keys, 0o644);
+}
+
 test "artifact export accepts package archives but not detached signatures" {
     try std.testing.expect(isPackageArtifact("demo-1-1-any.pkg.tar.zst"));
     try std.testing.expect(!isPackageArtifact("demo-1-1-any.pkg.tar.zst.sig"));
     try std.testing.expect(!isPackageArtifact("build.log"));
+}
+
+test "artifact export returns validated package names and exact final absolute paths" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    try temporary.dir.createDirPath(io, "guest");
+    try temporary.dir.createDirPath(io, "destination");
+    try temporary.dir.writeFile(io, .{
+        .sub_path = "guest/demo-1-1-any.pkg.tar.zst",
+        .data = "archive bytes",
+    });
+    const root_path = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root_path);
+    const artifact_path = try temporary.dir.realPathFileAlloc(io, "guest", allocator);
+    defer allocator.free(artifact_path);
+    const destination = try temporary.dir.realPathFileAlloc(io, "destination", allocator);
+    defer allocator.free(destination);
+    var root: Root = .{
+        .allocator = allocator,
+        .io = io,
+        .operation_path = root_path,
+        .root_path = root_path,
+        .source_path = root_path,
+        .artifact_path = artifact_path,
+    };
+    const validated = [_]ValidatedArtifact{.{
+        .package_name = @constCast("demo"),
+        .filename = @constCast("demo-1-1-any.pkg.tar.zst"),
+    }};
+    const exported = try root.exportArtifacts(
+        destination,
+        &validated,
+        false,
+        @intCast(std.os.linux.geteuid()),
+        @intCast(std.os.linux.getegid()),
+    );
+    defer deinitExportedArtifacts(allocator, exported);
+    try std.testing.expectEqual(@as(usize, 1), exported.len);
+    try std.testing.expectEqualStrings("demo", exported[0].package_name);
+    const expected = try std.fs.path.join(allocator, &.{ destination, "demo-1-1-any.pkg.tar.zst" });
+    defer allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, exported[0].path);
+    const contents = try temporary.dir.readFileAlloc(
+        io,
+        "destination/demo-1-1-any.pkg.tar.zst",
+        allocator,
+        .limited(1024),
+    );
+    defer allocator.free(contents);
+    try std.testing.expectEqualStrings("archive bytes", contents);
+}
+
+test "failed or cancelled isolated roots remove their complete operation directory" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    try temporary.dir.createDirPath(io, "operation/root/build/artifacts");
+    const operation_path = try temporary.dir.realPathFileAlloc(io, "operation", allocator);
+    const root_path = try temporary.dir.realPathFileAlloc(io, "operation/root", allocator);
+    const source_path = try std.fs.path.join(allocator, &.{ root_path, "build/source" });
+    const artifact_path = try temporary.dir.realPathFileAlloc(io, "operation/root/build/artifacts", allocator);
+    var root: Root = .{
+        .allocator = allocator,
+        .io = io,
+        .operation_path = operation_path,
+        .root_path = root_path,
+        .source_path = source_path,
+        .artifact_path = artifact_path,
+        .succeeded = false,
+    };
+    root.deinit();
+    try std.testing.expectError(
+        error.FileNotFound,
+        temporary.dir.access(io, "operation", .{}),
+    );
+}
+
+test "shellystrap forwards the selected native configuration and keyring" {
+    const args = try shellystrapArgumentsWithConfig(std.testing.allocator, "/usr/bin/shelly", "/target", &.{}, "/custom/shelly.conf", "/custom/gnupg");
+    defer std.testing.allocator.free(args);
+    try std.testing.expect(containsArgument(args, "/custom/shelly.conf"));
+    try std.testing.expect(containsArgument(args, "/custom/gnupg"));
+    try std.testing.expect(!containsArgument(args, PackageManager.paths.config_file));
 }

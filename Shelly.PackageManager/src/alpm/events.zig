@@ -1,5 +1,7 @@
 const std = @import("std");
-const bindings = @import("bindings.zig");
+const bindings = struct {
+    pub const libalpm = @import("types.zig");
+};
 const c = bindings.libalpm;
 const operation_api = @import("operation_context");
 
@@ -11,9 +13,20 @@ pub const ProgressArgs = struct {
     current: c_ulong,
 };
 
+/// Observation only; does not attach an operation or change confirmation policy.
+pub const DownloadUpdate = struct {
+    name: []const u8,
+    operation_id: ?operation_api.OperationId = null,
+    state: enum { batch_start, started, progress, retry, completed, unchanged, failed },
+    bytes: u64 = 0,
+    total: ?u64 = null,
+    resuming: bool = false,
+};
+
 pub const QuestionArgs = struct {
     question: ?[]const u8,
     question_type: c_int,
+    arguments: []const []const u8 = &.{},
     options: []const []const u8,
     response: ?c_int = null,
     provider_options: ?[]const ProviderOption = null,
@@ -28,11 +41,14 @@ pub const ProviderOption = struct {
 
 pub const ErrorArgs = struct {
     message: []const u8,
+    native_code: ?i64 = null,
 };
 
 pub const InformationalArgs = struct {
     event_type: bindings.libalpm.EventType,
     message: []const u8,
+    package_name: ?[]const u8 = null,
+    code: ?[]const u8 = null,
 };
 
 pub const ScriptletArgs = struct {
@@ -40,6 +56,7 @@ pub const ScriptletArgs = struct {
 };
 
 pub const HookArgs = struct {
+    name: ?[]const u8 = null,
     description: ?[]const u8,
     position: c_ulong,
     total: c_ulong,
@@ -85,6 +102,8 @@ pub const QuestionResponse = struct {
 };
 
 pub const Dispatcher = struct {
+    operationEvents: std.ArrayList(Handler(operation_api.Event).T),
+    downloads: std.ArrayList(Handler(DownloadUpdate).T),
     progress: std.ArrayList(Handler(ProgressArgs).T),
     question: std.ArrayList(Handler(QuestionArgs).T),
     errorEvents: std.ArrayList(Handler(ErrorArgs).T),
@@ -107,6 +126,8 @@ pub const Dispatcher = struct {
 
     pub fn init(allocator: std.mem.Allocator) Dispatcher {
         return .{
+            .operationEvents = .empty,
+            .downloads = .empty,
             .allocator = allocator,
             .progress = .empty,
             .question = .empty,
@@ -128,6 +149,8 @@ pub const Dispatcher = struct {
     }
 
     pub fn deinit(self: *Dispatcher) void {
+        self.operationEvents.deinit(self.allocator);
+        self.downloads.deinit(self.allocator);
         if (self.common_question_response) |*response| response.deinit(self.allocator);
         self.progress.deinit(self.allocator);
         self.question.deinit(self.allocator);
@@ -142,6 +165,31 @@ pub const Dispatcher = struct {
 
     pub fn setOperation(self: *Dispatcher, operation: ?*operation_api.Operation) void {
         self.operation = operation;
+    }
+
+    /// Observe native operation output without supplying a question handler or
+    /// changing transaction confirmation and optional-dependency selection.
+    pub fn addOperationHandler(self: *Dispatcher, handler: Handler(operation_api.Event).T) !usize {
+        try self.operationEvents.append(self.allocator, handler);
+        return self.operationEvents.items.len - 1;
+    }
+
+    pub fn removeOperationHandler(self: *Dispatcher, index: usize) void {
+        if (index < self.operationEvents.items.len) _ = self.operationEvents.swapRemove(index);
+    }
+
+    pub fn forwardOperationEvent(data: ?*anyopaque, event: operation_api.Event) void {
+        const self: *Dispatcher = @ptrCast(@alignCast(data.?));
+        self.dispatch(operation_api.Event, &self.operationEvents, event);
+    }
+
+    pub fn addDownloadHandler(self: *Dispatcher, handler: Handler(DownloadUpdate).T) !usize {
+        try self.downloads.append(self.allocator, handler);
+        return self.downloads.items.len - 1;
+    }
+
+    pub fn notifyDownload(self: *Dispatcher, update: DownloadUpdate) void {
+        self.dispatch(DownloadUpdate, &self.downloads, update);
     }
 
     pub fn addProgressHandler(self: *Dispatcher, handler: Handler(ProgressArgs).T) !usize {
@@ -319,12 +367,14 @@ pub const Dispatcher = struct {
                 const common_kind = commonQuestionKind(args);
                 var answer = operation.ask(.{
                     .kind = common_kind,
+                    .purpose = commonQuestionPurpose(args),
                     .prompt = args.question orelse "Continue?",
+                    .arguments = args.arguments,
                     .options = common_options,
                     .dependency_name = args.dependency_name,
                 }) catch |err| {
                     if (err == error.Cancelled) return .{ .answer = 0 };
-                    operation.reportError(err, "Failed to obtain an ALPM question response", "alpm", args.question_type, false);
+                    operation.reportError(err, "Could not obtain an answer to the package confirmation. Run the operation with an interactive confirmation interface.", "alpm", args.question_type, false);
                     return .{};
                 };
 
@@ -397,23 +447,35 @@ pub const Dispatcher = struct {
                     error.AlpmOperationFailed,
                     message orelse context,
                     "alpm",
-                    null,
+                    args.native_code,
                     true,
                 );
             } else {
-                operation.reportError(error.AlpmOperationFailed, args.message, "alpm", null, false);
+                operation.reportError(error.AlpmOperationFailed, args.message, "alpm", args.native_code, false);
             }
         }
         self.dispatch(ErrorArgs, &self.errorEvents, args);
     }
 
+    /// Deliver an error already published by the native operation adapter
+    /// without publishing a second operation failure with a generic code.
+    pub fn notifyErrorHandlers(self: *Dispatcher, args: ErrorArgs) void {
+        _ = self.error_generation.fetchAdd(1, .monotonic);
+        self.dispatch(ErrorArgs, &self.errorEvents, args);
+    }
+
     pub fn raiseInformational(self: *Dispatcher, args: InformationalArgs) void {
-        if (self.operation) |operation| operation.status(.information, args.message, "alpm.information", @intFromEnum(args.event_type));
+        if (self.operation) |operation| operation.packageStatus(.information, args.message, args.code orelse "alpm.information", @intFromEnum(args.event_type), args.package_name);
         self.dispatch(InformationalArgs, &self.informational, args);
     }
 
     pub fn raiseScriptlet(self: *Dispatcher, args: ScriptletArgs) void {
         if (self.operation) |operation| operation.status(.information, args.line, "alpm.scriptlet", null);
+        self.notifyScriptletHandlers(args);
+    }
+
+    /// The RLPM adapter already publishes the shared operation event.
+    pub fn notifyScriptletHandlers(self: *Dispatcher, args: ScriptletArgs) void {
         self.dispatch(ScriptletArgs, &self.scriptlet, args);
     }
 
@@ -425,6 +487,10 @@ pub const Dispatcher = struct {
             .percentage = if (args.total == 0) 100 else @as(f64, @floatFromInt(args.position)) * 100.0 / @as(f64, @floatFromInt(args.total)),
             .message = args.description,
         });
+        self.notifyHookHandlers(args);
+    }
+
+    pub fn notifyHookHandlers(self: *Dispatcher, args: HookArgs) void {
         self.dispatch(HookArgs, &self.hook, args);
     }
 
@@ -520,6 +586,20 @@ fn mapCommonQuestionResponse(
             .package => |pkg| .{ .pkg = pkg },
             .default, .deferred => null,
         },
+    };
+}
+
+fn commonQuestionPurpose(args: QuestionArgs) operation_api.QuestionPurpose {
+    const question_type = if (args.question_type < 0)
+        bindings.libalpm.QuestionType.unknown
+    else
+        bindings.libalpm.QuestionType.fromQuestionType(
+            @intCast(args.question_type),
+        );
+
+    return switch (question_type) {
+        .conflict_package => .package_conflict,
+        else => .generic,
     };
 }
 

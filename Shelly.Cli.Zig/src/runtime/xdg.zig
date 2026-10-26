@@ -1,5 +1,7 @@
 const std = @import("std");
+const user_account = @import("PackageManager").user_account;
 const runtime = @import("context.zig");
+const elevation = @import("elevation.zig");
 
 pub fn configHome(context: *const runtime.RuntimeContext) ![]const u8 {
     return resolve(context, "XDG_CONFIG_HOME", &.{".config"});
@@ -32,6 +34,21 @@ pub fn shellyCache(context: *const runtime.RuntimeContext, parts: []const []cons
     return std.fs.path.join(context.allocator, path_parts.items);
 }
 
+/// Native update previews keep copies of the package databases here. A root
+/// run uses root's own cache, so it never leaves root-owned files in the
+/// invoking user's cache that a later unprivileged preview cannot replace.
+pub fn previewDatabase(context: *const runtime.RuntimeContext) ![]const u8 {
+    return previewDatabaseFor(context, elevation.isRoot());
+}
+
+fn previewDatabaseFor(context: *const runtime.RuntimeContext, as_root: bool) ![]const u8 {
+    if (!as_root) return shellyCache(context, &.{"db"});
+    const account = (try user_account.byUid(context.allocator, 0)) orelse return error.HomeNotConfigured;
+    defer account.deinit(context.allocator);
+    if (account.home.len == 0) return error.HomeNotConfigured;
+    return std.fs.path.join(context.allocator, &.{ account.home, ".cache", "Shelly", "db" });
+}
+
 pub fn shellyData(context: *const runtime.RuntimeContext, parts: []const []const u8) ![]const u8 {
     var path_parts: std.ArrayList([]const u8) = .empty;
     try path_parts.appendSlice(context.allocator, &.{ try dataHome(context), "Shelly" });
@@ -58,54 +75,95 @@ fn resolve(
 fn invokingUserHome(context: *const runtime.RuntimeContext) ![]const u8 {
     if (getEnv(context, "SUDO_USER")) |user| {
         if (user.len > 0 and !std.mem.eql(u8, user, "root")) {
-            if (try homeFromPasswd(context, user, null)) |home| return home;
+            if (try homeFromAccount(context, user, null)) |home| return home;
         }
     }
     if (getEnv(context, "DOAS_USER")) |user| {
         if (user.len > 0 and !std.mem.eql(u8, user, "root")) {
-            if (try homeFromPasswd(context, user, null)) |home| return home;
+            if (try homeFromAccount(context, user, null)) |home| return home;
         }
     }
     if (getEnv(context, "PKEXEC_UID")) |uid| {
         if (uid.len > 0) {
-            if (try homeFromPasswd(context, null, uid)) |home| return home;
+            if (try homeFromAccount(context, null, uid)) |home| return home;
         }
     }
     return getEnv(context, "HOME") orelse return error.HomeNotConfigured;
 }
 
-fn homeFromPasswd(
+fn homeFromAccount(
     context: *const runtime.RuntimeContext,
     wanted_user: ?[]const u8,
     wanted_uid: ?[]const u8,
 ) !?[]const u8 {
-    const contents = std.Io.Dir.cwd().readFileAlloc(
-        context.io,
-        "/etc/passwd",
-        context.allocator,
-        .limited(1024 * 1024),
-    ) catch return null;
-    var lines = std.mem.splitScalar(u8, contents, '\n');
-    while (lines.next()) |line| {
-        var fields = std.mem.splitScalar(u8, line, ':');
-        const user = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        const uid = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        const home = fields.next() orelse continue;
-        if (wanted_user) |expected| {
-            if (std.mem.eql(u8, user, expected)) return home;
-        } else if (wanted_uid) |expected| {
-            if (std.mem.eql(u8, uid, expected)) return home;
-        }
-    }
-    return null;
+    const account = if (wanted_user) |user|
+        try user_account.byName(context.allocator, user)
+    else if (wanted_uid) |uid|
+        try user_account.byUidText(context.allocator, uid)
+    else
+        null;
+    const found = account orelse return null;
+    defer found.deinit(context.allocator);
+    if (found.home.len == 0) return null;
+    return try context.allocator.dupe(u8, found.home);
 }
 
 pub fn getEnv(context: *const runtime.RuntimeContext, key: []const u8) ?[]const u8 {
     const environment = context.environment orelse return null;
     return environment.get(key);
+}
+
+test "NSS XDG paths resolve the caller before falling back to HOME" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const account = (try user_account.byName(allocator, "nobody")) orelse return error.SkipZigTest;
+    const uid = try std.fmt.allocPrint(allocator, "{d}", .{account.uid});
+    var stdout = std.Io.Writer.Discarding.init(&.{});
+    var stderr = std.Io.Writer.Discarding.init(&.{});
+    for ([_][]const u8{ "SUDO_USER", "DOAS_USER", "PKEXEC_UID" }) |marker| {
+        var environment = std.process.Environ.Map.init(allocator);
+        try environment.put(marker, if (std.mem.eql(u8, marker, "PKEXEC_UID")) uid else account.username);
+        const context: runtime.RuntimeContext = .{
+            .allocator = allocator,
+            .io = std.testing.io,
+            .stdout = &stdout.writer,
+            .stderr = &stderr.writer,
+            .environment = &environment,
+        };
+        try std.testing.expectEqualStrings(account.home, try invokingUserHome(&context));
+        try environment.put("HOME", "/root");
+        try std.testing.expectEqualStrings(account.home, try invokingUserHome(&context));
+        try std.testing.expectEqualStrings(try std.fs.path.join(allocator, &.{ account.home, ".cache" }), try cacheHome(&context));
+        try environment.put("XDG_CACHE_HOME", "/tmp/custom-cache");
+        try std.testing.expectEqualStrings("/tmp/custom-cache", try cacheHome(&context));
+    }
+}
+
+test "root previews keep their databases out of the invoking user's cache" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const account = (try user_account.byName(allocator, "nobody")) orelse return error.SkipZigTest;
+    const root = (try user_account.byUid(allocator, 0)) orelse return error.SkipZigTest;
+    var environment = std.process.Environ.Map.init(allocator);
+    try environment.put("SUDO_USER", account.username);
+    try environment.put("HOME", "/home/tester");
+    try environment.put("XDG_CACHE_HOME", "/tmp/custom-cache");
+    var stdout = std.Io.Writer.Discarding.init(&.{});
+    var stderr = std.Io.Writer.Discarding.init(&.{});
+    const context: runtime.RuntimeContext = .{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+        .environment = &environment,
+    };
+    try std.testing.expectEqualStrings("/tmp/custom-cache/Shelly/db", try previewDatabaseFor(&context, false));
+    try std.testing.expectEqualStrings(
+        try std.fs.path.join(allocator, &.{ root.home, ".cache", "Shelly", "db" }),
+        try previewDatabaseFor(&context, true),
+    );
 }
 
 test "uses absolute XDG paths and rejects relative overrides" {

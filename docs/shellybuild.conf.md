@@ -14,7 +14,7 @@ The later user layer overrides individual system fields without replacing unrela
 
 Both files, every section, and every individual key are optional. The packaged `/etc/shellybuild.conf` is a commented template and therefore changes no compiled default until an administrator uncomments a value. An empty or comment-only file is valid.
 
-Malformed TOML, unknown sections or keys, unsupported package option names, invalid package extensions, and non-absolute destination paths fail before PKGBUILD execution. Missing files are allowed. The format does not evaluate shell code or source fragments.
+Malformed TOML, unknown sections or keys, unsupported package option names, invalid package extensions, invalid package architectures, and non-absolute destination paths fail before PKGBUILD execution. Missing files are allowed. The format does not evaluate shell code or source fragments.
 
 ## Schema
 
@@ -34,10 +34,16 @@ check = true
 ccache = false
 distcc = false
 distcc_hosts = []
+extra_path = []
+env = {}
 
 [package]
 packager = "Unknown Packager"
 extension = ".pkg.tar.zst"
+# Optional; omission labels packages with build.carch.
+# carch = "x86_64_v3"
+# Optional; omission preserves the compression library's defaults.
+# compression_level = 3
 options = ["strip", "docs", "emptydirs", "zipman", "purge", "lto"]
 strip_binaries = ["--strip-all"]
 strip_shared = ["--strip-debug"]
@@ -59,7 +65,222 @@ extra_write = []
 
 Flag and host arrays are joined with spaces only when a child process is launched. `ccache` prepends `/usr/lib/ccache/bin` to `PATH`; `distcc` prepends `/usr/lib/distcc/bin` and exports `DISTCC_HOSTS`. Shelly does not install those tools.
 
-Supported package options are `strip`, `docs`, `libtool`, `staticlibs`, `emptydirs`, `zipman`, `purge`, `debug`, `lto`, `autodeps`, `buildflags`, and `makeflags`. Content tidy operations remain limited as described in the [makepkg compatibility gaps](makepkg-compatibility-gaps.md).
+Supported package options are `strip`, `docs`, `libtool`, `staticlibs`, `emptydirs`, `zipman`, `purge`, `debug`, `lto`, `autodeps`, `buildflags`, and `makeflags`. Content tidy operations currently implement stripping and standard purge cleanup.
+
+`purge` is enabled by default. Before writing package metadata and the archive, it removes `usr/info/dir` and `usr/share/info/dir` relative to `$pkgdir`, plus non-directory entries named `.packlist` or matching `*.pod` anywhere in that package tree. Directories are preserved, and cleanup does not follow symlinks. PKGBUILD `options=('!purge')` disables this cleanup, including when set inside a split-package function. Purge runs independently of `strip`, so `!strip` does not disable it. Custom `PURGE_TARGETS` and makepkg shell configuration are not read by the native builder. This behavior also applies to `shelly build --isolated`.
+
+## Source cache
+
+`destinations.sources` selects the native builder's source cache. When unset,
+the cache defaults to the directory containing PKGBUILD (the AUR checkout for
+AUR installs). Shelly exports this resolved path as `SRCDEST` during PKGBUILD
+metadata/SRCINFO evaluation and every lifecycle step, including child tools.
+An inherited `SRCDEST` is replaced with this path; configure
+`destinations.sources` rather than `build.env.SRCDEST`.
+
+With the sandbox enabled, Shelly creates the configured source cache if needed
+and grants it read/write access, including when it is outside the build tree.
+Packages downloading auxiliary sources should use `SRCDEST` consistently when
+building and packaging instead of assuming those files are in `$PWD`.
+
+## Package architecture
+
+`package.carch` is Shelly's equivalent of makepkg's `PACKAGECARCH` (as carried
+by CachyOS pacman). It changes only the architecture recorded in the assembled
+package: the `.PKGINFO` `arch` field, the `.BUILDINFO` `pkgarch` field, and the
+`name-version-release-arch` file name.
+
+Everything that happens before packaging keeps using `build.carch`: `$CARCH`
+inside the PKGBUILD, `source_*`/`depends_*` and other architecture-suffixed
+arrays, and the `arch=()` support check. A PKGBUILD that declares
+`arch=('x86_64')` therefore builds unchanged and, with
+`carch = "x86_64_v3"`, produces `name-1-1-x86_64_v3.pkg.tar.zst`. Packages
+declaring `arch=('any')` remain `any`. Omitting the key everywhere labels
+packages with `build.carch`, which is the previous behavior.
+
+The value must match `[A-Za-z0-9_]+` and must not be `any`, because it becomes
+part of the package file name. User configuration overrides system
+configuration, and the resolved value is carried into `--isolated` builds.
+Installing such a package requires the package manager to accept that
+architecture. Pacman builds with extended-architecture detection, such as
+CachyOS's, and Shelly's own backends expand `Architecture = auto` to the
+supported x86-64-v2/v3/v4 levels. Stock Arch pacman resolves `auto` to
+`uname -m` (`x86_64`) only, so there the level has to be listed explicitly,
+for example `Architecture = x86_64 x86_64_v3`.
+
+## Package compression
+
+Set `package.compression_level` to an integer from 1 to 5, or override it for
+one invocation with `shelly build --compression-level 3`. The CLI overrides the
+user configuration, which overrides the system configuration. Omitting the
+setting everywhere preserves the compression library's defaults; level 3 is a
+recommended explicit starting point, not a new default.
+
+The package extension selects the format. Each preset maps to a backend level:
+
+| Level | Preset | zstd | gzip | xz | bzip2 | Intended tradeoff |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| 1 | Conservative | 1 | 1 | 0 | 1 | Low resource use; larger packages |
+| 2 | Fast | 3 | 3 | 3 | 3 | Quick builds; reasonable compression |
+| 3 | Balanced | 6 | 6 | 6 | 5 | Recommended starting point |
+| 4 | Compact | 12 | 8 | 7 | 7 | Favor smaller packages |
+| 5 | Maximum | 19 | 9 | 9 | 9 | Highest compression effort offered |
+
+All presets are lossless. Reliability here means reducing memory pressure and
+build time. Higher levels generally spend more CPU time and memory to reduce
+size, but smaller output is not guaranteed for every input. xz and zstd request
+one compression worker for explicit presets. zstd presets use standard levels
+through 19, without enabling long-distance matching or ultra levels.
+
+Presets support `.pkg.tar.zst`, `.pkg.tar.gz`, `.pkg.tar.xz`, and `.pkg.tar.bz2`.
+Invalid levels, incompatible extensions, and unsupported native filter options
+fail before PKGBUILD execution. Shelly does not silently substitute another
+preset or fall back to an external compression program for explicit presets.
+
+The setting applies to every selected split package, elevated build children,
+and `--isolated` builds. Configuration also applies to native AUR builds. The
+build log records the preset, format, and backend level. Compression changes
+the outer archive only; package contents, `.MTREE` generation, and signing
+policy retain their existing behavior. Signatures cover the completed archive.
+
+### Measured tradeoffs
+
+A local benchmark on 2026-10-01 exercised all 20 preset/format combinations
+on three payloads: 3,511,405 bytes of concatenated PackageManager Zig sources,
+1,287,528 bytes from `/usr/bin/bash` and `/usr/bin/python3`, and a 1,260,092-byte
+gzip stream of those two payloads. Each payload was archived as one file.
+The harness called the production `Writer.initWithOptions` and `Reader.init`
+directly, built with Zig 0.16.0 ReleaseFast. Compression includes archive
+creation; decoding reads every entry to completion without writing extracted
+files. Times are medians of three runs including process startup; peak RSS
+is the maximum across those runs. Results are illustrative, not memory caps
+or promises for other packages.
+
+Environment: x86_64 AMD Ryzen 9 9950X3D, libarchive 3.8.9, zstd 1.5.7,
+xz/liblzma 5.8.4, zlib 1.3.1.zlib-ng, and bzip2 1.0.8.
+
+Zstandard results for the source payload:
+
+| Preset | Archive KiB | Compression ms | Decode ms | Compression peak MiB |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 662.2 | 7.0 | 3.2 | 14.7 |
+| 2 | 608.1 | 7.9 | 3.3 | 15.4 |
+| 3 | 518.9 | 19.2 | 3.1 | 17.2 |
+| 4 | 480.8 | 60.9 | 3.1 | 55.2 |
+| 5 | 426.7 | 547.9 | 3.5 | 96.0 |
+
+Level 3 reduced this archive by about 22% versus level 1. Level 5 reduced it
+further, with substantially more compression time and memory. For the gzip
+payload, zstd levels 1–4 produced identical archive sizes; extra effort did
+not improve that result. These measurements support retaining the five
+mappings and recommending level 3 as an explicit starting point.
+
+[Full measurements for all formats and payloads](benchmarks/compression-presets.csv)
+include compression and decoding times and peak RSS for each case.
+
+## Build executable search path
+
+Every native build starts with a deterministic PATH rather than inheriting the
+terminal or elevated coordinator's PATH. This includes GUI AUR builds, standalone
+`shelly build`, `--sync-deps` children, metadata review, and `.SRCINFO` generation.
+The baseline is:
+
+```text
+/usr/bin/core_perl:/usr/bin/vendor_perl:/usr/bin/site_perl:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+```
+
+Unavailable baseline directories are omitted as the non-root build user. Add
+custom toolchains explicitly in the system or user configuration:
+
+```toml
+[build]
+extra_path = ["/home/your-user/.cargo/bin", "/opt/toolchain/bin"]
+```
+
+Search order is ccache, distcc (when enabled), `extra_path` in the listed order,
+then the baseline. Duplicate components are removed, keeping the first entry.
+This lets configured tools override system tools while preserving compiler
+wrappers. The user array replaces the system array; `extra_path = []` clears
+inherited additions, and omitting the key retains them.
+
+Entries must be absolute directory paths without colons or NUL characters.
+There is no shell, `$HOME`, or `~` expansion. Each configured directory must
+exist and be searchable by the build user; an unusable entry fails before
+PKGBUILD execution and reports its path. Validation happens after dropping
+privileges. Configured directories never become the root coordinator's PATH.
+PKGBUILD functions can still change PATH themselves.
+
+**Migration:** tools previously found only through your terminal's PATH must
+now be listed in `build.extra_path`. External makepkg and clean-chroot commands
+retain their existing environment policy.
+
+For `shelly build --isolated`, additions are carried into the guest configuration
+and must also exist inside that root. Host directories are not mounted merely
+because they appear in `extra_path`. When Landlock sandboxing is enabled, PATH
+configuration does not grant filesystem access: custom toolchains outside the
+existing allow-list also need appropriate `sandbox.extra_read` / `extra_write`
+entries, including any toolchain libraries and caches they require.
+
+## Build environment variables
+
+Set literal environment variables for the unprivileged native builder:
+
+```toml
+[build]
+env = { JAVA_HOME = "/usr/lib/jvm/default", CARGO_HOME = "/home/your-user/.cargo" }
+```
+
+The equivalent table syntax is useful for several assignments:
+
+```toml
+[build.env]
+JAVA_HOME = "/usr/lib/jvm/default"
+CARGO_HOME = "/home/your-user/.cargo"
+LANG = "C.UTF-8"
+```
+
+The default is an empty table. Omitting `env` in the user configuration keeps
+the system table; specifying it replaces the entire system table. Set
+`env = {}` under `[build]` to clear configured assignments. Clearing this table
+does not remove variables already present in the build user's environment.
+An empty string explicitly sets an empty value; it does not unset the variable.
+
+Names must match `[A-Za-z_][A-Za-z0-9_]*`. Values must be strings without NUL
+characters. Spaces, quotes, Unicode, dollar signs, and shell expressions remain
+literal: there is no `$HOME`, `~`, variable, or command expansion.
+
+Assignments override the build user's inherited values, including `LANG`,
+`LANGUAGE`, and `LC_*`. Without an explicit locale assignment, elevated native
+builds preserve the caller's recognized locale variables and default missing
+or empty `LANG` to `C.UTF-8`. An explicit `LC_ALL=C` remains effective.
+
+Shelly applies these assignments after dropping privileges, before metadata
+review, `.SRCINFO` generation, and PKGBUILD lifecycle execution. They also reach
+the native builder's subprocess helpers. They never become the elevated
+coordinator's environment or command-line arguments. Shelly's own HTTP proxy
+configuration is separately defined. External makepkg and clean-chroot commands
+retain their existing environment policy.
+
+The following names are reserved and cause a configuration error:
+
+- `PATH`: use `build.extra_path`.
+- `SRCDEST`: use `destinations.sources`.
+- `CPPFLAGS`, `CFLAGS`, `CXXFLAGS`, `LDFLAGS`, `LTOFLAGS`, `MAKEFLAGS`, `CHOST`,
+  `CARCH`, and `DISTCC_HOSTS`: use the dedicated `[build]` fields. Package options
+  such as `!buildflags` and `!makeflags` remain authoritative.
+- `SOURCE_DATE_EPOCH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `PWD`, and `OLDPWD`.
+- Names beginning with `SHELLY_`, `SUDO_`, `DOAS_`, `PKEXEC_`, `XDG_`, or `DBUS_`.
+- Process-startup controls: `ENV`, `BASHOPTS`, `SHELLOPTS`, `IFS`, `CDPATH`,
+  `GCONV_PATH`, `LOCPATH`, and names beginning with `BASH_`, `LD_`, or `DYLD_`.
+
+Validation diagnostics identify the variable without printing its value.
+PKGBUILD code can read these values and may print them in its own output.
+
+For `shelly build --isolated`, the effective table is serialized into the guest
+configuration and applied to the unprivileged guest builder. Paths refer to the
+guest filesystem; assigning a path does not mount a host directory. With
+Landlock enabled, assignments grant no additional filesystem access; configure
+`sandbox.extra_read` / `extra_write` when a toolchain needs access.
 
 ## PKGBUILD and CLI overrides
 

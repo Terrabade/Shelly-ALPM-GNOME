@@ -19,10 +19,13 @@ pub const Action = enum {
     run,
     keyring,
     build,
+    resolve,
+    repo_db,
 
     pub fn name(self: Action) []const u8 {
         return switch (self) {
             .list_updates => "list-updates",
+            .repo_db => "repo-db",
             else => |action| @tagName(action),
         };
     }
@@ -47,6 +50,8 @@ pub const Action = enum {
             .run => 'X',
             .keyring => 'K',
             .build => 'A',
+            .resolve => 'Q',
+            .repo_db => 'G',
         };
     }
 
@@ -66,10 +71,12 @@ pub const Action = enum {
             .backup => "Back up explicitly installed packages as type-grouped TOML.",
             .utility => "Repair Shelly directory ownership, manage pacfiles, or generate CLI documentation and shell completions.",
             .mark => "Manage IgnorePkg and HoldPkg package marks, or change an installed package's explicit/dependency reason.",
-            .keyring => "Manage pacman package-signing keys and user PKGBUILD source-signing keys.",
+            .keyring => "Manage package-signing keys and user PKGBUILD source-signing keys.",
             .config => "Read and modify Shelly configuration.",
             .run => "Launch or stop a Flatpak or AppImage application.",
             .build => "Builds a PKGBUILD into an installable package",
+            .resolve => "Resolve exact package names to source package bases without changing package state.",
+            .repo_db => "Add, remove, list, or verify entries in a pacman repository database (repo-add / repo-remove).",
         };
     }
 
@@ -85,7 +92,7 @@ pub const Action = enum {
     }
 
     pub fn bareCodeMeansHelp(self: Action) bool {
-        return self == .keyring or self == .build;
+        return self == .keyring or self == .build or self == .resolve;
     }
 };
 

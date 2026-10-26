@@ -5,6 +5,7 @@ const gdk = bindings.gdk;
 const glib = bindings.glib;
 const gobject = bindings.gobject;
 const support = @import("support.zig");
+const a11y = @import("../helpers/a11y.zig");
 const ShellyOperation = @import("../services/shelly_operation.zig").ShellyOperation;
 const Event = @import("../services/shelly_operation.zig").Event;
 const ShellyWindow = @import("../shelly_window.zig").ShellyWindow;
@@ -37,6 +38,66 @@ const PackageRow = struct {
     progress: *gtk.ProgressBar,
     stage: ?[]const u8 = null,
     pulse_source: c_uint = 0,
+    result: PackageResult = .pending,
+};
+
+const PackageResult = enum {
+    pending,
+    running,
+    done,
+    installed,
+    upgraded,
+    downgraded,
+    reinstalled,
+    removed,
+    failed,
+    not_processed,
+    interrupted,
+    cancelled,
+
+    fn terminal(self: PackageResult) bool {
+        return self != .pending and self != .running;
+    }
+
+    fn finish(self: PackageResult, outcome: TransactionPage.Outcome) PackageResult {
+        if (self.terminal()) return self;
+        return switch (outcome) {
+            .success => .done,
+            .failed => if (self == .pending) .not_processed else .interrupted,
+            .cancelled => .cancelled,
+        };
+    }
+
+    fn fromEvent(event_type: []const u8) ?PackageResult {
+        const mappings = .{
+            .{ "PackageInstalled", PackageResult.installed },
+            .{ "PackageUpgraded", PackageResult.upgraded },
+            .{ "PackageDowngraded", PackageResult.downgraded },
+            .{ "PackageReinstalled", PackageResult.reinstalled },
+            .{ "PackageRemoved", PackageResult.removed },
+        };
+        inline for (mappings) |mapping| {
+            if (std.mem.eql(u8, event_type, mapping[0])) return mapping[1];
+        }
+        return null;
+    }
+
+    fn label(self: PackageResult) [:0]const u8 {
+        return switch (self) {
+            .pending => translations._("Pending"),
+            .running => translations._("Working"),
+            .done => translations._("Done"),
+            .installed => translations._("Installed"),
+            .upgraded => translations._("Upgraded"),
+            .downgraded => translations._("Downgraded"),
+            .reinstalled => translations._("Reinstalled"),
+            .removed => translations._("Removed"),
+            .failed => translations._("Failed"),
+            .not_processed => translations._("Not processed"),
+            .interrupted => translations._("Interrupted"),
+            .cancelled => translations._("Cancelled"),
+        };
+    }
 };
 
 const ProgressLine = struct {
@@ -70,6 +131,8 @@ pub const TransactionPage = extern struct {
         operation: ?*ShellyOperation,
         progress_lines: std.StringHashMapUnmanaged(ProgressLine),
         finished: bool,
+        failure_message: ?[]const u8,
+        privileged: bool,
         cancelled: bool,
         terminal_visible: bool,
         scratch: [1024]u8 = undefined,
@@ -104,6 +167,8 @@ pub const TransactionPage = extern struct {
         p.terminal_lines = .empty;
         p.operation = null;
         p.finished = false;
+        p.failure_message = null;
+        p.privileged = false;
         p.cancelled = false;
         p.terminal_visible = true;
         p.progress_lines = .empty;
@@ -153,17 +218,18 @@ pub const TransactionPage = extern struct {
         op.io = op.threaded.io();
         p.operation = op;
 
+        p.privileged = request.privileged;
         p.on_complete = request.on_complete;
         p.on_complete_ctx = request.ctx;
 
         const started = if (request.privileged) op.startPrivileged(argv) else op.start(argv);
         started catch {
-            append_terminal(self, translations._("Failed to start operation."));
+            append_terminal(self, translations._("Could not start the requested operation."));
             op.threaded.deinit();
             std.heap.c_allocator.destroy(op);
             p.operation = null;
             p.finished = true;
-            self.showFinishedUI(.failed, translations._("Failed to start operation."));
+            self.showFinishedUI(.failed, translations._("Could not start the requested operation."));
             if (p.on_complete) |cb| {
                 if (p.on_complete_ctx) |ctx| cb(ctx, false);
             }
@@ -192,6 +258,7 @@ pub const TransactionPage = extern struct {
 
     fn reset(self: *Self) void {
         const p = self.priv();
+        p.failure_message = null;
         p.cancelled = false;
         p.finished = false;
         gtk.Widget.setVisible(p.status_icon.as(gtk.Widget), 0);
@@ -247,6 +314,7 @@ pub const TransactionPage = extern struct {
 
         const progress = gtk.ProgressBar.new();
         gtk.Widget.setHexpand(progress.as(gtk.Widget), 1);
+        a11y.setName(progress.as(gtk.Widget), name);
         gtk.Box.append(card, progress.as(gtk.Widget));
 
         row.* = .{
@@ -274,26 +342,40 @@ pub const TransactionPage = extern struct {
                 if (std.mem.eql(u8, i.event_type, "TransactionCancelled"))
                     self.priv().cancelled = true;
 
-                if (std.mem.eql(u8, i.event_type, "TransactionStart")) {
-                    // optionally set a global status line
-                } else if (std.mem.eql(u8, i.event_type, "TransactionDone")) {
-                    var it = self.priv().rows.valueIterator();
-                    while (it.next()) |row| mark_row_done(row.*);
-                } else if (std.mem.eql(u8, i.event_type, "TransactionFailed")) {
-                    var it = self.priv().rows.valueIterator();
-                    while (it.next()) |row| mark_row_failed(row.*);
-                } else if (i.package_name) |name| {
+                // Transaction frames describe the batch, not each package's result.
+                if (i.package_name) |name| {
+                    if (PackageResult.fromEvent(i.event_type)) |result| {
+                        if (ensure_row_named(self, name, name)) |row| {
+                            if (row.result != .failed) setRowResult(row, result);
+                        }
+                        return;
+                    }
                     if (find_row(self, name)) |row| {
-                        setLabel(row.status_label, i.event_type);
+                        if (!row.result.terminal()) setRowStatus(row, i.event_type);
                     }
                 }
             },
-            .err => |e| append_terminal(self, e.message),
+            .err => |e| {
+                append_terminal(self, e.message);
+                const p = self.priv();
+                if (p.arena) |arena| {
+                    const previous = p.failure_message orelse "";
+                    if (std.mem.indexOf(u8, previous, e.message) == null)
+                        p.failure_message = std.fmt.allocPrint(arena.allocator(), "{s}{s}{s}", .{
+                            previous, if (previous.len > 0) "\n\n" else "", e.message,
+                        }) catch p.failure_message;
+                }
+            },
             .alpm_progress => |pr| {
                 appendAlpmProgress(self, pr);
 
                 if (is_transaction_phase(pr.progress_type)) {
-                    setLabel(self.priv().status_label, phase_label(pr.progress_type));
+                    var phase_buffer: [1024]u8 = undefined;
+                    const label = if (nonEmpty(pr.message)) |message|
+                        std.fmt.bufPrint(&phase_buffer, "{s}: {s}", .{ message, pr.package_name }) catch message
+                    else
+                        phase_label(pr.progress_type);
+                    setLabel(self.priv().status_label, label);
                     return;
                 }
 
@@ -308,11 +390,6 @@ pub const TransactionPage = extern struct {
                     pr.package_name;
 
                 if (ensure_row_named(self, pr.package_name, display_name)) |row| {
-                    const stage = nonEmpty(pr.stage) orelse pr.progress_type;
-                    if (rowStageChanged(self, row, stage)) {
-                        stopRowPulse(row);
-                        gtk.ProgressBar.setFraction(row.progress, 0.0);
-                    }
                     if (isAurPackageFailed(pr.stage)) {
                         var key_buf: [256]u8 = undefined;
                         finalizeProgressKey(self, progressKey(&key_buf, pr));
@@ -325,8 +402,20 @@ pub const TransactionPage = extern struct {
                         mark_row_done(row);
                         return;
                     }
+                    // Late build/cleanup progress must not erase confirmed results.
+                    if (row.result.terminal()) return;
+                    row.result = .running;
+                    const stage = nonEmpty(pr.stage) orelse pr.progress_type;
+                    if (rowStageChanged(self, row, stage)) {
+                        stopRowPulse(row);
+                        gtk.ProgressBar.setFraction(row.progress, 0.0);
+                    }
+                    if (is_database and pr.percent >= 100) {
+                        mark_row_done(row);
+                        return;
+                    }
                     if (isAurBuildStart(pr.progress_type, pr.stage)) {
-                        setLabel(row.status_label, translations._("Building"));
+                        setRowStatus(row, translations._("Building"));
                         startRowPulse(row);
                         return;
                     }
@@ -339,7 +428,7 @@ pub const TransactionPage = extern struct {
                         pr.current_download,
                         pr.total_download,
                     ));
-                    setLabel(row.status_label, nonEmpty(pr.message) orelse phase_label(pr.progress_type));
+                    setRowStatus(row, nonEmpty(pr.message) orelse phase_label(pr.progress_type));
                 }
             },
             .flatpak_progress => |pr| {
@@ -487,17 +576,28 @@ pub const TransactionPage = extern struct {
     }
 
     fn mark_row_done(row: *PackageRow) void {
-        stopRowPulse(row);
-        gtk.Label.setLabel(row.status_label, translations._("Done"));
-        gtk.ProgressBar.setFraction(row.progress, 1.0);
-        gtk.Widget.addCssClass(row.status_label.as(gtk.Widget), "status-done");
+        if (!row.result.terminal()) setRowResult(row, .done);
     }
 
     fn mark_row_failed(row: *PackageRow) void {
+        setRowResult(row, .failed);
+    }
+
+    fn setRowResult(row: *PackageRow, result: PackageResult) void {
         stopRowPulse(row);
-        gtk.Label.setLabel(row.status_label, translations._("Failed"));
-        gtk.ProgressBar.setFraction(row.progress, 1.0);
-        gtk.Widget.addCssClass(row.status_label.as(gtk.Widget), "status-failed");
+        row.result = result;
+        setRowStatus(row, result.label());
+        const widget = row.status_label.as(gtk.Widget);
+        gtk.Widget.removeCssClass(widget, "status-done");
+        gtk.Widget.removeCssClass(widget, "status-failed");
+        switch (result) {
+            .done, .installed, .upgraded, .downgraded, .reinstalled, .removed => {
+                gtk.ProgressBar.setFraction(row.progress, 1.0);
+                gtk.Widget.addCssClass(widget, "status-done");
+            },
+            .failed => gtk.Widget.addCssClass(widget, "status-failed"),
+            else => {},
+        }
     }
 
     const Outcome = enum { success, failed, cancelled };
@@ -534,11 +634,11 @@ pub const TransactionPage = extern struct {
             .failed => {
                 gtk.Widget.addCssClass(p.close_button.as(gtk.Widget), "destructive-action");
                 gtk.Button.setLabel(p.close_button, translations._("Close"));
-                setLabel(p.title_label, translations._("Transaction Failed"));
+                setLabel(p.title_label, translations._("Operation failed"));
             },
             .cancelled => {
                 gtk.Button.setLabel(p.close_button, translations._("Close"));
-                setLabel(p.title_label, translations._("Transaction Cancelled"));
+                setLabel(p.title_label, translations._("Operation cancelled"));
             },
         }
 
@@ -557,37 +657,36 @@ pub const TransactionPage = extern struct {
 
         const outcome: Outcome = if (p.cancelled)
             .cancelled
-        else if (exit_code == 0)
+        else if (exit_code == 0 and p.failure_message == null)
             .success
         else
             .failed;
 
         switch (outcome) {
-            .cancelled => self.showFinishedUI(outcome, translations._("The operation was cancelled.")),
+            .cancelled => self.showFinishedUI(outcome, translations._("Operation cancelled.")),
             .success => self.showFinishedUI(outcome, translations._("All operations finished successfully.")),
             .failed => {
                 var fail_buf: [128]u8 = undefined;
-                const detail = std.fmt.bufPrint(&fail_buf, "{s} ({s} {d})", .{ translations._("Operation failed"), translations._("exit"), exit_code }) catch translations._("Operation failed");
-                self.showFinishedUI(outcome, detail);
+                const fallback = if (p.privileged and (exit_code == 126 or exit_code == 127))
+                    translations._("Permission to manage packages was not granted. Try again and approve the authorization request to continue.")
+                else
+                    std.fmt.bufPrint(&fail_buf, "{s} ({s} {d})", .{ translations._("Could not complete the requested operation."), translations._("exit"), exit_code }) catch translations._("Could not complete the requested operation.");
+                const detail = p.failure_message orelse fallback;
+                const end = std.mem.indexOf(u8, detail, "\n\nTechnical details:") orelse
+                    std.mem.indexOf(u8, detail, "\nTechnical details:") orelse detail.len;
+                self.showFinishedUI(outcome, detail[0..end]);
             },
         }
 
         var it = p.rows.valueIterator();
         while (it.next()) |row_ptr| {
             const row = row_ptr.*;
-            switch (outcome) {
-                .success => mark_row_done(row),
-                .failed => mark_row_failed(row),
-                .cancelled => {
-                    stopRowPulse(row);
-                    gtk.Label.setLabel(row.status_label, translations._("Cancelled"));
-                },
-            }
+            setRowResult(row, row.result.finish(outcome));
         }
 
         if (p.on_complete) |cb| {
             log.debug("on_complete set, ctx={}", .{p.on_complete_ctx != null});
-            if (p.on_complete_ctx) |c| cb(c, exit_code == 0 and !p.cancelled);
+            if (p.on_complete_ctx) |c| cb(c, outcome == .success);
         } else {
             log.debug("on_complete is NULL", .{});
         }
@@ -637,7 +736,9 @@ pub const TransactionPage = extern struct {
         } else |_| {}
 
         if (ensure_row_named(self, backend, backend)) |row| {
-            setLabel(row.status_label, message);
+            if (row.result.terminal()) return;
+            row.result = .running;
+            setRowStatus(row, message);
             gtk.ProgressBar.setFraction(row.progress, fractionFromPercent(percentage));
         }
     }
@@ -653,6 +754,14 @@ pub const TransactionPage = extern struct {
             "[{s}] {s} ({d}%)",
             .{ backend, nonEmpty(status) orelse translations._("Working"), percentage },
         );
+    }
+
+    /// A row's status changes while focus is elsewhere, and non-focusable static
+    /// text is never announced. Writing the same text as the progress bar's
+    /// accessible description fires a property change an AT will speak.
+    fn setRowStatus(row: *PackageRow, text: []const u8) void {
+        setLabel(row.status_label, text);
+        a11y.setDescription(row.progress.as(gtk.Widget), text);
     }
 
     fn setLabel(label: *gtk.Label, text: []const u8) void {
@@ -793,13 +902,110 @@ pub const TransactionPage = extern struct {
         self.handle_question(pending);
     }
 
-    fn getQuestionText(question_kind: []const u8, fallback: []const u8) []const u8 {
-        if (std.mem.eql(u8, question_kind, "CacheCleanExtraEntries")) {
-            return translations._("Would you like to remove extra cache entries?");
+    const Replacement = struct {
+        placeholder: []const u8,
+        value: []const u8,
+    };
+
+    fn replacePlaceholders(
+        allocator: std.mem.Allocator,
+        template: []const u8,
+        replacements: []const Replacement,
+    ) ![]u8 {
+        var current = try allocator.dupe(u8, template);
+        errdefer allocator.free(current);
+
+        for (replacements) |replacement| {
+            const next = try std.mem.replaceOwned(
+                u8,
+                allocator,
+                current,
+                replacement.placeholder,
+                replacement.value,
+            );
+            allocator.free(current);
+            current = next;
         }
-        return fallback;
+
+        return current;
     }
-    
+
+    fn formatPackageConflictQuestion(
+        allocator: std.mem.Allocator,
+        arguments: []const []const u8,
+    ) ![]u8 {
+        if (arguments.len < 5) return error.MissingQuestionArguments;
+
+        const template = translations._(
+            "{package_one}-{version_one} conflicts with {package_two}-{version_two}. Remove {package_to_remove}?",
+        );
+
+        const replacements = [_]Replacement{
+            .{
+                .placeholder = "{package_one}",
+                .value = arguments[0],
+            },
+            .{
+                .placeholder = "{version_one}",
+                .value = arguments[1],
+            },
+            .{
+                .placeholder = "{package_two}",
+                .value = arguments[2],
+            },
+            .{
+                .placeholder = "{version_two}",
+                .value = arguments[3],
+            },
+            .{
+                .placeholder = "{package_to_remove}",
+                .value = arguments[4],
+            },
+        };
+
+        return replacePlaceholders(
+            allocator,
+            template,
+            &replacements,
+        );
+    }
+
+    fn getQuestionText(
+        allocator: std.mem.Allocator,
+        question_kind: []const u8,
+        arguments: []const []const u8,
+        fallback: []const u8,
+    ) ![:0]const u8 {
+        if (std.mem.eql(
+            u8,
+            question_kind,
+            "CacheCleanExtraEntries",
+        )) {
+            return allocator.dupeZ(
+                u8,
+                translations._(
+                    "Would you like to remove extra cache entries?",
+                ),
+            );
+        }
+
+        if (std.mem.eql(u8, question_kind, "PackageConflict")) {
+            if (arguments.len < 5) {
+                return allocator.dupeZ(u8, fallback);
+            }
+
+            const formatted = try formatPackageConflictQuestion(
+                allocator,
+                arguments,
+            );
+            defer allocator.free(formatted);
+
+            return allocator.dupeZ(u8, formatted);
+        }
+
+        return allocator.dupeZ(u8, fallback);
+    }
+
     fn handle_question(self: *Self, pending: *PendingQuestion) void {
         const p = self.priv();
         log.debug("handle_question: question_layer={*}", .{p.question_layer});
@@ -808,9 +1014,12 @@ pub const TransactionPage = extern struct {
             .yes_no => |q| {
                 const qa = pending.arena.allocator();
 
-                const text = getQuestionText(q.question_kind, q.question_text);
-                
-                const text_z = qa.dupeZ(u8, text) catch {
+                const text_z = getQuestionText(
+                    qa,
+                    q.question_kind,
+                    q.arguments,
+                    q.question_text,
+                ) catch {
                     pending.operation.answerYesNo(q.question_id, false) catch {};
                     pending.destroy();
                     return;
@@ -836,6 +1045,7 @@ pub const TransactionPage = extern struct {
                 const dialog = MultiSelectDialog.new(
                     pending.arena.allocator(),
                     q.prompt,
+                    translations._("Skip"),
                     q.options,
                     &on_multiselect_response,
                     pending,
@@ -849,9 +1059,15 @@ pub const TransactionPage = extern struct {
                 pending.on_dismiss = &dismiss_question;
                 pending.dismiss_ctx = self;
 
+                const a = pending.arena.allocator();
+                const provider_title = if (q.prompt.len == 0)
+                    "Select Provider"
+                else
+                    std.fmt.allocPrint(a, "Select a provider for {s}", .{q.prompt}) catch "Select Provider";
+
                 const dialog = ProviderDialog.new(
-                    pending.arena.allocator(),
-                    "Select Provider",
+                    a,
+                    provider_title,
                     q.options,
                     &on_single_select_response,
                     pending,
@@ -1080,6 +1296,84 @@ pub const TransactionPage = extern struct {
         gobject.Object.virtual_methods.finalize.call(parent_class, self.as(gobject.Object));
     }
 };
+
+test "transaction failure preserves successful packages and identifies unfinished rows" {
+    const upgraded = PackageResult.fromEvent("PackageUpgraded").?;
+    const installed = PackageResult.fromEvent("PackageInstalled").?;
+    const results = [_]PackageResult{ upgraded, installed, .done, .failed, .pending, .running };
+    const expected = [_]PackageResult{ .upgraded, .installed, .done, .failed, .not_processed, .interrupted };
+    for (results, expected) |result, want| {
+        try std.testing.expectEqual(want, result.finish(.failed));
+        try std.testing.expectEqual(want, result.finish(.failed).finish(.failed));
+    }
+    try std.testing.expectEqualStrings("Upgraded", upgraded.finish(.failed).label());
+}
+
+test "transaction cancellation and success preserve confirmed package results" {
+    const terminal_results = [_]PackageResult{ .done, .installed, .upgraded, .downgraded, .reinstalled, .removed, .failed };
+    for (terminal_results) |result| {
+        try std.testing.expectEqual(result, result.finish(.cancelled));
+        try std.testing.expectEqual(result, result.finish(.success));
+    }
+    try std.testing.expectEqual(PackageResult.cancelled, PackageResult.pending.finish(.cancelled));
+    try std.testing.expectEqual(PackageResult.cancelled, PackageResult.running.finish(.cancelled));
+}
+
+test "transaction events keep successful rows when an AUR package fails" {
+    try @import("../helpers/gtk_test.zig").requireDisplay();
+    const page = TransactionPage.new();
+    _ = page.as(gobject.Object).refSink();
+    defer page.as(gobject.Object).unref();
+    const arena = try std.heap.c_allocator.create(std.heap.ArenaAllocator);
+    arena.* = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    page.priv().arena = arena;
+    // reset owns arena cleanup; this also stops pending pulse timers.
+    defer page.reset();
+    const repo = TransactionPage.ensure_row_named(page, "repo", "repo").?;
+    const aur_ok = TransactionPage.ensure_row_named(page, "aur-ok", "aur-ok").?;
+    const aur_bad = TransactionPage.ensure_row_named(page, "aur-bad", "aur-bad").?;
+    const pending = TransactionPage.ensure_row_named(page, "pending", "pending").?;
+    const download = TransactionPage.ensure_row_named(page, "download", "download").?;
+    page.handle_event(.{ .info = .{
+        .event_type = "PackageUpgraded",
+        .message = "Package operation completed.",
+        .package_name = "repo",
+        .current = null,
+        .total = null,
+    } });
+    const cases = .{
+        .{ "aur-ok", "aur_package_completed", "AddStart" },
+        .{ "aur-bad", "aur_package_failed", "MakepkgBuild" },
+        .{ "repo", "aur_cleanup_done", "RemoveStart" },
+        .{ "download", "download", "PackageDownload" },
+    };
+    inline for (cases) |case| page.handle_event(.{ .alpm_progress = .{
+        .package_name = case[0],
+        .stage = case[1],
+        .progress_type = case[2],
+        .percent = 100,
+        .current_download = 100,
+        .total_download = 100,
+        .message = null,
+    } });
+    page.handle_event(.{ .info = .{
+        .event_type = "TransactionFailed",
+        .message = "Update failed.",
+        .package_name = null,
+        .current = null,
+        .total = null,
+    } });
+    try std.testing.expectEqual(PackageResult.upgraded, repo.result);
+    try std.testing.expectEqual(PackageResult.done, aur_ok.result);
+    page.handle_done(1);
+    try std.testing.expectEqual(PackageResult.upgraded, repo.result);
+    try std.testing.expectEqual(PackageResult.done, aur_ok.result);
+    try std.testing.expectEqual(PackageResult.failed, aur_bad.result);
+    try std.testing.expectEqual(PackageResult.not_processed, pending.result);
+    try std.testing.expectEqual(PackageResult.interrupted, download.result);
+    try std.testing.expectEqualStrings("Upgraded", std.mem.span(gtk.Label.getLabel(repo.status_label)));
+    try std.testing.expectEqualStrings("Failed", std.mem.span(gtk.Label.getLabel(aur_bad.status_label)));
+}
 
 test "transaction progress helpers preserve determinate percentages" {
     try std.testing.expectEqual(@as(f64, 0.0), TransactionPage.fractionFromPercent(-1));

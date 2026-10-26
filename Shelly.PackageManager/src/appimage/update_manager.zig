@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const HttpClient = @import("ShellyHttp");
 const appimage = @import("bindings.zig").appimage;
 const builtin = @import("builtin");
@@ -259,7 +260,7 @@ pub const UpdateManager = struct {
             .none => return null,
             .static_url => {
                 if (app.update_url.len == 0) {
-                    self.emitStatusFmt(.warning, "AppImage {s} has no static update URL.", .{app.name});
+                    self.emitStatusFmt(.warning, "AppImage {0f} has no static update URL. Set a download URL in its update settings before checking for updates.", .{diagnostics.safe(app.name)});
                     return null;
                 }
                 return self.guardInstalledRelease(app, try self.check_static_url_update(app.update_url, app.name, app.version));
@@ -308,7 +309,7 @@ pub const UpdateManager = struct {
             },
             .forgejo => {
                 if (app.update_url.len == 0) {
-                    self.emitStatusFmt(.warning, "AppImage {s} has no Forgejo update URL.", .{app.name});
+                    self.emitStatusFmt(.warning, "AppImage {0f} has no Forgejo update URL. Set its Forgejo repository URL in the update settings before checking for updates.", .{diagnostics.safe(app.name)});
                     return null;
                 }
                 return self.providerUpdateOrWarn(
@@ -372,8 +373,8 @@ pub const UpdateManager = struct {
         }
 
         const app_to_update = if (found_index) |i| apps[i] else {
-            std.log.debug("AppImage '{s}' not found in local database.", .{appimage_ptr.name});
-            self.emitStatusFmt(.err, "AppImage {s} was not found in the local database.", .{appimage_ptr.name});
+            std.log.debug("Could not update AppImage {0f} because it is not in the local database. Check the installed AppImage list and synchronize it if necessary.", .{diagnostics.safe(appimage_ptr.name)});
+            self.emitStatusFmt(.err, "Could not update AppImage {0f} because it is not in the local database. Check the installed AppImage list and synchronize it if necessary.", .{diagnostics.safe(appimage_ptr.name)});
             return false;
         };
 
@@ -381,8 +382,8 @@ pub const UpdateManager = struct {
         self.emitStatusFmt(.information, "Updating AppImage {s}...", .{app_to_update.name});
 
         if (appimage_ptr.download_url.len == 0) {
-            std.log.debug("No download URL found for {s}.", .{appimage_ptr.name});
-            self.emitStatusFmt(.err, "No download URL was found for AppImage {s}.", .{appimage_ptr.name});
+            std.log.debug("Could not find a download URL for AppImage {0f}. Check its update provider settings and available release assets.", .{diagnostics.safe(appimage_ptr.name)});
+            self.emitStatusFmt(.err, "Could not find a download URL for AppImage {0f}. Check its update provider settings and available release assets.", .{diagnostics.safe(appimage_ptr.name)});
             return false;
         }
 
@@ -393,8 +394,8 @@ pub const UpdateManager = struct {
 
         const current_exists = std.Io.Dir.cwd().statFile(self.io, current_path, .{}) catch null;
         if (current_exists == null) {
-            std.log.debug("Current AppImage not found at {s}.", .{current_path});
-            self.emitStatusFmt(.err, "Current AppImage was not found at {s}.", .{current_path});
+            std.log.debug("Could not update AppImage {0f} because the installed file is missing at {1f}. Check its location and synchronize the AppImage list.", .{ diagnostics.safe(appimage_ptr.name), diagnostics.safe(current_path) });
+            self.emitStatusFmt(.err, "Could not update AppImage {0f} because the installed file is missing at {1f}. Check its location and synchronize the AppImage list.", .{ diagnostics.safe(appimage_ptr.name), diagnostics.safe(current_path) });
             return false;
         }
 
@@ -404,8 +405,8 @@ pub const UpdateManager = struct {
 
         if (self.staged_download_path) |staged| {
             manager.copyFile(staged, download_path) catch |err| {
-                std.log.err("Could not stage update for {s}: {s}", .{ appimage_ptr.name, @errorName(err) });
-                self.emitStatusFmt(.err, "Could not stage update for {s}: {s}", .{ appimage_ptr.name, @errorName(err) });
+                std.log.err("Could not stage update for {0f}. {1s}\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(err), @errorName(err) });
+                self.emitStatusFmt(.err, "Could not stage update for {0f}. {1s}\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(err), @errorName(err) });
                 return false;
             };
         } else {
@@ -423,8 +424,8 @@ pub const UpdateManager = struct {
             const dl_result = dl.downloadToFile(appimage_ptr.download_url, download_path, false);
             switch (dl_result) {
                 .failure => |err| {
-                    std.log.err("Failed to download update for {s}: {s}", .{ appimage_ptr.name, @errorName(err) });
-                    self.emitStatusFmt(.err, "Failed to download update for {s}: {s}", .{ appimage_ptr.name, @errorName(err) });
+                    std.log.err("Could not download update for {0f}. {1s}\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(err), @errorName(err) });
+                    self.emitStatusFmt(.err, "Could not download update for {0f}. {1s}\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(err), @errorName(err) });
                     return false;
                 },
                 else => {},
@@ -470,8 +471,8 @@ pub const UpdateManager = struct {
 
         const download_filename = std.fs.path.basename(appimage_ptr.download_url);
         if (!isCorrectArchitecture(download_filename)) {
-            std.log.warn("The downloaded AppImage might not match your system architecture.", .{});
-            self.emitStatus(.warning, "The downloaded AppImage might not match your system architecture.");
+            std.log.warn("The downloaded AppImage for the requested package may not support this system’s architecture. Check that the selected release asset matches this system.", .{});
+            self.emitStatus(.warning, "The downloaded AppImage for the requested package may not support this system’s architecture. Check that the selected release asset matches this system.");
         }
 
         const backup_path = try manager.uniqueSiblingPath(current_path, "binary-backup");
@@ -482,13 +483,13 @@ pub const UpdateManager = struct {
         std.Io.Dir.hardLink(.cwd(), current_path, .cwd(), backup_path, self.io, .{}) catch try manager.copyFile(current_path, backup_path);
 
         manager.writeFileAtomically(download_path, current_path, "replacement") catch |err| {
-            std.log.warn("Error installing new version: {s}.", .{@errorName(err)});
-            self.emitStatusFmt(.err, "Could not install the AppImage update: {s}.", .{@errorName(err)});
+            std.log.warn("Could not install the AppImage update for {0f}. {1s}\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(err), @errorName(err) });
+            self.emitStatusFmt(.err, "Could not install the AppImage update for {0f}. {1s}\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(err), @errorName(err) });
             return false;
         };
         manager.setExecutable(current_path) catch |err| {
-            std.log.warn("Could not make updated AppImage executable: {s}.", .{@errorName(err)});
-            self.emitStatusFmt(.err, "Could not make the AppImage update executable: {s}.", .{@errorName(err)});
+            std.log.warn("Could not make the updated AppImage executable. {0s}\n\nTechnical details: {1s}", .{ diagnostics.cause(err), @errorName(err) });
+            self.emitStatusFmt(.err, "Could not make the updated AppImage executable. {0s}\n\nTechnical details: {1s}", .{ diagnostics.cause(err), @errorName(err) });
             manager.writeFileAtomically(backup_path, current_path, "restore") catch {};
             return false;
         };
@@ -497,24 +498,24 @@ pub const UpdateManager = struct {
         var updated_app = appimage_manager.AppImageManager.mergeMetadata(app_to_update, new_metadata, appimage_ptr.version);
         updated_app.path = current_path;
         var integration = manager.beginDesktopIntegration(updated_app, current_path, content.source_desktop_path, content.icon_source) catch |err| {
-            std.log.warn("Could not refresh desktop entry for {s}: {s}. Rolling back...", .{ appimage_ptr.name, @errorName(err) });
-            self.emitStatusFmt(.err, "Could not refresh the desktop entry: {s}. Rolling back...", .{@errorName(err)});
+            std.log.warn("Could not refresh desktop integration for {0f}. {1s} Attempting to restore the previous version.\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(err), @errorName(err) });
+            self.emitStatusFmt(.err, "Could not refresh desktop integration for {0f}. {1s} Attempting to restore the previous version.\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(err), @errorName(err) });
             manager.writeFileAtomically(backup_path, current_path, "restore") catch {};
             return false;
         };
         defer integration.deinit();
         manager.addAppImageToLocalDb(updated_app) catch |err| {
-            std.log.warn("Could not persist updated metadata: {s}. Rolling back...", .{@errorName(err)});
-            self.emitStatusFmt(.err, "Could not persist the AppImage update: {s}. Rolling back...", .{@errorName(err)});
-            integration.rollback() catch |rollback_err| self.emitStatusFmt(.err, "Could not restore desktop integration: {s}.", .{@errorName(rollback_err)});
-            manager.writeFileAtomically(backup_path, current_path, "restore") catch |restore_err| self.emitStatusFmt(.err, "Could not restore AppImage binary: {s}.", .{@errorName(restore_err)});
+            std.log.warn("Could not save updated AppImage metadata for {0f}. {1s} Attempting to restore the previous version.\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(err), @errorName(err) });
+            self.emitStatusFmt(.err, "Could not save updated AppImage metadata for {0f}. {1s} Attempting to restore the previous version.\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(err), @errorName(err) });
+            integration.rollback() catch |rollback_err| self.emitStatusFmt(.err, "Could not restore desktop integration for {0f} after the operation failed. {1s} Desktop entries or icons may need repair.\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(rollback_err), @errorName(rollback_err) });
+            manager.writeFileAtomically(backup_path, current_path, "restore") catch |restore_err| self.emitStatusFmt(.err, "Could not restore the previous AppImage for {0f} from the backup path. {1s} Check the installed file and backup before launching or retrying the update.\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(restore_err), @errorName(restore_err) });
             return false;
         };
         try integration.finish();
         manager.refreshDesktopCachesBestEffort(content.icon_source != null);
         self.emitStatus(.information, "Refreshed desktop integration.");
         std.Io.Dir.cwd().deleteFile(self.io, backup_path) catch |err| {
-            self.emitStatusFmt(.warning, "Could not remove the AppImage backup: {s}.", .{@errorName(err)});
+            self.emitStatusFmt(.warning, "Could not remove the backup for {0f} at the backup path. {1s} The backup remains on disk.\n\nTechnical details: {2s}", .{ diagnostics.safe(appimage_ptr.name), diagnostics.cause(err), @errorName(err) });
         };
 
         self.emitStatusFmt(.success, "Updated AppImage {s} to {s}.", .{ app_to_update.name, updated_app.version });
@@ -534,6 +535,7 @@ pub const UpdateManager = struct {
 
         var req = client.request(.HEAD, uri, .{
             .headers = .{},
+            .redirect_behavior = .init(10),
         }) catch return null;
         defer req.deinit();
 
@@ -546,8 +548,8 @@ pub const UpdateManager = struct {
 
         if (response.head.content_type) |content_type| {
             if (contentTypeIsNotAppImage(content_type)) {
-                std.log.warn("Static update URL for {s} returned content type '{s}'; it does not point to a downloadable AppImage.", .{ app_name, content_type });
-                self.emitStatusFmt(.warning, "The static update URL for {s} does not point to a downloadable AppImage (content type '{s}').", .{ app_name, content_type });
+                std.log.warn("The update URL for AppImage {0f} returned '{1f}' instead of an AppImage download. Set a direct download URL in its update settings.", .{ diagnostics.safe(app_name), diagnostics.safe(content_type) });
+                self.emitStatusFmt(.warning, "The update URL for AppImage {0f} returned '{1f}' instead of an AppImage download. Set a direct download URL in its update settings.", .{ diagnostics.safe(app_name), diagnostics.safe(content_type) });
                 return null;
             }
         }
@@ -988,7 +990,7 @@ pub const UpdateManager = struct {
     fn fetchJson(self: UpdateManager, url: []const u8, accept: []const u8) !?[]u8 {
         try self.checkCancelled();
         const uri = std.Uri.parse(url) catch {
-            self.emitStatus(.err, "The AppImage update provider URL is invalid.");
+            self.emitStatus(.err, "The update provider URL for the selected AppImage is invalid. Check the selected provider and URL format.");
             return null;
         };
 
@@ -1003,20 +1005,20 @@ pub const UpdateManager = struct {
             .extra_headers = &headers,
             .redirect_behavior = .init(10),
         }) catch {
-            self.emitStatus(.err, "Could not connect to the AppImage update provider.");
+            self.emitStatus(.err, "Could not connect to the configured AppImage update provider for the requested package.");
             return null;
         };
         defer request.deinit();
         request.accept_encoding[@intFromEnum(std.http.ContentEncoding.gzip)] = false;
         request.accept_encoding[@intFromEnum(std.http.ContentEncoding.deflate)] = false;
         request.sendBodiless() catch {
-            self.emitStatus(.err, "Could not send the AppImage update request.");
+            self.emitStatus(.err, "Could not send the update request for the selected AppImage to the configured server.");
             return null;
         };
 
         var redirect_buffer: [8 * 1024]u8 = undefined;
         var response = request.receiveHead(&redirect_buffer) catch {
-            self.emitStatus(.err, "Could not receive the AppImage update response.");
+            self.emitStatus(.err, "Could not read the update response for the selected AppImage.");
             return null;
         };
         if (response.head.status.class() != .success) {
@@ -1032,12 +1034,12 @@ pub const UpdateManager = struct {
         while (true) {
             try self.checkCancelled();
             const amount = body_reader.readSliceShort(&read_buffer) catch {
-                self.emitStatus(.err, "Could not read the AppImage update response.");
+                self.emitStatus(.err, "Could not read the update response for the selected AppImage.");
                 return null;
             };
             if (amount == 0) break;
             if (body.items.len + amount > 16 * 1024 * 1024) {
-                self.emitStatus(.err, "The AppImage update response was too large.");
+                self.emitStatus(.err, "The update response for the selected AppImage exceeded the configured size limit. Check the provider URL; if it is correct, report the response-size limit.");
                 return null;
             }
             try body.appendSlice(self.allocator, read_buffer[0..amount]);
@@ -1049,14 +1051,6 @@ pub const UpdateManager = struct {
         if (needle.len > haystack.len) return false;
         const tail = haystack[haystack.len - needle.len ..];
         return std.ascii.eqlIgnoreCase(tail, needle);
-    }
-
-    pub fn isAppImage(file_path: []const u8) bool {
-        return appimage_manager.AppImageManager.isAppImage(file_path);
-    }
-
-    pub fn is_appimage(file_path: []const u8) bool {
-        return isAppImage(file_path);
     }
 
     fn normalizeVersionToken(raw: []const u8) []const u8 {
@@ -1144,8 +1138,8 @@ pub const UpdateManager = struct {
         if (result == null) {
             self.emitStatusFmt(
                 .warning,
-                "No compatible downloadable AppImage release asset was found for {s}.",
-                .{app_name},
+                "No compatible AppImage download was found for {0f} on this system’s architecture. Check the provider settings and available release assets.",
+                .{diagnostics.safe(app_name)},
             );
         }
         return result;
@@ -1157,7 +1151,7 @@ pub const UpdateManager = struct {
 
     fn emitStatusFmt(self: UpdateManager, kind: events.StatusKind, comptime format: []const u8, args: anytype) void {
         const message = std.fmt.allocPrint(self.allocator, format, args) catch {
-            self.emitStatus(kind, "AppImage update status unavailable.");
+            self.emitStatus(kind, "Shelly could not allocate memory for the AppImage update status message. Check the update result to confirm whether it completed.");
             return;
         };
         defer self.allocator.free(message);
@@ -1213,22 +1207,12 @@ pub const UpdateManager = struct {
                 context.manager.emitDownloadProgress(context.app_name, progress);
             },
             .Error => if (event.download_error) |download_error| {
-                context.manager.emitStatusFmt(.err, "AppImage download failed: {s}", .{@errorName(download_error)});
+                context.manager.emitStatusFmt(.err, "Could not download the selected AppImage. {0s}\n\nTechnical details: {1s}", .{ diagnostics.cause(download_error), @errorName(download_error) });
             },
             .Skipped => context.manager.emitStatus(.information, "AppImage download was skipped."),
         }
     }
 };
-
-test "test isAppImage" {
-    const result = UpdateManager.is_appimage("xxx.appImage");
-    const result2 = UpdateManager.is_appimage("xxx.appimage");
-    const result3 = UpdateManager.is_appimage("xxx.ApPiMagE");
-    try std.testing.expect(result);
-    try std.testing.expect(result2);
-    try std.testing.expect(result3);
-    try std.testing.expect(!UpdateManager.isAppImage("xxx.AppImage.txt"));
-}
 
 test "updateIsAvailable: formats and normalize v prefixes and quotes" {
     // v-prefixed provider tag vs plain embedded version — the reported bug.
@@ -2146,7 +2130,7 @@ test "get_update returns optional owned results for configured providers" {
 }
 
 test "providerUpdateOrWarn warns only when no provider asset is available" {
-    const expected_message = "No compatible downloadable AppImage release asset was found for Editor.";
+    const expected_message = "No compatible AppImage download was found for Editor on this system’s architecture. Check the provider settings and available release assets.";
     const Capture = struct {
         count: usize = 0,
         last_status: ?events.StatusKind = null,
@@ -2928,13 +2912,25 @@ test "update: failed database commit rolls back binary and desktop" {
     defer std.testing.allocator.free(current_path);
     const old_binary = "#!/bin/sh\nold-binary\nexit 0\n";
     try writeUpdateFixture(std.testing.io, current_path, old_binary);
+    {
+        var installed_file = try std.Io.Dir.cwd().openFile(std.testing.io, current_path, .{});
+        defer installed_file.close(std.testing.io);
+        try installed_file.setPermissions(std.testing.io, .fromMode(0o755));
+    }
+    const original_stat = try std.Io.Dir.cwd().statFile(std.testing.io, current_path, .{});
+    try std.testing.expect(original_stat.permissions.toMode() & 0o111 != 0);
 
     const desktop_dir = try std.fs.path.join(std.testing.allocator, &.{ data_home, "applications" });
     defer std.testing.allocator.free(desktop_dir);
     try std.Io.Dir.cwd().createDirPath(std.testing.io, desktop_dir);
     const desktop_path = try std.fs.path.join(std.testing.allocator, &.{ desktop_dir, "editor.desktop" });
     defer std.testing.allocator.free(desktop_path);
-    const old_desktop = "[Desktop Entry]\nName=Old Name\nExec=old-binary\n";
+    const old_desktop = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "[Desktop Entry]\nType=Application\nName=Old Name\nExec={s}\nTryExec={s}\n",
+        .{ current_path, current_path },
+    );
+    defer std.testing.allocator.free(old_desktop);
     try writeUpdateFixture(std.testing.io, desktop_path, old_desktop);
 
     try seedDb(std.testing.allocator, std.testing.io, db_path, &.{
@@ -2960,6 +2956,10 @@ test "update: failed database commit rolls back binary and desktop" {
     const installed_binary = try readUpdateFile(std.testing.allocator, std.testing.io, current_path);
     defer std.testing.allocator.free(installed_binary);
     try std.testing.expectEqualStrings(old_binary, installed_binary);
+
+    // TryExec must still point to an executable after rollback, or menus hide the app.
+    const restored_stat = try std.Io.Dir.cwd().statFile(std.testing.io, current_path, .{});
+    try std.testing.expectEqual(original_stat.permissions.toMode(), restored_stat.permissions.toMode());
 
     // Desktop file should be the original.
     const installed_desktop = try readUpdateFile(std.testing.allocator, std.testing.io, desktop_path);
@@ -3136,10 +3136,10 @@ test "update: sync and automated update produce equivalent metadata" {
 
     // Seed both databases with the same old record.
     try seedDb(std.testing.allocator, std.testing.io, sync_env.db_path, &.{
-        .{ .name = app_name, .version = "1.0.0", .desktop_name = "Old Name", .path = sync_env.current_path },
+        .{ .name = app_name, .version = "1.0.0", .desktop_name = "Old Name", .environment_variables = &.{.{ .key = "WEBKIT_DISABLE_DMABUF_RENDERER", .value = "1" }}, .path = sync_env.current_path },
     });
     try seedDb(std.testing.allocator, std.testing.io, update_env.db_path, &.{
-        .{ .name = app_name, .version = "1.0.0", .desktop_name = "Old Name", .path = update_env.current_path },
+        .{ .name = app_name, .version = "1.0.0", .desktop_name = "Old Name", .environment_variables = &.{.{ .key = "WEBKIT_DISABLE_DMABUF_RENDERER", .value = "1" }}, .path = update_env.current_path },
     });
 
     // For sync: place the new AppImage at the install path (sync inspects the
@@ -3205,6 +3205,10 @@ test "update: sync and automated update produce equivalent metadata" {
     try std.testing.expectEqualStrings(sync_apps[0].icon_name, update_apps[0].icon_name);
     try std.testing.expectEqual(sync_apps[0].size_on_disk, update_apps[0].size_on_disk);
 
+    try std.testing.expectEqualStrings("1", sync_apps[0].environment_variables[0].value);
+    try std.testing.expectEqualStrings("WEBKIT_DISABLE_DMABUF_RENDERER", update_apps[0].environment_variables[0].key);
+    try std.testing.expectEqualStrings("1", update_apps[0].environment_variables[0].value);
+
     // Compare desktop entries.
     const sync_desktop = try readUpdateFile(std.testing.allocator, std.testing.io, sync_env.desktop_path);
     defer std.testing.allocator.free(sync_desktop);
@@ -3220,9 +3224,9 @@ test "update: sync and automated update produce equivalent metadata" {
     try std.testing.expect(std.mem.indexOf(u8, update_desktop, "%U") != null);
 
     // Both should reference their respective installed paths via Exec=.
-    const sync_exec = try std.fmt.allocPrint(std.testing.allocator, "Exec=\"{s}\" %U\n", .{sync_env.current_path});
+    const sync_exec = try std.fmt.allocPrint(std.testing.allocator, "Exec=env \"WEBKIT_DISABLE_DMABUF_RENDERER=1\" \"{s}\" %U\n", .{sync_env.current_path});
     defer std.testing.allocator.free(sync_exec);
-    const update_exec = try std.fmt.allocPrint(std.testing.allocator, "Exec=\"{s}\" %U\n", .{update_env.current_path});
+    const update_exec = try std.fmt.allocPrint(std.testing.allocator, "Exec=env \"WEBKIT_DISABLE_DMABUF_RENDERER=1\" \"{s}\" %U\n", .{update_env.current_path});
     defer std.testing.allocator.free(update_exec);
     try std.testing.expect(std.mem.indexOf(u8, sync_desktop, sync_exec) != null);
     try std.testing.expect(std.mem.indexOf(u8, update_desktop, update_exec) != null);

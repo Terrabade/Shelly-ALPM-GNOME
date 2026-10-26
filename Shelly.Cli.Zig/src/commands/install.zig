@@ -1,5 +1,6 @@
 const std = @import("std");
-const Zigalpm = @import("Zigalpm");
+const diagnostics = @import("diagnostics");
+const PackageManager = @import("PackageManager");
 const test_support = @import("test_support.zig");
 const config_manager = @import("../config/manager.zig");
 const config_model = @import("../config/model.zig");
@@ -11,6 +12,7 @@ const list_updates = @import("list_updates.zig");
 const parser = @import("../cli/parser.zig");
 const runtime = @import("../runtime/context.zig");
 const elevation = @import("../runtime/elevation.zig");
+const signals = @import("../runtime/signals.zig");
 const xdg = @import("../runtime/xdg.zig");
 const spec = @import("../cli/spec.zig");
 const aur_url = @import("../config/aur_url.zig");
@@ -31,7 +33,7 @@ const Real = struct {
     pub fn run(
         _: Real,
         context: *runtime.RuntimeContext,
-        operation_context: *Zigalpm.OperationContext,
+        operation_context: *PackageManager.OperationContext,
         invocation: *const parser.Invocation,
     ) !void {
         if (std.mem.eql(u8, invocation.command.path, standard_command_path))
@@ -154,11 +156,20 @@ pub fn dispatch(
 ) !?u8 {
     if (!isInstallPath(invocation.command.path)) return null;
 
+    if (std.mem.eql(u8, invocation.command.path, aur_command_path) and optionEnabled(invocation, "--isolated")) {
+        if (optionEnabled(invocation, "--chroot"))
+            return try reportValidationFailure(context, invocation, "Choose either --isolated or --chroot.");
+        if (optionEnabled(invocation, "--build-deps") or optionEnabled(invocation, "--make-deps"))
+            return try reportValidationFailure(context, invocation, "Cannot combine --isolated with dependency-only installation options.");
+        if (signOverride(invocation) == true)
+            return try reportValidationFailure(context, invocation, "Isolated builds do not support --sign. Sign exported packages separately, or use --nosign.");
+    }
+
     if (isAurVersionInstall(invocation)) {
         if (invocation.positionals.len == 0)
-            return try reportValidationFailure(context, invocation, "No package specified.");
+            return try reportValidationFailure(context, invocation, "Specify at least one package name. See the command help for usage.");
         if (invocation.positionals.len == 1)
-            return try reportValidationFailure(context, invocation, "No commit specified.");
+            return try reportValidationFailure(context, invocation, "Specify the AUR Git commit to install with --version.");
         if (invocation.positionals.len > 2)
             return try reportValidationFailure(
                 context,
@@ -208,9 +219,9 @@ pub fn dispatch(
             context,
             invocation,
             if (std.mem.eql(u8, invocation.command.path, standard_command_path))
-                "Error: No packages specified"
+                "Specify at least one package name. See the command help for usage."
             else
-                "No packages specified.",
+                "Specify at least one package name. See the command help for usage.",
         );
     if (optionEnabled(invocation, "--build-deps") and dependencyTargetCount(invocation) > 1)
         return try reportValidationFailure(
@@ -221,16 +232,16 @@ pub fn dispatch(
 
     if (isFlatpakRepair(invocation) and !invocation.globals.ui_mode and !elevation.isRoot()) {
         const elevate = repairTargetRequiresElevation(context, invocation.positionals[0]) catch |err| {
-            if (Zigalpm.flatpak.errors.unavailableMessage(err)) |message| {
+            if (PackageManager.flatpak.errors.unavailableMessage(err)) |message| {
                 try context.stderr.print("{s}\n", .{message});
                 return 1;
             }
-            try context.stderr.print("Unable to inspect Flatpak before repair: {t}\n", .{err});
+            try context.stderr.print("Could not inspect the Flatpak installation before repair. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
             return 1;
         };
         if (elevate) {
             const elevated_exit = elevation.relaunchIfNeeded(context, invocation.arguments) catch |err| {
-                try context.stderr.print("Unable to elevate Flatpak repair: {t}\n", .{err});
+                try context.stderr.print("Could not obtain administrator privileges for Flatpak repair. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
                 return 1;
             };
             if (elevated_exit) |exit_code| return exit_code;
@@ -242,14 +253,25 @@ pub fn dispatch(
         else
             invocation.arguments;
         defer if (carries_aur) context.allocator.free(elevated_arguments);
+        if (carries_aur and optionEnabled(invocation, "--isolated")) {
+            const elevated = elevation.relaunchIfNeededCancellable(context, elevated_arguments, false) catch |err| {
+                try context.stderr.print("Could not obtain administrator privileges for package installation. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
+                return 1;
+            };
+            if (elevated) |result| {
+                defer result.deinit(context.allocator);
+                return result.exit_code;
+            }
+        }
         const elevated_exit = elevation.relaunchIfNeeded(context, elevated_arguments) catch |err| {
-            try context.stderr.print("Unable to elevate install: {t}\n", .{err});
+            try context.stderr.print("Could not obtain administrator privileges for package installation. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
             return 1;
         };
         if (elevated_exit) |exit_code| return exit_code;
     }
 
-    return try executeWithRunner(context, invocation, Real{});
+    const exit_code = try executeWithRunner(context, invocation, Real{});
+    return if (optionEnabled(invocation, "--isolated") and signals.wasInterrupted()) 130 else exit_code;
 }
 
 fn executeWithRunner(
@@ -281,7 +303,7 @@ fn requestsStandardUpgrade(invocation: *const parser.Invocation) bool {
 
 fn confirmStandardUpgrade(context: *runtime.RuntimeContext) !bool {
     var result = list_updates.collectUpdates(context, .standard, .{}) catch |err| {
-        try context.stderr.print("Unable to prepare the standard upgrade plan: {t}\n", .{err});
+        try context.stderr.print("Could not prepare the full standard-package upgrade before installation. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
         try context.stderr.flush();
         return err;
     };
@@ -308,7 +330,7 @@ fn confirmStandardUpgradeWithUpdates(
 
     try writeStandardUpgradePreview(context.stdout, updates);
     const reader = context.stdin orelse {
-        try context.stdout.writeAll("Operation cancelled: confirmation input is unavailable.\n");
+        try context.stdout.writeAll("Operation cancelled because confirmation input is unavailable. Run the command in an interactive terminal to review and confirm the operation.\n");
         try context.stdout.flush();
         return false;
     };
@@ -339,8 +361,8 @@ fn confirmStandardUpgradeUi(context: *runtime.RuntimeContext) !bool {
     var result = list_updates.collectUpdates(context, .standard, .{}) catch |err| {
         const message = try std.fmt.allocPrint(
             context.allocator,
-            "Unable to prepare the standard upgrade plan: {t}",
-            .{err},
+            "Could not prepare the full standard-package upgrade before installation. {0s}\n\nTechnical details: {1s}",
+            .{ diagnostics.cause(err), @errorName(err) },
         );
         defer context.allocator.free(message);
         output.writeErrorFrame(context, message) catch {};
@@ -374,7 +396,7 @@ fn confirmStandardUpgradeUiWithUpdates(
     try writeStandardUpgradePreview(&preview.writer, updates);
     try output.writeInfoFrame(context, preview.writer.buffered());
 
-    var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
+    var operation_context = PackageManager.OperationContext.init(context.allocator, context.io);
     defer operation_context.deinit();
     var question_responder: ui_operation.QuestionResponder = .{
         .context = context,
@@ -451,8 +473,8 @@ fn executeUi(
         .opening = opening,
         .success_message = successMessage(invocation),
         .failure_message = failureMessage(invocation),
-        .failure_label = "Installation failed",
-        .cancelled_message = "Installation cancelled.",
+        .failure_label = "Could not install the selected packages.",
+        .cancelled_message = "Operation cancelled.",
         .report_flatpak_unavailable = true,
     }, runner);
 }
@@ -465,7 +487,7 @@ const PackageSource = union(enum) {
 
 fn runStandard(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
     var repository_packages: std.ArrayList([]const u8) = .empty;
@@ -496,17 +518,38 @@ fn runStandard(
 
     if (repository_packages.items.len > 0)
         try installRepositoryPackages(context, operation_context, invocation, repository_packages.items);
-    for (local_packages.items) |path|
-        try installLocalPackage(context, operation_context, path);
+    try installLocalPackages(context, operation_context, invocation, local_packages.items, LocalArchiveInstaller{});
 }
+
+/// Arch package archives installed in one ALPM transaction, so a split
+/// package's members can satisfy each other's dependencies. Adding them one
+/// transaction at a time would fail preparation for a member that depends on
+/// a sibling that is not installed yet.
+const LocalArchiveInstaller = struct {
+    fn install(
+        _: LocalArchiveInstaller,
+        context: *runtime.RuntimeContext,
+        operation_context: *PackageManager.OperationContext,
+        invocation: *const parser.Invocation,
+        paths: []const []const u8,
+    ) !void {
+        const manager = try PackageManager.Manager.init(context.allocator, context.environ, .{ .config_path = context.config_path, .use_root = true, .operation_context = operation_context });
+        defer manager.deinit();
+        manager.setOperationContext(operation_context);
+        defer manager.setOperationContext(null);
+        try manager.install_local_packages(paths, .{
+            .needed = optionEnabled(invocation, "--needed"),
+        });
+    }
+};
 
 fn installRepositoryPackages(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
     package_names: []const []const u8,
 ) !void {
-    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
+    const manager = try PackageManager.Manager.init(context.allocator, context.environ, .{ .config_path = context.config_path, .use_root = true, .operation_context = operation_context });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
@@ -514,7 +557,7 @@ fn installRepositoryPackages(
     if (optionEnabled(invocation, "--upgrade")) {
         try manager.sync(false);
         const updates = try manager.get_updates_available();
-        defer Zigalpm.alpm.OwnedPackageWithUpdate.deinitSlice(context.allocator, updates);
+        defer PackageManager.Manager.OwnedPackageWithUpdate.deinitSlice(context.allocator, updates);
         if (updates.len > 0) {
             var restart_report = try manager.sync_system_update(.{});
             restart_report.deinit();
@@ -527,50 +570,70 @@ fn installRepositoryPackages(
         try manager.install_dependencies_only(
             names[0],
             optionEnabled(invocation, "--make-deps"),
-            .{},
+            .{ .needed = optionEnabled(invocation, "--needed") },
         );
         return;
     }
     try manager.install_packages(
         names,
-        if (optionEnabled(invocation, "--no-deps")) .{ .nodeps = true } else .{},
+        repositoryInstallFlags(invocation),
     );
 }
 
-fn installLocalPackage(
+fn repositoryInstallFlags(invocation: *const parser.Invocation) PackageManager.Manager.TransFlag {
+    return .{
+        .needed = optionEnabled(invocation, "--needed"),
+        .nodeps = optionEnabled(invocation, "--no-deps"),
+    };
+}
+
+/// Resolves every local target and installs it through `archives_installer`,
+/// which receives all Arch package archives in one batch. Binaries packages
+/// keep their own per-file installation.
+fn installLocalPackages(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
-    location: []const u8,
+    operation_context: *PackageManager.OperationContext,
+    invocation: *const parser.Invocation,
+    locations: []const []const u8,
+    archives_installer: anytype,
 ) !void {
-    std.Io.Dir.cwd().access(context.io, location, .{}) catch return error.FileNotFound;
     const current_directory = try std.process.currentPathAlloc(context.io, context.allocator);
     defer context.allocator.free(current_directory);
-    const absolute_path = try std.fs.path.resolve(context.allocator, &.{ current_directory, location });
-    defer context.allocator.free(absolute_path);
-    const inspector: Zigalpm.local.Inspector = .{ .allocator = context.allocator, .io = context.io };
+    const inspector: PackageManager.local.Inspector = .{ .allocator = context.allocator, .io = context.io };
+    var archive_paths: std.ArrayList([]u8) = .empty;
+    defer {
+        for (archive_paths.items) |path| context.allocator.free(path);
+        archive_paths.deinit(context.allocator);
+    }
 
-    if (try inspector.isArchPackage(absolute_path)) {
-        const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
-        defer manager.deinit();
-        manager.setOperationContext(operation_context);
-        defer manager.setOperationContext(null);
-        try manager.install_local_packages(&.{absolute_path}, .{});
-        return;
+    for (locations) |location| {
+        std.Io.Dir.cwd().access(context.io, location, .{}) catch return error.FileNotFound;
+        const absolute_path = try std.fs.path.resolve(context.allocator, &.{ current_directory, location });
+        if (try inspector.isArchPackage(absolute_path)) {
+            archive_paths.append(context.allocator, absolute_path) catch |err| {
+                context.allocator.free(absolute_path);
+                return err;
+            };
+            continue;
+        }
+        defer context.allocator.free(absolute_path);
+        if (try inspector.isBinariesPackage(absolute_path)) {
+            var manager = PackageManager.LocalManager.init(context.allocator, context.io, .{});
+            defer manager.deinit();
+            manager.setOperationContext(operation_context);
+            defer manager.setOperationContext(null);
+            if (!try manager.installBinariesPackage(absolute_path)) return InstallError.BackendFailed;
+            continue;
+        }
+        return InstallError.UnsupportedLocalPackage;
     }
-    if (try inspector.isBinariesPackage(absolute_path)) {
-        var manager = Zigalpm.LocalManager.init(context.allocator, context.io, .{});
-        defer manager.deinit();
-        manager.setOperationContext(operation_context);
-        defer manager.setOperationContext(null);
-        if (!try manager.installBinariesPackage(absolute_path)) return InstallError.BackendFailed;
-        return;
-    }
-    return InstallError.UnsupportedLocalPackage;
+    if (archive_paths.items.len == 0) return;
+    try archives_installer.install(context, operation_context, invocation, archive_paths.items);
 }
 
 fn downloadPackage(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     url: []const u8,
 ) ![]const u8 {
     var random: [8]u8 = undefined;
@@ -587,10 +650,10 @@ fn downloadPackage(
         context.allocator.free(destination);
     }
 
-    var downloader = Zigalpm.shared.Downloader.init(
+    var downloader = PackageManager.shared.Downloader.init(
         context.allocator,
         context.io,
-        Zigalpm.shared.downloader.DownloadConfiguration.default(),
+        PackageManager.shared.downloader.DownloadConfiguration.default(),
     );
     defer downloader.deinit();
     downloader.setOperationContext(operation_context);
@@ -602,9 +665,13 @@ fn downloadPackage(
 
 fn runAur(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
+    var cancellation_watcher: signals.CancellationWatcher = .{};
+    if (optionEnabled(invocation, "--isolated"))
+        try cancellation_watcher.start(context.io, operation_context);
+    defer cancellation_watcher.deinit();
     if (!isAurVersionInstall(invocation) and
         optionEnabled(invocation, "--build-deps") and invocation.positionals.len > 1)
         return error.MultipleDependencyTargets;
@@ -612,10 +679,13 @@ fn runAur(
     defer context.allocator.free(executable);
     const build_command = std.mem.trimEnd(u8, executable, " (deleted)");
     const aur_base = try aur_url.resolveFor(context, invocation);
-    const manager = try Zigalpm.AurManager.init(context.allocator, context.environ, .{
+    const manager = try PackageManager.AurManager.init(context.allocator, context.environ, .{
+        .config_path = context.config_path,
         .aur_git_base_url = aur_base,
         .root = true,
+        .needed = optionEnabled(invocation, "--needed"),
         .use_chroot = optionEnabled(invocation, "--chroot"),
+        .use_isolated = optionEnabled(invocation, "--isolated"),
         .check = checkOverride(invocation),
         .sign = signOverride(invocation),
         .build_command = build_command,
@@ -651,7 +721,7 @@ fn signOverride(invocation: *const parser.Invocation) ?bool {
 
 fn runAppImage(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
     if (elevation.isRoot()) {
@@ -667,7 +737,7 @@ fn runAppImage(
 
     const location = invocation.positionals[0];
     std.Io.Dir.cwd().access(context.io, location, .{}) catch return error.FileNotFound;
-    if (!Zigalpm.AppImageManager.isAppImage(location)) return error.NotAnAppImage;
+    if (!PackageManager.AppImageManager.isAppImage(location)) return error.NotAnAppImage;
 
     const configuration = config_manager.Manager.init(context).read() catch
         try config_model.Config.defaults(context.allocator);
@@ -678,7 +748,7 @@ fn runAppImage(
         context.allocator,
         &.{ try xdg.configHome(context), "shelly", "appimage-metadata-v2.db" },
     );
-    var manager = Zigalpm.AppImageManager{
+    var manager = PackageManager.AppImageManager{
         .allocator = context.allocator,
         .io = context.io,
         .environ = context.environ,
@@ -729,12 +799,12 @@ const EolInstallReplacement = struct {
 
 fn resolveFlatpakEolInstallTarget(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     manager: anytype,
     selected_id: []const u8,
     selected_remote: []const u8,
     requested_branch: []const u8,
-    requested_scope: Zigalpm.flatpak.Scope,
+    requested_scope: PackageManager.flatpak.Scope,
 ) !?EolInstallReplacement {
     var remote_ref = manager.get_remote_ref_info_flatpak(
         selected_remote,
@@ -746,27 +816,27 @@ fn resolveFlatpakEolInstallTarget(
 
     const marker = remote_ref.eol_rebase orelse {
         if (remote_ref.eol) |reason| {
-            const warning = try Zigalpm.flatpak.eol.eolOnlyWarning(
+            const warning = try PackageManager.flatpak.eol.eolOnlyWarning(
                 context.allocator,
                 selected_id,
                 requested_branch,
                 reason,
             );
             defer context.allocator.free(warning);
-            Zigalpm.flatpak.eol.emitStatus(operation_context, .install, .warning, selected_id, warning);
+            PackageManager.flatpak.eol.emitStatus(operation_context, .install, .warning, selected_id, warning);
         }
         return null;
     };
 
-    const target = Zigalpm.flatpak.eol.parseRebaseTarget(marker, requested_branch) orelse {
-        const warning = try Zigalpm.flatpak.eol.eolOnlyWarning(
+    const target = PackageManager.flatpak.eol.parseRebaseTarget(marker, requested_branch) orelse {
+        const warning = try PackageManager.flatpak.eol.eolOnlyWarning(
             context.allocator,
             selected_id,
             requested_branch,
             remote_ref.eol,
         );
         defer context.allocator.free(warning);
-        Zigalpm.flatpak.eol.emitStatus(operation_context, .install, .warning, selected_id, warning);
+        PackageManager.flatpak.eol.emitStatus(operation_context, .install, .warning, selected_id, warning);
         return null;
     };
 
@@ -781,17 +851,17 @@ fn resolveFlatpakEolInstallTarget(
         .{ selected_id, target.id },
     );
     defer context.allocator.free(notice);
-    Zigalpm.flatpak.eol.emitStatus(operation_context, .install, .information, selected_id, notice);
+    PackageManager.flatpak.eol.emitStatus(operation_context, .install, .information, selected_id, notice);
 
     return .{ .id = owned_id, .branch = owned_branch };
 }
 
 fn runFlatpak(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
-    const requested_scope: Zigalpm.flatpak.Scope =
+    const requested_scope: PackageManager.flatpak.Scope =
         if (optionEnabled(invocation, "--user")) .user else .system;
     const requested_id = invocation.positionals[0];
     var selected_id: []const u8 = requested_id;
@@ -799,11 +869,11 @@ fn runFlatpak(
     var owned_remote: ?[]const u8 = null;
     defer if (owned_remote) |remote| context.allocator.free(remote);
 
-    var catalogs: ?[]Zigalpm.flatpak.AppstreamCatalog = null;
+    var catalogs: ?[]PackageManager.flatpak.AppstreamCatalog = null;
     defer if (catalogs) |values|
-        Zigalpm.flatpak.AppstreamCatalog.deinitSlice(context.allocator, values);
+        PackageManager.flatpak.AppstreamCatalog.deinitSlice(context.allocator, values);
     if (selected_remote.len == 0 and std.mem.indexOfScalar(u8, requested_id, '.') == null) {
-        var appstreams = Zigalpm.flatpak.AppstreamManager.init(context.allocator, context.io);
+        var appstreams = PackageManager.flatpak.AppstreamManager.init(context.allocator, context.io);
         appstreams.setOperationContext(operation_context);
         catalogs = appstreams.getAllRemoteCatalogs(null) catch null;
         var candidates: std.ArrayList(FlatpakCandidate) = .empty;
@@ -835,7 +905,7 @@ fn runFlatpak(
 
     const requested_branch = optionValue(invocation, "--branch") orelse "";
 
-    var manager = Zigalpm.FlatpakManager{ .allocator = context.allocator, .io = context.io };
+    var manager = PackageManager.FlatpakManager{ .allocator = context.allocator, .io = context.io };
     defer manager.deinit();
     try manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null) catch {};
@@ -874,10 +944,10 @@ fn runFlatpak(
 
 fn runFlatpakRepair(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
-    var manager = Zigalpm.FlatpakManager{ .allocator = context.allocator, .io = context.io };
+    var manager = PackageManager.FlatpakManager{ .allocator = context.allocator, .io = context.io };
     defer manager.deinit();
     try manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null) catch {};
@@ -886,7 +956,7 @@ fn runFlatpakRepair(
 }
 
 fn repairTargetRequiresElevation(context: *runtime.RuntimeContext, target: []const u8) !bool {
-    var manager = Zigalpm.FlatpakManager{ .allocator = context.allocator, .io = context.io };
+    var manager = PackageManager.FlatpakManager{ .allocator = context.allocator, .io = context.io };
     defer manager.deinit();
     var application = (try manager.find_installed_flatpak(target)) orelse return false;
     defer application.deinit(context.allocator);
@@ -894,7 +964,7 @@ fn repairTargetRequiresElevation(context: *runtime.RuntimeContext, target: []con
 }
 
 fn repairScopeRequiresElevation(
-    scope: Zigalpm.flatpak.Scope,
+    scope: PackageManager.flatpak.Scope,
     running_as_root: bool,
 ) bool {
     return !running_as_root and scope == .system;
@@ -907,7 +977,7 @@ const FlatpakFileKind = enum {
 
 fn runFlatpakFile(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
     kind: FlatpakFileKind,
 ) !void {
@@ -920,7 +990,7 @@ fn runFlatpakFile(
     const path_z = try context.allocator.dupeZ(u8, absolute_path);
     defer context.allocator.free(path_z);
 
-    var manager = Zigalpm.FlatpakManager{ .allocator = context.allocator, .io = context.io };
+    var manager = PackageManager.FlatpakManager{ .allocator = context.allocator, .io = context.io };
     defer manager.deinit();
     try manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null) catch {};
@@ -931,7 +1001,7 @@ fn runFlatpakFile(
     if (!installed) return InstallError.BackendFailed;
 }
 
-fn flatpakFileScope(invocation: *const parser.Invocation) Zigalpm.flatpak.Scope {
+fn flatpakFileScope(invocation: *const parser.Invocation) PackageManager.flatpak.Scope {
     return if (optionEnabled(invocation, "--user")) .user else .system;
 }
 
@@ -944,13 +1014,13 @@ fn flatpakFileKind(invocation: *const parser.Invocation) ?FlatpakFileKind {
 
 fn firstFlatpakRemote(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
-    requested_scope: Zigalpm.flatpak.Scope,
+    operation_context: *PackageManager.OperationContext,
+    requested_scope: PackageManager.flatpak.Scope,
 ) !?[]const u8 {
-    var manager = Zigalpm.flatpak.RemoteManager{ .allocator = context.allocator, .io = context.io };
+    var manager = PackageManager.flatpak.RemoteManager{ .allocator = context.allocator, .io = context.io };
     manager.setOperationContext(operation_context);
     const remotes = try manager.listRemotesWithDetails();
-    defer Zigalpm.flatpak.Remote.deinitSlice(
+    defer PackageManager.flatpak.Remote.deinitSlice(
         context.allocator,
         remotes,
     );
@@ -964,11 +1034,11 @@ fn firstFlatpakRemote(
 
 fn selectFlatpakCandidate(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     candidates: []const FlatpakCandidate,
 ) !FlatpakCandidate {
     if (candidates.len == 1) return candidates[0];
-    const options = try context.allocator.alloc(Zigalpm.OperationQuestionOption, candidates.len);
+    const options = try context.allocator.alloc(PackageManager.OperationQuestionOption, candidates.len);
     defer context.allocator.free(options);
     const labels = try context.allocator.alloc([]const u8, candidates.len);
     var initialized_labels: usize = 0;
@@ -1070,9 +1140,9 @@ fn successMessage(invocation: *const parser.Invocation) []const u8 {
 
 fn failureMessage(invocation: *const parser.Invocation) []const u8 {
     if (std.mem.eql(u8, invocation.command.path, aur_command_path) and
-        optionEnabled(invocation, "--build-deps")) return "Dependency installation failed.";
-    if (isFlatpakRepair(invocation)) return "Flatpak repair failed.";
-    return "Installation failed.";
+        optionEnabled(invocation, "--build-deps")) return "Could not install the dependencies for the requested package.";
+    if (isFlatpakRepair(invocation)) return "Could not repair the Flatpak installation.";
+    return "Could not install the selected packages.";
 }
 
 fn classifyPackageSource(value: []const u8) PackageSource {
@@ -1082,7 +1152,7 @@ fn classifyPackageSource(value: []const u8) PackageSource {
         std.mem.indexOfScalar(u8, value, '\\') != null or
         std.mem.startsWith(u8, value, "~") or
         std.fs.path.isAbsolute(value) or
-        Zigalpm.local.file_inspector.isSupportedArchive(value)) return .{ .file = value };
+        PackageManager.local.file_inspector.isSupportedArchive(value)) return .{ .file = value };
     return .{ .repository = value };
 }
 
@@ -1274,7 +1344,7 @@ test "Flatpak repair lifecycle and elevation follow the installed scope" {
         pub fn run(
             self: *@This(),
             _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
+            _: *PackageManager.OperationContext,
             invocation: *const parser.Invocation,
         ) !void {
             self.called = true;
@@ -1373,6 +1443,116 @@ test "Flatpak file install modifiers reject conflicting modes and repository opt
     ) != null);
 }
 
+test "standard install needed flag works before and after targets and preserves other flags" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const shortcodes = @import("../cli/shortcodes.zig");
+    const cases = [_]struct {
+        args: []const []const u8,
+        names: []const []const u8 = &.{"zed"},
+        needed: bool = true,
+        nodeps: bool = false,
+        no_confirm: bool = false,
+    }{
+        .{ .args = &.{ "-Is", "--needed", "zed" } },
+        .{ .args = &.{ "-Is", "zed", "--needed" } },
+        .{ .args = &.{ "-Is", "zed", "git", "--needed" }, .names = &.{ "zed", "git" } },
+        .{ .args = &.{ "-Is", "zed", "--needed", "git" }, .names = &.{ "zed", "git" } },
+        .{ .args = &.{ "-Is", "--needed", "-n", "zed", "--no-deps" }, .nodeps = true, .no_confirm = true },
+        .{ .args = &.{ "-Is", "zed", "--no-deps", "--needed", "-n" }, .nodeps = true, .no_confirm = true },
+        .{ .args = &.{ "install", "standard", "zed", "--needed" } },
+        .{ .args = &.{ "-Is", "demo.pkg.tar.zst", "--needed" }, .names = &.{"demo.pkg.tar.zst"} },
+        .{ .args = &.{ "-Is", "zed" }, .needed = false },
+        .{ .args = &.{ "-Is", "zed", "-n", "--no-deps" }, .needed = false, .nodeps = true, .no_confirm = true },
+    };
+    for (cases) |case| {
+        const translation = try shortcodes.translate(tc.arena.allocator(), &manifest, case.args);
+        const outcome = try parser.parse(tc.arena.allocator(), &manifest, translation.arguments().?);
+        const invocation = outcome.dispatch;
+        try std.testing.expectEqualStrings(standard_command_path, invocation.command.path);
+        try std.testing.expectEqual(case.names.len, invocation.positionals.len);
+        for (case.names, invocation.positionals) |expected, actual|
+            try std.testing.expectEqualStrings(expected, actual);
+        const flags = repositoryInstallFlags(&invocation);
+        try std.testing.expectEqual(case.needed, flags.needed);
+        try std.testing.expectEqual(case.nodeps, flags.nodeps);
+        try std.testing.expectEqual(case.no_confirm, invocation.globals.no_confirm);
+    }
+}
+
+test "AUR isolated flag survives shortcode parsing and elevation arguments" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const shortcodes = @import("../cli/shortcodes.zig");
+    for ([_][]const []const u8{
+        &.{ "-Ia", "--isolated", "demo", "--needed" },
+        &.{ "install", "aur", "demo", "--isolated", "--check", "--nosign" },
+        &.{ "-Iav", "demo", "deadbeef", "--isolated" },
+    }) |args| {
+        const translation = try shortcodes.translate(tc.arena.allocator(), &manifest, args);
+        const parsed = try parser.parse(tc.arena.allocator(), &manifest, translation.arguments().?);
+        try std.testing.expectEqualStrings(aur_command_path, parsed.dispatch.command.path);
+        try std.testing.expect(optionEnabled(&parsed.dispatch, "--isolated"));
+        const elevated_args = try aur_url.argumentsWithEffectiveBase(&tc.context, &parsed.dispatch);
+        const elevated = try parser.parse(tc.arena.allocator(), &manifest, elevated_args);
+        try std.testing.expect(optionEnabled(&elevated.dispatch, "--isolated"));
+        try std.testing.expectEqual(parsed.dispatch.positionals.len, elevated.dispatch.positionals.len);
+        for (parsed.dispatch.positionals, elevated.dispatch.positionals) |expected, actual|
+            try std.testing.expectEqualStrings(expected, actual);
+    }
+}
+
+test "AUR isolated conflicts fail before elevation or package operations" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    for ([_][]const u8{ "--chroot", "--build-deps", "--make-deps", "--sign" }) |conflict| {
+        const parsed = try parser.parse(tc.arena.allocator(), &manifest, &.{ "install", "aur", "demo", "--isolated", conflict });
+        try std.testing.expectEqual(@as(?u8, 1), try dispatch(&tc.context, &parsed.dispatch));
+    }
+}
+
+test "AUR needed flag survives shortcode parsing and elevation arguments" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const shortcodes = @import("../cli/shortcodes.zig");
+    const cases = [_][]const []const u8{
+        &.{ "-Ia", "--needed", "demo" },
+        &.{ "-Ia", "demo", "--needed" },
+        &.{ "-Ia", "demo", "--needed", "other", "-n" },
+        &.{ "install", "aur", "demo", "--needed", "--chroot", "--check", "--nosign" },
+        &.{ "-Iav", "demo", "deadbeef", "--needed" },
+        &.{ "-Iab", "demo", "--needed", "--make-deps" },
+        &.{ "-Ia", "demo" },
+    };
+    for (cases, 0..) |args, index| {
+        const translation = try shortcodes.translate(tc.arena.allocator(), &manifest, args);
+        const parsed = try parser.parse(tc.arena.allocator(), &manifest, translation.arguments().?);
+        try std.testing.expect(parsed == .dispatch);
+        const invocation = &parsed.dispatch;
+        try std.testing.expectEqual(index != cases.len - 1, optionEnabled(invocation, "--needed"));
+        const arguments = try aur_url.argumentsWithEffectiveBase(&tc.context, invocation);
+        defer tc.context.allocator.free(arguments);
+        const elevated = try parser.parse(tc.arena.allocator(), &manifest, arguments);
+        try std.testing.expect(elevated == .dispatch);
+        try std.testing.expectEqualStrings(aur_command_path, elevated.dispatch.command.path);
+        try std.testing.expectEqual(optionEnabled(invocation, "--needed"), optionEnabled(&elevated.dispatch, "--needed"));
+        try std.testing.expectEqual(invocation.globals.no_confirm, elevated.dispatch.globals.no_confirm);
+        try std.testing.expectEqual(invocation.positionals.len, elevated.dispatch.positionals.len);
+        for (invocation.positionals, elevated.dispatch.positionals) |expected, actual|
+            try std.testing.expectEqualStrings(expected, actual);
+        for ([_][]const u8{ "--chroot", "--check", "--nosign", "--version", "--build-deps", "--make-deps" }) |flag|
+            try std.testing.expectEqual(optionEnabled(invocation, flag), optionEnabled(&elevated.dispatch, flag));
+    }
+}
+
 test "install routes every action-first backend and forwards type-specific options" {
     var tc: test_support.TestContext = .{};
     tc.init();
@@ -1385,7 +1565,7 @@ test "install routes every action-first backend and forwards type-specific optio
         pub fn run(
             self: *@This(),
             _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
+            _: *PackageManager.OperationContext,
             invocation: *const parser.Invocation,
         ) !void {
             self.paths[self.calls] = invocation.command.path;
@@ -1450,7 +1630,7 @@ test "AUR version install uses exact package and commit through the shared lifec
         pub fn run(
             _: @This(),
             _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
+            _: *PackageManager.OperationContext,
             invocation: *const parser.Invocation,
         ) !void {
             try std.testing.expect(isAurVersionInstall(invocation));
@@ -1484,7 +1664,7 @@ test "AUR version install validates package commit and incompatible dependency m
         &.{ "install", "aur", "--version", "demo-git" },
     );
     try std.testing.expectEqual(@as(?u8, 1), try dispatch(&tc.context, &outcome.dispatch));
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "No commit specified.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Specify the AUR Git commit to install with --version.") != null);
 
     tc.stdout.writer.end = 0;
     outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
@@ -1509,7 +1689,7 @@ test "install uses the shared non-UI and UI transaction lifecycles" {
     defer tc.deinit();
     const manifest = try spec.Manifest.load(tc.arena.allocator());
     const Success = struct {
-        pub fn run(_: @This(), _: *runtime.RuntimeContext, operation_context: *Zigalpm.OperationContext, invocation: *const parser.Invocation) !void {
+        pub fn run(_: @This(), _: *runtime.RuntimeContext, operation_context: *PackageManager.OperationContext, invocation: *const parser.Invocation) !void {
             if (!invocation.globals.ui_mode) return;
             var operation = operation_context.begin(.{
                 .backend = .aur,
@@ -1545,7 +1725,7 @@ test "standard install upgrade requires confirmation unless disabled" {
         pub fn run(
             self: *@This(),
             _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
+            _: *PackageManager.OperationContext,
             _: *const parser.Invocation,
         ) !void {
             self.called = true;
@@ -1775,7 +1955,7 @@ test "install backend failures return a failing exit code and transaction result
     const manifest = try spec.Manifest.load(tc.arena.allocator());
     const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "install", "standard", "demo" });
     const Failure = struct {
-        pub fn run(_: @This(), _: *runtime.RuntimeContext, _: *Zigalpm.OperationContext, _: *const parser.Invocation) !void {
+        pub fn run(_: @This(), _: *runtime.RuntimeContext, _: *PackageManager.OperationContext, _: *const parser.Invocation) !void {
             return error.TestInstallFailure;
         }
     };
@@ -1783,8 +1963,8 @@ test "install backend failures return a failing exit code and transaction result
         @as(u8, 1),
         try executeWithRunner(&tc.context, &outcome.dispatch, Failure{}),
     );
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "error: TestInstallFailure") != null);
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), ":: Transaction failed.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Technical details: TestInstallFailure") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Could not complete the requested operation.") != null);
 }
 
 test "standard source classification preserves dotted repository names files and URLs" {
@@ -1808,10 +1988,10 @@ test "Flatpak candidate selection uses the shared question response" {
         .stdout = &stdout.writer,
         .stderr = &stderr.writer,
     };
-    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    var operations = PackageManager.OperationContext.init(arena.allocator(), std.testing.io);
     defer operations.deinit();
     operations.setQuestionHandler(.{ .function = struct {
-        fn answer(_: ?*anyopaque, _: Zigalpm.OperationQuestion) Zigalpm.OperationQuestionResponse {
+        fn answer(_: ?*anyopaque, _: PackageManager.OperationQuestion) PackageManager.OperationQuestionResponse {
             return .{ .choice = 1 };
         }
     }.answer });
@@ -1825,7 +2005,7 @@ test "Flatpak candidate selection uses the shared question response" {
 
 const EolInstallTestManager = struct {
     allocator: std.mem.Allocator,
-    remote_ref: ?Zigalpm.flatpak.types.RemoteRef = null,
+    remote_ref: ?PackageManager.flatpak.types.RemoteRef = null,
     fetch_error: bool = false,
 
     pub fn get_remote_ref_info_flatpak(
@@ -1833,23 +2013,23 @@ const EolInstallTestManager = struct {
         _: []const u8,
         _: []const u8,
         _: []const u8,
-        _: Zigalpm.flatpak.Scope,
-    ) !Zigalpm.flatpak.types.RemoteRef {
+        _: PackageManager.flatpak.Scope,
+    ) !PackageManager.flatpak.types.RemoteRef {
         if (self.fetch_error) return error.TestFetchFailure;
         const source = self.remote_ref orelse return error.TestFetchFailure;
-        return Zigalpm.flatpak.types.RemoteRef.fromWire(self.allocator, .{
+        return PackageManager.flatpak.types.RemoteRef.fromWire(self.allocator, .{
             .remote_name = source.remote_name,
             .installed_size = source.installed_size,
             .download_size = source.download_size,
             .eol = source.eol,
             .eol_rebase = source.eol_rebase,
-            .scope = Zigalpm.flatpak.types.Scope.toWire(source.scope),
+            .scope = PackageManager.flatpak.types.Scope.toWire(source.scope),
             .permissions = &.{},
         });
     }
 };
 
-fn makeEolRemoteRef(eol: ?[]const u8, eol_rebase: ?[]const u8) Zigalpm.flatpak.types.RemoteRef {
+fn makeEolRemoteRef(eol: ?[]const u8, eol_rebase: ?[]const u8) PackageManager.flatpak.types.RemoteRef {
     return .{
         .remote_name = @constCast("flathub"),
         .installed_size = 0,
@@ -1872,7 +2052,7 @@ test "Flatpak install EOL detection redirects to the replacement" {
         .stdout = &stdout.writer,
         .stderr = &stderr.writer,
     };
-    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    var operations = PackageManager.OperationContext.init(arena.allocator(), std.testing.io);
     defer operations.deinit();
 
     var manager: EolInstallTestManager = .{
@@ -1907,7 +2087,7 @@ test "Flatpak install EOL detection warns and proceeds for eol-only refs" {
         .stdout = &stdout.writer,
         .stderr = &stderr.writer,
     };
-    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    var operations = PackageManager.OperationContext.init(arena.allocator(), std.testing.io);
     defer operations.deinit();
 
     var manager: EolInstallTestManager = .{
@@ -1939,7 +2119,7 @@ test "Flatpak install EOL detection treats remote fetch errors as advisory" {
         .stdout = &stdout.writer,
         .stderr = &stderr.writer,
     };
-    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    var operations = PackageManager.OperationContext.init(arena.allocator(), std.testing.io);
     defer operations.deinit();
 
     var manager: EolInstallTestManager = .{
@@ -1971,7 +2151,7 @@ test "Flatpak install EOL detection accepts full-ref replacement markers" {
         .stdout = &stdout.writer,
         .stderr = &stderr.writer,
     };
-    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    var operations = PackageManager.OperationContext.init(arena.allocator(), std.testing.io);
     defer operations.deinit();
 
     var manager: EolInstallTestManager = .{
@@ -2019,4 +2199,152 @@ test "appimage install relaunch forwards positionals and install-path" {
         "install", "appimage", "--no-confirm", "--install-path", "/opt/appimages", "/tmp/demo.AppImage",
     };
     try std.testing.expectEqualSlices([]const u8, &expected_full, full_args);
+}
+
+test "standard install batches every local Arch archive into one transaction" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const directory = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+    const member = try std.fs.path.join(allocator, &.{ directory, "demo-1-1-any.pkg.tar.zst" });
+    defer allocator.free(member);
+    const docs = try std.fs.path.join(allocator, &.{ directory, "demo-docs-1-1-any.pkg.tar.zst" });
+    defer allocator.free(docs);
+    try PackageManager.shared.archive.writeFixture(allocator, member, .zstd, &.{
+        .{ .path = ".PKGINFO", .contents = "pkgname = demo\n" },
+    });
+    try PackageManager.shared.archive.writeFixture(allocator, docs, .zstd, &.{
+        .{ .path = ".PKGINFO", .contents = "pkgname = demo-docs\n" },
+    });
+
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{
+        "install", "standard", "--needed", member, docs,
+    });
+    var operations = PackageManager.OperationContext.init(allocator, io);
+    defer operations.deinit();
+
+    var calls: usize = 0;
+    const Capture = struct {
+        calls: *usize,
+
+        pub fn install(
+            self: @This(),
+            _: *runtime.RuntimeContext,
+            _: *PackageManager.OperationContext,
+            invocation: *const parser.Invocation,
+            paths: []const []const u8,
+        ) !void {
+            self.calls.* += 1;
+            try std.testing.expect(optionEnabled(invocation, "--needed"));
+            try std.testing.expectEqual(@as(usize, 2), paths.len);
+            try std.testing.expect(std.mem.endsWith(u8, paths[0], "demo-1-1-any.pkg.tar.zst"));
+            try std.testing.expect(std.mem.endsWith(u8, paths[1], "demo-docs-1-1-any.pkg.tar.zst"));
+            for (paths) |path| try std.testing.expect(std.fs.path.isAbsolute(path));
+        }
+    };
+    try installLocalPackages(
+        &tc.context,
+        &operations,
+        &outcome.dispatch,
+        &.{ member, docs },
+        Capture{ .calls = &calls },
+    );
+    try std.testing.expectEqual(@as(usize, 1), calls);
+}
+
+test "standard install rejects local targets that are not installable files" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const directory = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+    const notes = try std.fs.path.join(allocator, &.{ directory, "notes.txt" });
+    defer allocator.free(notes);
+    try temporary.dir.writeFile(io, .{ .sub_path = "notes.txt", .data = "not an installable file\n" });
+    const missing = try std.fs.path.join(allocator, &.{ directory, "missing.pkg.tar.zst" });
+    defer allocator.free(missing);
+
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "install", "standard", notes });
+    var operations = PackageManager.OperationContext.init(allocator, io);
+    defer operations.deinit();
+
+    const Unexpected = struct {
+        pub fn install(
+            _: @This(),
+            _: *runtime.RuntimeContext,
+            _: *PackageManager.OperationContext,
+            _: *const parser.Invocation,
+            _: []const []const u8,
+        ) !void {
+            return error.UnexpectedArchiveInstall;
+        }
+    };
+    try std.testing.expectError(
+        error.FileNotFound,
+        installLocalPackages(&tc.context, &operations, &outcome.dispatch, &.{missing}, Unexpected{}),
+    );
+    try std.testing.expectError(
+        error.UnsupportedLocalPackage,
+        installLocalPackages(&tc.context, &operations, &outcome.dispatch, &.{notes}, Unexpected{}),
+    );
+}
+
+test "install preserves actionable lock errors once in terminal and UI output" {
+    const Failure = struct {
+        pub fn run(_: @This(), context: *runtime.RuntimeContext, operations: *PackageManager.OperationContext, _: *const parser.Invocation) !void {
+            var operation = operations.begin(.{ .backend = .alpm, .kind = .install, .subject = "demo" });
+            defer operation.finish(.failed);
+            const message = try PackageManager.user_errors.databaseLocked(context.allocator, "/custom/package database/");
+            defer context.allocator.free(message);
+            operation.reportError(error.AlpmOperationFailed, message, "alpm", null, false);
+            return error.TransInitFailed;
+        }
+    };
+    for ([_]bool{ false, true }) |ui_mode| {
+        var tc: test_support.TestContext = .{};
+        tc.init();
+        defer tc.deinit();
+        const alloc = tc.arena.allocator();
+        const manifest = try spec.Manifest.load(alloc);
+        const args: []const []const u8 = if (ui_mode)
+            &.{ "install", "standard", "demo", "--ui-mode" }
+        else
+            &.{ "install", "standard", "demo" };
+        const outcome = try parser.parse(alloc, &manifest, args);
+        try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&tc.context, &outcome.dispatch, Failure{}));
+        var decoded_output: std.Io.Writer.Allocating = .init(alloc);
+        defer decoded_output.deinit();
+        var error_frames: usize = 0;
+        if (ui_mode) {
+            var frames = std.mem.splitSequence(u8, tc.stdout.written(), "[JSON]");
+            _ = frames.next();
+            while (frames.next()) |frame| {
+                const end = std.mem.indexOf(u8, frame, "[/JSON]") orelse return error.InvalidFrame;
+                const encoded = frame[0..end];
+                const bytes = try alloc.alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(encoded));
+                try std.base64.standard.Decoder.decode(bytes, encoded);
+                if (std.mem.indexOf(u8, bytes, "\"$kind\":\"alpm.error\"") != null) error_frames += 1;
+                try decoded_output.writer.writeAll(bytes);
+            }
+            try std.testing.expectEqual(@as(usize, 1), error_frames);
+        } else try decoded_output.writer.writeAll(tc.stdout.written());
+        const rendered = decoded_output.written();
+        try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, rendered, "because the package database is locked"));
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "Lock file: /custom/package database/db.lck") != null);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "sudo rm -- '/custom/package database/db.lck'") != null);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "If no package manager is running") != null);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "TransInitFailed") != null);
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "unexpected error") == null);
+    }
 }

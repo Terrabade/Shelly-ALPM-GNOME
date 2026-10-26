@@ -4,18 +4,23 @@ const package_manifest = @import("build.zig.zon");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const path_profile = b.option([]const u8, "path-profile", "Distribution path defaults: pacman or devario") orelse "pacman";
+    const enable_libalpm = b.option(bool, "libalpm", "Include the libalpm backend alongside RLPM (tests auto-detect when omitted)");
+    const diagnostics = b.dependency("shelly_diagnostics", .{ .target = target, .optimize = optimize }).module("diagnostics");
     const flatpak_backend_path = b.option(
         []const u8,
         "flatpak-backend-path",
         "Absolute path to the Shelly Flatpak backend shared library",
     ) orelse "/usr/lib/shelly/libshelly-flatpak-backend.so.1";
 
-    const zigalpm_dependency = b.dependency("zigalpm", .{
+    const package_manager_dependency = b.dependency("package_manager", .{
+        .libalpm = enable_libalpm,
+        .@"path-profile" = path_profile,
         .target = target,
         .optimize = optimize,
         .@"flatpak-backend-path" = flatpak_backend_path,
     });
-    const zigalpm = zigalpm_dependency.module("Zigalpm");
+    const package_manager = package_manager_dependency.module("PackageManager");
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", package_manifest.version);
@@ -25,7 +30,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    cli.addImport("Zigalpm", zigalpm);
+    cli.addImport("diagnostics", diagnostics);
+    cli.addImport("PackageManager", package_manager);
     cli.addOptions("build_options", build_options);
 
     const executable_module = b.createModule(.{
@@ -33,13 +39,15 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    executable_module.addImport("diagnostics", diagnostics);
     executable_module.addImport("Shelly_Cli_Zig", cli);
-    executable_module.addImport("Zigalpm", zigalpm);
+    executable_module.addImport("PackageManager", package_manager);
 
     const executable = b.addExecutable(.{
         .name = "shelly",
         .root_module = executable_module,
     });
+    executable.root_module.addImport("diagnostics", diagnostics);
     b.installArtifact(executable);
 
     const run_command = b.addRunArtifact(executable);
@@ -49,13 +57,62 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run Shelly");
     run_step.dependOn(&run_command.step);
 
+    const test_package_manager = package_manager_dependency.module("PackageManagerTests");
+    const test_cli = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "diagnostics", .module = diagnostics },
+            .{ .name = "PackageManager", .module = test_package_manager },
+        },
+    });
+    test_cli.addOptions("build_options", build_options);
+    const test_executable_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "diagnostics", .module = diagnostics },
+            .{ .name = "Shelly_Cli_Zig", .module = test_cli },
+            .{ .name = "PackageManager", .module = test_package_manager },
+        },
+    });
+
+    const repair_tests = b.addTest(.{ .root_module = test_cli, .filters = &.{"repairDb"} });
+    const repair_test_step = b.step("database-repair-test", "Test repair of the configured database");
+    repair_test_step.dependOn(&b.addRunArtifact(repair_tests).step);
+
+    const configuration_tests = b.addTest(.{
+        .root_module = test_cli,
+        .filters = &.{ "global config", "config selection", "keyring config", "shellystrap", "hook replacements" },
+    });
+    const configuration_step = b.step("configuration-test", "Test native configuration selection and subprocess forwarding");
+    configuration_step.dependOn(&b.addRunArtifact(configuration_tests).step);
+
+    const appimage_tests = b.addTest(.{
+        .name = "appimage-test",
+        .root_module = test_cli,
+        .filters = &.{ "AppImage", "appimage" },
+    });
+    b.step("appimage-test", "Test AppImage command routing and metadata synchronization")
+        .dependOn(&b.addRunArtifact(appimage_tests).step);
+
+    const purify_tests = b.addTest(.{
+        .name = "purify-test",
+        .root_module = test_cli,
+        .filters = &.{ "purify", "AUR cleanup", "AUR cache" },
+    });
+    b.step("purify-test", "Test purify planning, confirmation, and cache removal")
+        .dependOn(&b.addRunArtifact(purify_tests).step);
+
     const module_tests = b.addTest(.{
-        .root_module = cli,
+        .root_module = test_cli,
     });
     const run_module_tests = b.addRunArtifact(module_tests);
 
     const executable_tests = b.addTest(.{
-        .root_module = executable_module,
+        .root_module = test_executable_module,
     });
     const run_executable_tests = b.addRunArtifact(executable_tests);
 
@@ -63,20 +120,119 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_module_tests.step);
     test_step.dependOn(&run_executable_tests.step);
 
+    const appimage_removal_tests = b.addTest(.{
+        .root_module = test_cli,
+        .filters = &.{ "AppImage removal", "resolves one AppImage", "remove AppImage" },
+    });
+    const run_appimage_removal_tests = b.addRunArtifact(appimage_removal_tests);
+    b.step("appimage-removal-test", "Test AppImage removal identity and stale metadata cleanup").dependOn(&run_appimage_removal_tests.step);
+
+    const upgrade_tests = b.addTest(.{
+        .root_module = test_cli,
+        .filters = &.{"upgrade"},
+    });
+    const run_upgrade_tests = b.addRunArtifact(upgrade_tests);
+    const upgrade_test_step = b.step("upgrade-test", "Test upgrade coordination and result reporting");
+    upgrade_test_step.dependOn(&run_upgrade_tests.step);
+
+    const account_tests = b.addTest(.{
+        .name = "user-account-test",
+        .root_module = test_cli,
+        .filters = &.{ "NSS", "invoking identity", "invoking user", "elevation resolves", "elevation takes precedence", "XDG" },
+    });
+    const run_account_tests = b.addRunArtifact(account_tests);
+    const account_test_step = b.step("user-account-test", "Test NSS caller identity and per-user paths");
+    account_test_step.dependOn(&run_account_tests.step);
+
     const builder_test_module = b.createModule(.{
         .root_source_file = b.path("src/builder_command_test.zig"),
         .target = target,
         .optimize = optimize,
     });
-    builder_test_module.addImport("Zigalpm", zigalpm);
+    builder_test_module.addImport("diagnostics", diagnostics);
+    builder_test_module.addImport("PackageManager", test_package_manager);
     builder_test_module.addOptions("build_options", build_options);
+    const bootstrap_configuration_tests = b.addTest(.{
+        .name = "bootstrap-configuration-test",
+        .root_module = builder_test_module,
+        .filters = &.{"shellystrap"},
+    });
+    configuration_step.dependOn(&b.addRunArtifact(bootstrap_configuration_tests).step);
+    const isolated_config_tests = b.addTest(.{
+        .name = "isolated-config-test",
+        .root_module = builder_test_module,
+        .filters = &.{ "isolated child arguments", "isolated configuration preserves build policy" },
+    });
+    b.step("isolated-config-test", "Test host configuration isolation from guest build commands")
+        .dependOn(&b.addRunArtifact(isolated_config_tests).step);
+    const checksum_update_tests = b.addTest(.{ .root_module = builder_test_module, .filters = &.{"updpkgsums"} });
+    b.step("updpkgsums-test", "Test checksum updates and paired SRCINFO publication").dependOn(&b.addRunArtifact(checksum_update_tests).step);
     const builder_tests = b.addTest(.{
         .name = "builder-command-test",
         .root_module = builder_test_module,
-        .filters = &.{"makesrcinfo emits clean stdout and never runs lifecycle functions"},
+        .filters = &.{
+            "makesrcinfo",
+            "updpkgsums",
+            "compression presets",
+            "review-only accepts Heroic array trimming",
+            "review-only accepts filesystem here-strings",
+            "sync deps",
+            "dependency plan",
+            "isolated source key",
+            "isolated source public keys",
+            "isolated child arguments",
+            "isolated pkgver",
+            "isolated dependency review",
+            "isolated configuration preserves build policy",
+            "invoking user build arguments",
+            "build install options parse",
+            "build install rejects output modes",
+            "artifact report",
+            "host coordinator",
+        },
     });
+    const dependency_plan_tests = b.addTest(.{ .root_module = builder_test_module, .filters = &.{"dependency plan"} });
+    b.step("build-plan-test", "Test dependency plan CLI and configuration contracts").dependOn(&b.addRunArtifact(dependency_plan_tests).step);
     const run_builder_tests = b.addRunArtifact(builder_tests);
+    b.step("builder-command-test", "Test native build command configuration and coordinator transport").dependOn(&run_builder_tests.step);
     test_step.dependOn(&run_builder_tests.step);
+    const source_key_test_step = b.step("isolated-source-keys-test", "Test isolated source key approval, transport, and signature verification");
+    source_key_test_step.dependOn(&run_builder_tests.step);
+
+    const isolated_test_module = b.createModule(.{
+        .root_source_file = b.path("src/commands/isolated_build.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    isolated_test_module.addImport("diagnostics", diagnostics);
+    isolated_test_module.addImport("PackageManager", test_package_manager);
+    const isolated_tests = b.addTest(.{
+        .name = "isolated-build-test",
+        .root_module = isolated_test_module,
+        .filters = &.{
+            "shellystrap",
+            "isolated pkgver",
+            "reviewed input paths cannot escape the staged source root",
+            "isolated command failures preserve the stage and native exit code",
+            "reviewed inputs are materialized with exact bytes and permissions",
+            "staged reviewed inputs preserve the host digest and reject real changes",
+            "isolated public source key bundle is readable under restrictive umasks",
+            "isolated guest traversal permissions",
+            "isolated configuration permissions",
+        },
+    });
+    const isolated_test_step = b.step("isolated-build-test", "Test reviewed staging and integrity under restrictive umasks");
+    for ([_][]const u8{ "0022", "0007", "0027", "0077" }) |mask| {
+        // Each runner inherits its own umask; never mutate it in concurrent Zig tests.
+        const run_isolated_tests = b.addSystemCommand(&.{
+            "bash", "-c", "umask \"$1\"; exec \"$2\"", "isolated-build-test", mask,
+        });
+        run_isolated_tests.addArtifactArg(isolated_tests);
+        run_isolated_tests.has_side_effects = true;
+        isolated_test_step.dependOn(&run_isolated_tests.step);
+    }
+    test_step.dependOn(isolated_test_step);
+    source_key_test_step.dependOn(isolated_test_step);
 
     const native_check_step = b.step("native-check", "Build and test the self-contained native Zig CLI");
     native_check_step.dependOn(b.getInstallStep());

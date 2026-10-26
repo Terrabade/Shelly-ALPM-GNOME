@@ -1,4 +1,6 @@
 const std = @import("std");
+pub const build_path = @import("build_path.zig");
+const user_account = @import("user_account");
 const operation_api = @import("operation_context");
 
 pub const ProcessResult = struct {
@@ -36,6 +38,12 @@ pub const BuildEnvironment = struct {
     makeflags: ?[]const []const u8 = null,
     chost: ?[]const u8 = null,
     distcc_hosts: ?[]const []const u8 = null,
+    /// One build-scoped timestamp shared with every PKGBUILD subprocess and
+    /// package metadata writer, matching makepkg's SOURCE_DATE_EPOCH model.
+    source_date_epoch: ?i64 = null,
+    /// Resolved source cache, shared by metadata evaluation and lifecycle
+    /// subprocesses instead of inheriting an unrelated caller SRCDEST.
+    source_destination: ?[]const u8 = null,
     ccache: bool = false,
     distcc: bool = false,
 };
@@ -90,6 +98,28 @@ pub fn runWithEnvironment(
     var environ_map = try executionEnvironment(allocator, environ);
     defer environ_map.deinit();
     return runWithEnvironmentMap(allocator, io, argv, working_directory, timeout_seconds, &environ_map);
+}
+
+/// Runs a native build helper with executable lookup using the build PATH.
+pub fn runWithBuildEnvironment(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ: std.process.Environ,
+    argv: []const []const u8,
+    working_directory: ?[]const u8,
+    timeout_seconds: ?u32,
+) !ProcessResult {
+    var environment = try environ.createMap(allocator);
+    defer environment.deinit();
+    const command = try buildHelperCommand(allocator, argv);
+    defer allocator.free(command);
+    return runWithEnvironmentMap(allocator, io, command, working_directory, timeout_seconds, &environment);
+}
+
+// Zig searches argv[0] using the Io parent's PATH, not environ_map. env
+// performs that lookup after receiving the native build's environment.
+fn buildHelperCommand(allocator: std.mem.Allocator, argv: []const []const u8) ![][]const u8 {
+    return std.mem.concat(allocator, []const u8, &.{ &.{ "/usr/bin/env", "--" }, argv });
 }
 
 pub fn runStreamingWithEnvironment(
@@ -152,8 +182,10 @@ pub fn runStreamingWithBuildEnvironmentOperation(
     else
         try executionEnvironment(allocator, environ);
     defer environ_map.deinit();
+    const build_command = if (build_environment != null) try buildHelperCommand(allocator, argv) else null;
+    defer if (build_command) |command| allocator.free(command);
     var child = try std.process.spawn(io, .{
-        .argv = argv,
+        .argv = build_command orelse argv,
         .cwd = if (working_directory) |path| .{ .path = path } else .inherit,
         .environ_map = &environ_map,
         .stdin = .ignore,
@@ -281,7 +313,7 @@ pub fn executionEnvironmentWithBuild(
     environ: std.process.Environ,
     build: BuildEnvironment,
 ) !std.process.Environ.Map {
-    var environ_map = try executionEnvironment(allocator, environ);
+    var environ_map = try environ.createMap(allocator);
     errdefer environ_map.deinit();
 
     try putJoinedOrRemove(allocator, &environ_map, "CPPFLAGS", build.cppflags);
@@ -297,14 +329,17 @@ pub fn executionEnvironmentWithBuild(
         "DISTCC_HOSTS",
         if (build.distcc) build.distcc_hosts else null,
     );
+    if (build.source_date_epoch) |epoch| {
+        var epoch_buffer: [20]u8 = undefined;
+        const epoch_text = try std.fmt.bufPrint(&epoch_buffer, "{d}", .{epoch});
+        try environ_map.put("SOURCE_DATE_EPOCH", epoch_text);
+    }
+    if (build.source_destination) |destination|
+        try environ_map.put("SRCDEST", destination);
 
-    const base_path = environ_map.get("PATH") orelse "";
-    var prefixed_path: std.ArrayList(u8) = .empty;
-    defer prefixed_path.deinit(allocator);
-    if (build.ccache) try prefixed_path.appendSlice(allocator, "/usr/lib/ccache/bin:");
-    if (build.distcc) try prefixed_path.appendSlice(allocator, "/usr/lib/distcc/bin:");
-    try prefixed_path.appendSlice(allocator, base_path);
-    try environ_map.put("PATH", prefixed_path.items);
+    const path = try build_path.withWrappers(allocator, environ_map.get("PATH") orelse build_path.baseline, build.ccache, build.distcc);
+    defer allocator.free(path);
+    try environ_map.put("PATH", path);
     return environ_map;
 }
 
@@ -345,76 +380,35 @@ pub fn buildExecutionPath(allocator: std.mem.Allocator, environ: std.process.Env
     );
 }
 
-pub fn resolveUsernameForUidFromPasswd(uid: []const u8, passwd: []const u8) []const u8 {
-    if (uid.len == 0) return uid;
-    var lines = std.mem.splitScalar(u8, passwd, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-        var fields = std.mem.splitScalar(u8, trimmed, ':');
-        const username = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        const field_uid = fields.next() orelse continue;
-        if (std.mem.eql(u8, uid, field_uid)) return username;
-    }
-    return uid;
-}
-
 pub fn resolveUsernameForUid(
     allocator: std.mem.Allocator,
-    io: std.Io,
+    _: std.Io,
     uid: []const u8,
 ) ![]u8 {
-    if (uid.len == 0) return allocator.dupe(u8, uid);
-    const passwd = std.Io.Dir.cwd().readFileAlloc(io, "/etc/passwd", allocator, .limited(4 * 1024 * 1024)) catch
-        return allocator.dupe(u8, uid);
-    defer allocator.free(passwd);
-    return allocator.dupe(u8, resolveUsernameForUidFromPasswd(uid, passwd));
+    const account = (try user_account.byUidText(allocator, uid)) orelse return error.InvokingUserUnavailable;
+    defer account.deinit(allocator);
+    return allocator.dupe(u8, account.username);
 }
 
 pub fn resolveInvokingUserHome(
     allocator: std.mem.Allocator,
-    io: std.Io,
+    _: std.Io,
     environ: std.process.Environ,
 ) ![]u8 {
+    const account = if (environ.getPosix("SUDO_USER")) |user|
+        (if (user.len != 0 and !std.mem.eql(u8, user, "root")) try user_account.byName(allocator, user) else null)
+    else if (environ.getPosix("DOAS_USER")) |user|
+        (if (user.len != 0 and !std.mem.eql(u8, user, "root")) try user_account.byName(allocator, user) else null)
+    else if (environ.getPosix("PKEXEC_UID")) |uid|
+        try user_account.byUidText(allocator, uid)
+    else
+        null;
+    if (account) |found| {
+        defer found.deinit(allocator);
+        if (found.home.len != 0) return allocator.dupe(u8, found.home);
+    }
     const fallback = environ.getPosix("HOME") orelse return error.HomeNotSet;
-    const passwd = std.Io.Dir.cwd().readFileAlloc(io, "/etc/passwd", allocator, .limited(4 * 1024 * 1024)) catch
-        return allocator.dupe(u8, fallback);
-    defer allocator.free(passwd);
-
-    if (environ.getPosix("SUDO_USER")) |user| {
-        if (user.len != 0 and !std.mem.eql(u8, user, "root")) {
-            if (homeFromPasswd(passwd, user, null)) |home| return allocator.dupe(u8, home);
-        }
-    } else if (environ.getPosix("DOAS_USER")) |user| {
-        if (user.len != 0 and !std.mem.eql(u8, user, "root")) {
-            if (homeFromPasswd(passwd, user, null)) |home| return allocator.dupe(u8, home);
-        }
-    } else if (environ.getPosix("PKEXEC_UID")) |uid| {
-        if (homeFromPasswd(passwd, null, uid)) |home| return allocator.dupe(u8, home);
-    }
     return allocator.dupe(u8, fallback);
-}
-
-pub fn homeFromPasswd(passwd: []const u8, username: ?[]const u8, uid: ?[]const u8) ?[]const u8 {
-    var lines = std.mem.splitScalar(u8, passwd, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-        var fields = std.mem.splitScalar(u8, trimmed, ':');
-        const field_user = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        const field_uid = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        const home = fields.next() orelse continue;
-        if (username) |expected| {
-            if (std.mem.eql(u8, field_user, expected)) return home;
-        } else if (uid) |expected| {
-            if (std.mem.eql(u8, field_uid, expected)) return home;
-        }
-    }
-    return null;
 }
 
 pub fn invokingUserCommand(
@@ -456,17 +450,21 @@ pub fn invokingUserCleanCommand(
 ) !OwnedCommand {
     const username = try invokingUsername(allocator, io, environ);
     defer allocator.free(username);
-    const home = try resolveInvokingUserHome(allocator, io, environ);
-    defer allocator.free(home);
-    const passwd = try std.Io.Dir.cwd().readFileAlloc(io, "/etc/passwd", allocator, .limited(4 * 1024 * 1024));
-    defer allocator.free(passwd);
-    const uid = uidForUsernameFromPasswd(username, passwd) orelse
-        return error.InvokingUserUnavailable;
-    if (std.mem.eql(u8, uid, "0")) return error.InvokingUserUnavailable;
-    const path = try buildExecutionPath(allocator, environ);
-    defer allocator.free(path);
-
-    return cleanUserCommand(allocator, username, home, uid, path, command, arguments);
+    const account = (try user_account.byName(allocator, username)) orelse return error.InvokingUserUnavailable;
+    defer account.deinit(allocator);
+    if (account.uid == 0 or account.home.len == 0) return error.InvokingUserUnavailable;
+    var uid_buffer: [10]u8 = undefined;
+    const uid = try std.fmt.bufPrint(&uid_buffer, "{d}", .{account.uid});
+    return cleanUserCommand(
+        allocator,
+        username,
+        account.home,
+        uid,
+        build_path.baseline,
+        environ,
+        command,
+        arguments,
+    );
 }
 
 fn cleanUserCommand(
@@ -475,6 +473,7 @@ fn cleanUserCommand(
     home: []const u8,
     uid: []const u8,
     path: []const u8,
+    environ: std.process.Environ,
     command: []const u8,
     arguments: []const []const u8,
 ) !OwnedCommand {
@@ -498,6 +497,11 @@ fn cleanUserCommand(
     defer allocator.free(bus_environment);
     const path_environment = try std.fmt.allocPrint(allocator, "PATH={s}", .{path});
     defer allocator.free(path_environment);
+    const source_date_epoch_environment = if (environ.getPosix("SOURCE_DATE_EPOCH")) |epoch|
+        try std.fmt.allocPrint(allocator, "SOURCE_DATE_EPOCH={s}", .{epoch})
+    else
+        null;
+    defer if (source_date_epoch_environment) |value| allocator.free(value);
 
     var argv: std.ArrayList([]u8) = .empty;
     errdefer {
@@ -509,7 +513,7 @@ fn cleanUserCommand(
         "-u",
         username,
         "--",
-        "env",
+        "/usr/bin/env",
         "-i",
         home_environment,
         config_environment,
@@ -519,10 +523,52 @@ fn cleanUserCommand(
         runtime_environment,
         bus_environment,
         path_environment,
-        command,
     });
+    if (source_date_epoch_environment) |value|
+        try appendOwned(allocator, &argv, &.{value});
+    // Keep locale selection across env -i without inheriting unrelated state
+    // such as LOCPATH or loader/shell variables from the elevated process.
+    const lang = environ.getPosix("LANG") orelse "";
+    try appendEnvironmentAssignment(allocator, &argv, "LANG", if (lang.len == 0) "C.UTF-8" else lang);
+    for (build_locale_overrides) |name| {
+        if (environ.getPosix(name)) |value|
+            try appendEnvironmentAssignment(allocator, &argv, name, value);
+    }
+    for ([_][]const u8{ "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY", "no_proxy", "NO_PROXY" }) |name| {
+        if (environ.getPosix(name)) |value|
+            try appendEnvironmentAssignment(allocator, &argv, name, value);
+    }
+    try appendOwned(allocator, &argv, &.{command});
     try appendOwned(allocator, &argv, arguments);
     return .{ .argv = try argv.toOwnedSlice(allocator) };
+}
+
+const build_locale_overrides = [_][]const u8{
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_COLLATE",
+    "LC_MONETARY",
+    "LC_MESSAGES",
+    "LC_PAPER",
+    "LC_NAME",
+    "LC_ADDRESS",
+    "LC_TELEPHONE",
+    "LC_MEASUREMENT",
+    "LC_IDENTIFICATION",
+};
+
+fn appendEnvironmentAssignment(
+    allocator: std.mem.Allocator,
+    argv: *std.ArrayList([]u8),
+    name: []const u8,
+    value: []const u8,
+) !void {
+    const assignment = try std.fmt.allocPrint(allocator, "{s}={s}", .{ name, value });
+    errdefer allocator.free(assignment);
+    try argv.append(allocator, assignment);
 }
 
 pub fn invokingUsername(
@@ -535,39 +581,22 @@ pub fn invokingUsername(
     if (environ.getPosix("DOAS_USER")) |username|
         return validateInvokingUsername(allocator, io, username);
     if (environ.getPosix("PKEXEC_UID")) |uid| {
-        if (uid.len == 0 or std.mem.eql(u8, uid, "0")) return error.InvokingUserUnavailable;
-        const username = try resolveUsernameForUid(allocator, io, uid);
-        errdefer allocator.free(username);
-        if (username.len == 0 or std.mem.eql(u8, username, "root") or std.mem.eql(u8, username, "0"))
+        const account = (try user_account.byUidText(allocator, uid)) orelse return error.InvokingUserUnavailable;
+        defer account.deinit(allocator);
+        if (account.uid == 0 or account.username.len == 0 or std.mem.eql(u8, account.username, "root") or std.mem.eql(u8, account.username, "0"))
             return error.InvokingUserUnavailable;
-        return username;
+        return allocator.dupe(u8, account.username);
     }
     return error.InvokingUserUnavailable;
 }
 
-fn validateInvokingUsername(allocator: std.mem.Allocator, io: std.Io, username: []const u8) ![]u8 {
+fn validateInvokingUsername(allocator: std.mem.Allocator, _: std.Io, username: []const u8) ![]u8 {
     if (username.len == 0 or std.mem.eql(u8, username, "root") or std.mem.eql(u8, username, "0"))
         return error.InvokingUserUnavailable;
-    const passwd = std.Io.Dir.cwd().readFileAlloc(io, "/etc/passwd", allocator, .limited(4 * 1024 * 1024)) catch
-        return error.InvokingUserUnavailable;
-    defer allocator.free(passwd);
-    const uid = uidForUsernameFromPasswd(username, passwd) orelse return error.InvokingUserUnavailable;
-    if (std.mem.eql(u8, uid, "0")) return error.InvokingUserUnavailable;
-    return allocator.dupe(u8, username);
-}
-
-pub fn uidForUsernameFromPasswd(username: []const u8, passwd: []const u8) ?[]const u8 {
-    var lines = std.mem.splitScalar(u8, passwd, '\n');
-    while (lines.next()) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (trimmed.len == 0 or trimmed[0] == '#') continue;
-        var fields = std.mem.splitScalar(u8, trimmed, ':');
-        const field_user = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        const field_uid = fields.next() orelse continue;
-        if (std.mem.eql(u8, username, field_user)) return field_uid;
-    }
-    return null;
+    const account = (try user_account.byName(allocator, username)) orelse return error.InvokingUserUnavailable;
+    defer account.deinit(allocator);
+    if (account.uid == 0) return error.InvokingUserUnavailable;
+    return allocator.dupe(u8, account.username);
 }
 
 fn appendOwned(allocator: std.mem.Allocator, list: *std.ArrayList([]u8), values: []const []const u8) !void {
@@ -723,6 +752,7 @@ test "build environment exports flags hosts and compiler wrapper paths" {
         .makeflags = &.{"-j8"},
         .chost = "x86_64-pc-linux-gnu",
         .distcc_hosts = &.{ "builder/8", "localhost/2" },
+        .source_date_epoch = 1_700_000_000,
         .ccache = true,
         .distcc = true,
     });
@@ -732,6 +762,7 @@ test "build environment exports flags hosts and compiler wrapper paths" {
     try std.testing.expectEqualStrings("-O3 -pipe", effective.get("CFLAGS").?);
     try std.testing.expectEqualStrings("-j8", effective.get("MAKEFLAGS").?);
     try std.testing.expectEqualStrings("builder/8 localhost/2", effective.get("DISTCC_HOSTS").?);
+    try std.testing.expectEqualStrings("1700000000", effective.get("SOURCE_DATE_EPOCH").?);
     try std.testing.expect(std.mem.startsWith(u8, effective.get("PATH").?, "/usr/lib/ccache/bin:/usr/lib/distcc/bin:"));
 }
 
@@ -756,16 +787,7 @@ test "disabled build environment removes inherited flags and hosts" {
     try std.testing.expectEqualStrings("x86_64-pc-linux-gnu", effective.get("CHOST").?);
 }
 
-test "UID lookup and VCS build commands replicate invoking-user behavior" {
-    const passwd = "root:x:0:0::/root:/bin/bash\nzoey:x:1000:1000::/home/zoey:/bin/bash\n";
-    try std.testing.expectEqualStrings("zoey", resolveUsernameForUidFromPasswd("1000", passwd));
-    try std.testing.expectEqualStrings("55", resolveUsernameForUidFromPasswd("55", passwd));
-    try std.testing.expectEqualStrings("1000", uidForUsernameFromPasswd("zoey", passwd).?);
-    try std.testing.expectEqualStrings("0", uidForUsernameFromPasswd("root", passwd).?);
-    try std.testing.expect(uidForUsernameFromPasswd("missing", passwd) == null);
-    try std.testing.expectEqualStrings("/home/zoey", homeFromPasswd(passwd, "zoey", null).?);
-    try std.testing.expectEqualStrings("/home/zoey", homeFromPasswd(passwd, null, "1000").?);
-
+test "VCS build commands replicate invoking-user behavior" {
     var command = try makechrootpkgCommand(
         std.testing.allocator,
         std.testing.io,
@@ -783,13 +805,69 @@ test "UID lookup and VCS build commands replicate invoking-user behavior" {
     try std.testing.expectEqualStrings("/var/lib/shelly/chroot", command.argv[index + 3]);
 }
 
+test "NSS invoking-user commands resolve all elevators without HOME" {
+    const allocator = std.testing.allocator;
+    const account = (try user_account.byName(allocator, "nobody")) orelse return error.SkipZigTest;
+    defer account.deinit(allocator);
+    const uid = try std.fmt.allocPrint(allocator, "{d}", .{account.uid});
+    defer allocator.free(uid);
+    const resolved = try resolveUsernameForUid(allocator, std.testing.io, uid);
+    defer allocator.free(resolved);
+    try std.testing.expectEqualStrings(account.username, resolved);
+    for ([_][]const u8{ "SUDO_USER", "DOAS_USER", "PKEXEC_UID" }) |marker| {
+        var environment = std.process.Environ.Map.init(allocator);
+        defer environment.deinit();
+        try environment.put(marker, if (std.mem.eql(u8, marker, "PKEXEC_UID")) uid else account.username);
+        try environment.put("PATH", "/root/bin:/untrusted/toolchain");
+        const environ: std.process.Environ = .{ .block = try environment.createPosixBlock(allocator, .{}) };
+        defer environ.block.deinit(allocator);
+        const home = try resolveInvokingUserHome(allocator, std.testing.io, environ);
+        defer allocator.free(home);
+        try std.testing.expectEqualStrings(account.home, home);
+        var command = try invokingUserCleanCommand(allocator, std.testing.io, environ, "shelly", &.{"build"});
+        defer command.deinit(allocator);
+        try std.testing.expectEqualStrings(account.username, command.argv[2]);
+        try std.testing.expectEqualStrings("/usr/bin/env", command.argv[4]);
+        try std.testing.expectEqualStrings("PATH=" ++ build_path.baseline, command.argv[13]);
+        const expected_home = try std.fmt.allocPrint(allocator, "HOME={s}", .{account.home});
+        defer allocator.free(expected_home);
+        try std.testing.expectEqualStrings(expected_home, command.argv[6]);
+        const expected_runtime = try std.fmt.allocPrint(allocator, "XDG_RUNTIME_DIR=/run/user/{s}", .{uid});
+        defer allocator.free(expected_runtime);
+        try std.testing.expectEqualStrings(expected_runtime, command.argv[11]);
+    }
+}
+
+test "NSS invoking-user validation rejects root and unresolved accounts" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "root", "0", "", "shelly-nonexistent-user-1843" }) |name|
+        try std.testing.expectError(error.InvokingUserUnavailable, validateInvokingUsername(allocator, std.testing.io, name));
+    for ([_][]const u8{ "0", "000", "invalid", "4294967296" }) |uid| {
+        var environment = std.process.Environ.Map.init(allocator);
+        defer environment.deinit();
+        try environment.put("PKEXEC_UID", uid);
+        const environ: std.process.Environ = .{ .block = try environment.createPosixBlock(allocator, .{}) };
+        defer environ.block.deinit(allocator);
+        try std.testing.expectError(error.InvokingUserUnavailable, invokingUserCleanCommand(allocator, std.testing.io, environ, "shelly", &.{}));
+    }
+}
+
 test "clean invoking-user build command drops the elevated environment" {
+    const allocator = std.testing.allocator;
+    var environment = std.process.Environ.Map.init(allocator);
+    defer environment.deinit();
+    try environment.put("SOURCE_DATE_EPOCH", "1700000000");
+    for ([_][]const u8{ "LD_PRELOAD", "BASH_ENV", "LOCPATH", "LC_UNRECOGNIZED", "UNRELATED" }) |name|
+        try environment.put(name, "/untrusted");
+    const environ: std.process.Environ = .{ .block = try environment.createPosixBlock(allocator, .{}) };
+    defer environ.block.deinit(allocator);
     var command = try cleanUserCommand(
         std.testing.allocator,
         "zoey",
         "/home/zoey",
         "1000",
         "/usr/bin:/bin",
+        environ,
         "/usr/bin/shelly",
         &.{ "build", "--coordinator-child", "/tmp/PKGBUILD" },
     );
@@ -799,7 +877,7 @@ test "clean invoking-user build command drops the elevated environment" {
         "-u",
         "zoey",
         "--",
-        "env",
+        "/usr/bin/env",
         "-i",
         "HOME=/home/zoey",
         "XDG_CONFIG_HOME=/home/zoey/.config",
@@ -809,6 +887,8 @@ test "clean invoking-user build command drops the elevated environment" {
         "XDG_RUNTIME_DIR=/run/user/1000",
         "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
         "PATH=/usr/bin:/bin",
+        "SOURCE_DATE_EPOCH=1700000000",
+        "LANG=C.UTF-8",
         "/usr/bin/shelly",
         "build",
         "--coordinator-child",
@@ -817,6 +897,92 @@ test "clean invoking-user build command drops the elevated environment" {
     try std.testing.expectEqual(expected.len, command.argv.len);
     for (expected, command.argv) |wanted, actual|
         try std.testing.expectEqualStrings(wanted, actual);
+}
+
+test "clean invoking-user build command preserves explicit locale and proxy settings" {
+    const allocator = std.testing.allocator;
+    var environment = std.process.Environ.Map.init(allocator);
+    defer environment.deinit();
+    try environment.put("LANG", "en_US.UTF-8");
+    try environment.put("UNRELATED_PROXY", "excluded");
+    const overrides = .{
+        .{ "LANGUAGE", "en:de with spaces; $(false)" },
+        .{ "LC_ALL", "" },
+        .{ "LC_CTYPE", "C.UTF-8" },
+        .{ "LC_NUMERIC", "C" },
+        .{ "LC_TIME", "C" },
+        .{ "LC_COLLATE", "C" },
+        .{ "LC_MONETARY", "C" },
+        .{ "LC_MESSAGES", "C" },
+        .{ "LC_PAPER", "C" },
+        .{ "LC_NAME", "C" },
+        .{ "LC_ADDRESS", "C" },
+        .{ "LC_TELEPHONE", "C" },
+        .{ "LC_MEASUREMENT", "C" },
+        .{ "LC_IDENTIFICATION", "C" },
+        .{ "http_proxy", "http://proxy.example:8080" },
+        .{ "HTTP_PROXY", "http://upper.example:8080" },
+        .{ "https_proxy", "http://user:p%40ss@secure.example:8080" },
+        .{ "HTTPS_PROXY", "http://upper-secure.example:8080" },
+        .{ "all_proxy", "socks5://fallback.example:1080" },
+        .{ "ALL_PROXY", "socks5://upper-fallback.example:1080" },
+        .{ "no_proxy", "localhost,127.0.0.1,.internal.example" },
+        .{ "NO_PROXY", "" },
+    };
+    inline for (overrides) |entry| try environment.put(entry[0], entry[1]);
+    const environ: std.process.Environ = .{ .block = try environment.createPosixBlock(allocator, .{}) };
+    defer environ.block.deinit(allocator);
+    var command = try cleanUserCommand(allocator, "nobody", "/tmp", "65534", "/usr/bin:/bin", environ, "/usr/bin/env", &.{});
+    defer command.deinit(allocator);
+    // Execute the generated env command directly so the test needs no root or
+    // runuser/PAM setup while exercising the exact child environment.
+    var result = try run(allocator, std.testing.io, command.asConst()[4..], null, 10);
+    defer result.deinit(allocator);
+    try std.testing.expectEqual(@as(u8, 0), result.exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\nLANG=en_US.UTF-8\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "UNRELATED_PROXY=") == null);
+    inline for (overrides) |entry|
+        try std.testing.expect(std.mem.indexOf(u8, result.stdout, "\n" ++ entry[0] ++ "=" ++ entry[1] ++ "\n") != null);
+}
+
+test "clean invoking-user build command supports Unicode filenames and locale precedence" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var fixture = std.testing.tmpDir(.{});
+    defer fixture.cleanup();
+    try fixture.dir.writeFile(io, .{ .sub_path = "∂-unicode.txt", .data = "unicode resource\n" });
+    const directory = try fixture.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(directory);
+    const Case = struct { lang: ?[]const u8 = null, ctype: ?[]const u8 = null, all: ?[]const u8 = null, characters: u8 = 1 };
+    for ([_]Case{
+        .{},
+        .{ .lang = "" },
+        .{ .lang = "C.UTF-8" },
+        .{ .lang = "C", .characters = 3 },
+        .{ .lang = "C", .ctype = "C.UTF-8" },
+        .{ .lang = "C", .ctype = "C", .all = "C.UTF-8" },
+        .{ .lang = "C.UTF-8", .ctype = "C.UTF-8", .all = "C", .characters = 3 },
+        .{ .all = "C", .characters = 3 },
+        .{ .ctype = "", .all = "" },
+    }) |case| {
+        var environment = std.process.Environ.Map.init(allocator);
+        defer environment.deinit();
+        if (case.lang) |value| try environment.put("LANG", value);
+        if (case.ctype) |value| try environment.put("LC_CTYPE", value);
+        if (case.all) |value| try environment.put("LC_ALL", value);
+        const environ: std.process.Environ = .{ .block = try environment.createPosixBlock(allocator, .{}) };
+        defer environ.block.deinit(allocator);
+        var command = try cleanUserCommand(allocator, "nobody", "/tmp", "65534", "/usr/bin:/bin", environ, "/bin/bash", &.{
+            "--noprofile", "--norc", "-c",
+            "set -eu; character='∂'; printf '%s\\n' \"${#character}\"; cat -- \"${character}-unicode.txt\"",
+        });
+        defer command.deinit(allocator);
+        var result = try run(allocator, io, command.asConst()[4..], directory, 10);
+        defer result.deinit(allocator);
+        try std.testing.expectEqual(@as(u8, 0), result.exit_code);
+        try std.testing.expectEqualStrings("", result.stderr);
+        try std.testing.expectEqualStrings(if (case.characters == 1) "1\nunicode resource\n" else "3\nunicode resource\n", result.stdout);
+    }
 }
 
 test "built package selection mirrors split-package and stale-output safeguards" {
@@ -965,20 +1131,39 @@ test "streaming process execution terminates when the shared operation is cancel
         fn onLine(_: ?*anyopaque, _: StreamKind, _: []const u8) void {}
     };
 
-    var context = operation_api.OperationContext.init(std.testing.allocator, std.testing.io);
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const directory = try temporary.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(directory);
+    const marker = try std.fs.path.join(std.testing.allocator, &.{ directory, "child-started" });
+    defer std.testing.allocator.free(marker);
+
+    var context = operation_api.OperationContext.init(std.testing.allocator, io);
     defer context.deinit();
-    context.cancel();
     var operation = context.begin(.{ .backend = .aur, .kind = .build, .subject = "cancelled-build" });
     defer operation.finish(.cancelled);
-
-    try std.testing.expectError(error.Cancelled, runStreamingWithEnvironmentOperation(
+    var future = try io.concurrent(runStreamingWithEnvironmentOperation, .{
         std.testing.allocator,
-        std.testing.io,
+        io,
         std.testing.environ,
-        &.{ "sh", "-c", "sleep 5" },
+        &.{ "sh", "-c", "touch \"$1\"; exec sleep 30", "sh", marker },
         null,
         null,
-        .{ .function = Capture.onLine },
+        LineHandler{ .function = Capture.onLine },
         &operation,
-    ));
+    });
+    var attempts: usize = 0;
+    while (attempts < 200) : (attempts += 1) {
+        std.Io.Dir.cwd().access(io, marker, .{}) catch {
+            io.sleep(.fromMilliseconds(5), .awake) catch {};
+            continue;
+        };
+        break;
+    }
+    try std.testing.expect(attempts < 200);
+    context.cancel();
+    try std.testing.expectError(error.Cancelled, future.await(io));
 }

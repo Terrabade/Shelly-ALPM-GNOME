@@ -2,13 +2,15 @@ const std = @import("std");
 const Io = std.Io;
 
 const Shelly_Cli_Zig = @import("Shelly_Cli_Zig");
-const Zigalpm = @import("Zigalpm");
+const PackageManager = @import("PackageManager");
 
 pub fn main(init: std.process.Init) !void {
     const arena: std.mem.Allocator = init.arena.allocator();
     const io = init.io;
     const process_arguments = try init.minimal.args.toSlice(arena);
     const arguments = if (process_arguments.len > 0) process_arguments[1..] else process_arguments;
+
+    if (PackageManager.internal_workers.dispatch(init, arguments)) |code| std.process.exit(code);
 
     var stdin_buffer: [4096]u8 = undefined;
     var stdin_file_reader: Io.File.Reader = .initStreaming(.stdin(), io, &stdin_buffer);
@@ -33,6 +35,23 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(exit_code);
     }
 
+    // Isolated-root provisioning is also served before normal CLI setup. The
+    // coordinator launches this reserved mode inside a private mount/PID
+    // namespace; it performs one target-root native transaction and emits no
+    // normal command output.
+    if (arguments.len > 0 and std.mem.eql(u8, arguments[0], PackageManager.Manager.bootstrap.wrapper_argument)) {
+        PackageManager.HttpClient.setDefaultProxyEnvironment(init.environ_map);
+        const exit_code = PackageManager.Manager.bootstrap.runInternal(
+            arena,
+            io,
+            init.minimal.environ,
+            stderr_writer,
+            arguments[1..],
+        );
+        stderr_writer.flush() catch {};
+        std.process.exit(exit_code);
+    }
+
     const proxy_environment = try Shelly_Cli_Zig.proxy_environment.prepare(
         arena,
         &stdin_file_reader.interface,
@@ -41,10 +60,13 @@ pub fn main(init: std.process.Init) !void {
     );
     const effective_arguments = proxy_environment.arguments;
     const effective_environment_map = proxy_environment.map(init.environ_map);
-    Zigalpm.HttpClient.setDefaultProxyEnvironment(effective_environment_map);
+    PackageManager.HttpClient.setDefaultProxyEnvironment(effective_environment_map);
 
-    Shelly_Cli_Zig.signals.installInterruptHandler();
-    var session_log = Shelly_Cli_Zig.log.SessionLog.tryOpen(io);
+    const graceful_cancellation = Shelly_Cli_Zig.signals.argumentsRequestGracefulCancellation(
+        effective_arguments,
+    );
+    Shelly_Cli_Zig.signals.installInterruptHandler(graceful_cancellation);
+    var session_log = Shelly_Cli_Zig.log.SessionLog.tryOpenWithFallback(arena, io, proxy_environment.environ);
     defer if (session_log) |*log| log.close();
     if (session_log) |*log| log.writeSessionHeader(arena, effective_arguments);
     var transaction_log: ?Shelly_Cli_Zig.log.TransactionLog = if (session_log) |*log|
@@ -66,13 +88,27 @@ pub fn main(init: std.process.Init) !void {
         .transaction_log = if (transaction_log) |*log| log else null,
     };
     Shelly_Cli_Zig.download_policy.applyProcessDefault(&context);
-    const exit_code = Shelly_Cli_Zig.app.run(&context, effective_arguments) catch |err| code: {
-        stderr_writer.print("shelly: {t}\n", .{err}) catch {};
+    const command_exit_code = Shelly_Cli_Zig.app.run(&context, effective_arguments) catch |err| code: {
+        const message = PackageManager.user_errors.format(arena, err, .{}) catch "Could not complete the package operation. Shelly could not allocate memory to explain the error.";
+        var ui_mode = false;
+        for (effective_arguments) |argument| {
+            if (std.mem.eql(u8, argument, "--ui-mode")) ui_mode = true;
+        }
+        if (ui_mode) {
+            Shelly_Cli_Zig.config_output.writeErrorFrame(&context, message) catch {};
+        } else {
+            stderr_writer.print("shelly: {s}\n", .{message}) catch {};
+        }
         break :code 1;
     };
+    const exit_code: u8 = if (Shelly_Cli_Zig.signals.wasInterrupted()) code: {
+        stderr_writer.writeAll("Operation cancelled.\n") catch {};
+        break :code 130;
+    } else command_exit_code;
     if (session_log) |*log| log.writeSessionFooter(arena, exit_code);
 
     try stdout_writer.flush();
     try stderr_writer.flush();
+    if (context.tray_refresh_requested) Shelly_Cli_Zig.tray.refresh(&context);
     std.process.exit(exit_code);
 }

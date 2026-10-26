@@ -1,9 +1,12 @@
 //! Dependency string parsing and variable-reference resolution.
 const std = @import("std");
+const shell_word = @import("word.zig");
+const diagnostics = @import("diagnostics");
 const types = @import("types.zig");
 const shell_scan = @import("shell_scan.zig");
 const expansion = @import("expansion.zig");
-const arrays = @import("arrays.zig");
+const fields = @import("fields.zig");
+const variables = @import("variables.zig");
 const PkgbuildParser = @import("parser.zig").PkgbuildParser;
 
 const parsed_dep = types.parsed_dep;
@@ -31,6 +34,36 @@ pub fn match_array_ref(item: []const u8) ?[]const u8 {
         if (!shell_scan.is_word(c)) return null;
     }
     return name;
+}
+
+const ArrayExpansion = struct {
+    name: []const u8,
+    operation: []const u8 = "",
+    pattern: []const u8 = "",
+};
+
+/// Recognize only an array parameter, not array-shaped bytes inside literals
+/// or command substitutions. Patterns use the scalar engine's literal/*/? subset.
+fn match_array_expansion(text: []const u8) !?ArrayExpansion {
+    if (!std.mem.startsWith(u8, text, "${") or !std.mem.endsWith(u8, text, "}")) return null;
+    const name_end = shell_scan.scan_word_chars(text, 2);
+    if (name_end == 2 or !std.mem.startsWith(u8, text[name_end..], "[")) return null;
+    if (!std.mem.startsWith(u8, text[name_end..], "[@]")) {
+        if (try expansion.match_array_element(text) != null) return null;
+        return error.UnsupportedArrayExpansion;
+    }
+    const rest = text[name_end + 3 .. text.len - 1];
+    if (rest.len == 0) return .{ .name = text[2..name_end] };
+    if (rest[0] != '#' and rest[0] != '%') return error.UnsupportedArrayExpansion;
+    const op_len: usize = if (rest.len > 1 and rest[1] == rest[0]) 2 else 1;
+    const pattern = rest[op_len..];
+    // Quote removal, nested expansion, bracket expressions and extglobs need
+    // additional shell semantics. Never approximate them as literal patterns.
+    for (pattern) |c| {
+        if (c >= 0x80 or std.mem.indexOfScalar(u8, "\\\"'$`[](){}", c) != null)
+            return error.UnsupportedArrayExpansion;
+    }
+    return .{ .name = text[2..name_end], .operation = rest[0..op_len], .pattern = pattern };
 }
 
 fn strip_version_constraint(dep: []const u8) []const u8 {
@@ -74,11 +107,11 @@ pub fn resolve_variable_references(self: PkgbuildParser, content: []const u8, va
     return resolve_variable_references_mode(self, content, vars, items, false);
 }
 
-pub fn resolve_variable_references_preserving_commands(self: PkgbuildParser, content: []const u8, vars: *std.StringHashMap([]const u8), items: [][]const u8) ![][]const u8 {
+pub fn resolve_array_values(self: PkgbuildParser, content: []const u8, vars: *std.StringHashMap([]const u8), items: [][]const u8) ![][]const u8 {
     return resolve_variable_references_mode(self, content, vars, items, true);
 }
 
-fn resolve_variable_references_mode(self: PkgbuildParser, content: []const u8, vars: *std.StringHashMap([]const u8), items: [][]const u8, preserve_commands: bool) ![][]const u8 {
+fn resolve_variable_references_mode(self: PkgbuildParser, content: []const u8, vars: *std.StringHashMap([]const u8), items: [][]const u8, preserve_values: bool) ![][]const u8 {
     var resolved: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (resolved.items) |it| self.allocator.free(it);
@@ -86,39 +119,72 @@ fn resolve_variable_references_mode(self: PkgbuildParser, content: []const u8, v
     }
 
     for (items) |item| {
-        if (match_array_ref(item)) |referenced_var| {
-            const referenced_items = try arrays.parse_array(self, content, referenced_var);
-            defer {
-                for (referenced_items) |it| self.allocator.free(it);
-                self.allocator.free(referenced_items);
+        const word = try shell_word.read(self.allocator, item, 0);
+        defer word.deinit(self.allocator);
+        var reference: ?ArrayExpansion = null;
+        if (!shell_scan.contains_command_substitution(item)) for (word.parts) |part| {
+            if (part.kind != .parameter) continue;
+            if (try expansion.match_array_element(item[part.start..part.end]) != null and !part.quoted)
+                return error.UnsupportedArrayExpansion;
+            if (try match_array_expansion(item[part.start..part.end])) |matched| {
+                if (word.parts.len != 1) return error.UnsupportedArrayExpansion;
+                // Trimming unquoted arrays also invokes word splitting and
+                // pathname expansion. Only the quoted standalone form is static.
+                if (matched.operation.len != 0 and
+                    !(part.start == 1 and part.end + 1 == item.len and item[0] == '"' and item[item.len - 1] == '"'))
+                    return error.UnsupportedArrayExpansion;
+                reference = matched;
             }
-
-            const nested = try resolve_variable_references_mode(self, content, vars, referenced_items, preserve_commands);
-            defer self.allocator.free(nested);
+        };
+        if (reference) |ref| {
+            if (self.array_expansion_depth >= 32) return error.ArrayExpansionTooDeep;
+            var nested_parser = self;
+            nested_parser.array_expansion_depth += 1;
+            const nested = try fields.resolve_array_field(nested_parser, content, vars, ref.name);
+            defer {
+                if (self.deferred_source_words) |deferred| for (nested) |it| {
+                    _ = deferred.remove(@intFromPtr(it.ptr));
+                };
+                variables.freeStringSlice(self.allocator, nested);
+            }
             for (nested) |it| {
-                try resolved.append(self.allocator, it);
+                if (resolved.items.len >= 4096) return error.ArrayExpansionTooLarge;
+                const unresolved = if (self.deferred_source_words) |deferred| deferred.contains(@intFromPtr(it.ptr)) else false;
+                // The scalar matcher consumes bytes. A '?' must not split a
+                // multibyte character or silently depend on the shell locale.
+                if (!unresolved and std.mem.indexOfScalar(u8, ref.pattern, '?') != null) {
+                    for (it) |byte| if (byte >= 0x80) return error.UnsupportedArrayExpansion;
+                }
+                const value = try self.allocator.dupe(u8, if (unresolved)
+                    item
+                else
+                    expansion.apply_parameter_expansion(it, ref.operation, ref.pattern));
+                errdefer self.allocator.free(value);
+                if (unresolved) if (self.deferred_source_words) |deferred| try deferred.put(@intFromPtr(value.ptr), {});
+                try resolved.append(self.allocator, value);
             }
         } else {
-            const resolved_item = if (preserve_commands)
-                try expansion.resolve_step_string(self, item, vars)
-            else
-                try expansion.resolve_string(self, item, vars);
-            try resolved.append(self.allocator, resolved_item);
+            var word_parser = self;
+            word_parser.array_reference_content = content;
+            const value = try expansion.resolve_word(word_parser, item, vars);
+            errdefer self.allocator.free(value.value);
+            if (value.unresolved) if (self.deferred_source_words) |deferred| try deferred.put(@intFromPtr(value.value.ptr), {});
+            try resolved.append(self.allocator, value.value);
         }
     }
 
-    for (resolved.items, 0..) |dep, idx| {
+    if (!preserve_values and self.deferred_source_words == null) for (resolved.items, 0..) |dep, idx| {
         var cleaned = strip_version_constraint(dep);
         if (std.mem.eql(u8, cleaned, dep)) {
             cleaned = strip_dangling_operator(dep);
         }
         if (!std.mem.eql(u8, cleaned, dep)) {
-            std.debug.print("[Shelly] Warning: Stripped unresolved version constraint: {s} -> {s}\n", .{ dep, cleaned });
+            std.debug.print("Could not resolve dependency version constraint {0f}; using {1f}. Review the dependency requirements before building.\n", .{ diagnostics.safe(dep), diagnostics.safe(cleaned) });
             const cleaned_owned = try self.allocator.dupe(u8, cleaned);
             self.allocator.free(dep);
             resolved.items[idx] = cleaned_owned;
         }
-    }
+    };
 
     return resolved.toOwnedSlice(self.allocator);
 }
@@ -357,7 +423,7 @@ test "resolve_variable_references: strips dangling greater-than-or-equal" {
     var vars: std.StringHashMap([]const u8) = .init(std.testing.allocator);
     defer vars.deinit();
 
-    var items = [_][]const u8{"bash>="};
+    var items = [_][]const u8{"\"bash>=\""};
     const result = try resolve_variable_references(parser, "", &vars, &items);
     defer {
         for (result) |it| parser.allocator.free(it);
@@ -372,7 +438,7 @@ test "resolve_variable_references: strips dangling less-than" {
     var vars: std.StringHashMap([]const u8) = .init(std.testing.allocator);
     defer vars.deinit();
 
-    var items = [_][]const u8{"foo<"};
+    var items = [_][]const u8{"\"foo<\""};
     const result = try resolve_variable_references(parser, "", &vars, &items);
     defer {
         for (result) |it| parser.allocator.free(it);
@@ -453,7 +519,7 @@ test "resolve_variable_references: strips dangling operator from array expanded 
     var vars: std.StringHashMap([]const u8) = .init(std.testing.allocator);
     defer vars.deinit();
 
-    const content = "mydep=(x>= y<)\n";
+    const content = "mydep=(\"x>=\" \"y<\")\n";
     var items = [_][]const u8{"${mydep[@]}"};
     const result = try resolve_variable_references(parser, content, &vars, &items);
     defer {

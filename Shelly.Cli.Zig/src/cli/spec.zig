@@ -219,7 +219,7 @@ test "centralizes shared modifiers while retaining type-specific additions" {
 
     const flatpak_remove = manifest.findByPath("shelly remove flatpak").?;
     try std.testing.expect(manifest.findOption(flatpak_remove, "--remove-config") != null);
-    try std.testing.expect(manifest.findOption(flatpak_remove, "--config") == null);
+    try std.testing.expect(manifest.findOption(flatpak_remove, "--config") != null);
 }
 
 test "native help describes the implementations that execute" {

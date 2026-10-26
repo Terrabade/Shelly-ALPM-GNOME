@@ -77,11 +77,7 @@ pub fn prepareSources(self: *PackageBuilder, operation: *op_context.Operation) !
         prepared_count += 1;
 
         raiseSourceMessage(self, package_build, source.name);
-        switch (source.kind) {
-            .local => try copyLocalSource(self, source.location, destination),
-            .http => try acquireHttpSource(self, operation, source, destination, false),
-            .git => try cloneGitSource(self, operation, source, destination),
-        }
+        try acquireSource(self, operation, source, destination);
     }
 
     // Match makepkg's integrity ordering: acquire every source, then check
@@ -107,18 +103,12 @@ pub fn prepareSources(self: *PackageBuilder, operation: *op_context.Operation) !
     // makepkg runs the optional verify() function in $startdir after
     // built-in integrity checks and before extracting any source. Expose
     // staged remote/renamed sources there through temporary symlinks;
-    // existing direct local sources are already visible in $startdir.
+    // existing direct local sources and the default HTTP cache are already
+    // visible in $startdir.
     if (self.options.run_verify and !self.options.skip_source_pgp_verification) {
-        const execution = package_build.execution orelse return error.MissingExecutionSteps;
-        if (execution.verify_step) |step| {
-            const links = try exposeSourcesForVerify(self, prepared);
-            defer {
-                for (links) |path| {
-                    std.Io.Dir.cwd().deleteFile(self.io, path) catch {};
-                    self.allocator.free(path);
-                }
-                self.allocator.free(links);
-            }
+        if (package_build.execution) |execution| if (execution.verify_step) |step| {
+            var view = try exposeSourcesForVerify(self, prepared);
+            defer view.deinit(self);
             try steps.runStep(
                 self,
                 operation,
@@ -137,13 +127,24 @@ pub fn prepareSources(self: *PackageBuilder, operation: *op_context.Operation) !
             {
                 try copyLocalSource(self, source.source.location, source.destination);
             };
-        }
+            for (view.cached_sources.items) |index| {
+                const source = &prepared[index];
+                if (source.source.kind == .git) {
+                    const cache_path = try std.fs.path.join(self.allocator, &.{ self.options.source_destination, source.source.name });
+                    defer self.allocator.free(cache_path);
+                    try std.Io.Dir.cwd().deleteTree(self.io, source.destination);
+                    try materializeGitSource(self, operation, source.source, cache_path, source.destination);
+                } else try copyLocalSource(self, source.source.name, source.destination);
+            }
+        };
     }
 
     std.Io.Dir.cwd().createDirPath(self.io, extraction_staging) catch {
         steps.reportUnwritableBuildDirectory(self, extraction_staging);
         return error.BuildDirectoryNotWritable;
     };
+    var extracted_files: ExtractedSourceFiles = .{ .sources = prepared };
+    defer extracted_files.deinit(self.allocator);
     for (prepared) |*source| {
         try operation.checkCancelled();
         const materialized = try std.fs.path.join(
@@ -151,13 +152,34 @@ pub fn prepareSources(self: *PackageBuilder, operation: *op_context.Operation) !
             &.{ extraction_staging, source.source.name },
         );
         defer self.allocator.free(materialized);
+        try rejectExistingDestination(self.io, materialized);
         if (source.source.kind == .git) {
             try materializeGitSource(self, operation, source.source, source.destination, materialized);
         } else {
-            try std.Io.Dir.copyFile(.cwd(), source.destination, .cwd(), materialized, self.io, .{});
-            if (source_spec.isExtractableArchive(source.source.name) and
-                !source_spec.containsString(package_build.no_extract orelse &.{}, source.source.name))
-                try extractSourceArchive(self, operation, source.destination, extraction_staging);
+            const no_extract = source_spec.containsString(
+                package_build.no_extract orelse &.{},
+                source.source.name,
+            );
+            if (no_extract) {
+                try std.Io.Dir.copyFile(.cwd(), source.destination, .cwd(), materialized, self.io, .{});
+                continue;
+            }
+
+            // Extract before materializing the raw payload. An extensionless
+            // renamed source may have the same name as the archive's root
+            // directory; in that case the extracted entry owns the path and
+            // the raw archive must not overwrite it.
+            const extracted = try extractSourceArchiveIfRecognized(
+                self,
+                operation,
+                source.destination,
+                extraction_staging,
+                source.index,
+                &extracted_files,
+            );
+            if (!extracted) try decompressStandaloneSource(self, operation, source, &extracted_files, extraction_staging);
+            if (!extracted or !pathExistsNoFollow(self.io, materialized))
+                try std.Io.Dir.copyFile(.cwd(), source.destination, .cwd(), materialized, self.io, .{});
         }
     }
     // Only a fully prepared staging tree is committed. Sources are
@@ -186,6 +208,16 @@ fn verifyGitSourceChecksums(
         return checksums.requireSkippedVcsChecksums(package_build, prepared.index);
     if (!checksums.hasVerifiableChecksum(package_build, prepared.index)) return;
 
+    const archive_path = try gitChecksumArchive(self, operation, prepared);
+    defer self.allocator.free(archive_path);
+    defer std.Io.Dir.cwd().deleteFile(self.io, archive_path) catch {};
+    try verifySourceChecksums(self, package_build, prepared.index, archive_path);
+}
+
+/// Deterministic archive used by both verification and checksum updating.
+pub fn gitChecksumArchive(self: *PackageBuilder, operation: *op_context.Operation, prepared: *const source_spec.PreparedSource) ![]u8 {
+    const reference = prepared.source.reference orelse return error.UnsupportedVcsChecksum;
+    if (reference.kind == .branch) return error.UnsupportedVcsChecksum;
     var random_suffix: [8]u8 = undefined;
     self.io.random(&random_suffix);
     const suffix = std.fmt.bytesToHex(random_suffix, .lower);
@@ -194,8 +226,8 @@ fn verifyGitSourceChecksums(
         "{s}.shelly-archive-{s}.tmp",
         .{ prepared.destination, suffix },
     );
-    defer self.allocator.free(archive_path);
-    defer std.Io.Dir.cwd().deleteFile(self.io, archive_path) catch {};
+    errdefer self.allocator.free(archive_path);
+    errdefer std.Io.Dir.cwd().deleteFile(self.io, archive_path) catch {};
 
     // makepkg neutralizes export-subst/export-ignore when it archives the
     // acquisition mirror. Apply the same highest-precedence Git attributes
@@ -237,7 +269,7 @@ fn verifyGitSourceChecksums(
         "--",
         reference.value,
     });
-    try verifySourceChecksums(self, package_build, prepared.index, archive_path);
+    return archive_path;
 }
 
 fn copyLocalSource(self: *PackageBuilder, source_name: []const u8, destination: []const u8) !void {
@@ -250,36 +282,67 @@ fn copyLocalSource(self: *PackageBuilder, source_name: []const u8, destination: 
     try std.Io.Dir.copyFile(.cwd(), source_path, .cwd(), destination, self.io, .{});
 }
 
-fn exposeSourcesForVerify(self: *PackageBuilder, prepared: []const source_spec.PreparedSource) ![][]u8 {
-    var links: std.ArrayList([]u8) = .empty;
-    errdefer {
-        for (links.items) |path| {
+const SourceVerificationView = struct {
+    links: std.ArrayList([]u8) = .empty,
+    cached_sources: std.ArrayList(usize) = .empty,
+
+    fn deinit(view: *SourceVerificationView, self: *PackageBuilder) void {
+        for (view.links.items) |path| {
             std.Io.Dir.cwd().deleteFile(self.io, path) catch {};
             self.allocator.free(path);
         }
-        links.deinit(self.allocator);
+        view.links.deinit(self.allocator);
+        view.cached_sources.deinit(self.allocator);
     }
-    for (prepared) |*source| {
+};
+
+fn exposeSourcesForVerify(self: *PackageBuilder, prepared: []const source_spec.PreparedSource) !SourceVerificationView {
+    var view: SourceVerificationView = .{};
+    errdefer view.deinit(self);
+    const start_directory = try std.Io.Dir.cwd().realPathFileAlloc(self.io, self.options.start_directory, self.allocator);
+    defer self.allocator.free(start_directory);
+    const source_directory = try std.Io.Dir.cwd().realPathFileAlloc(self.io, self.options.source_destination, self.allocator);
+    defer self.allocator.free(source_directory);
+    const cache_in_startdir = std.mem.eql(u8, start_directory, source_directory);
+
+    for (prepared, 0..) |*source, index| {
         const visible_path = try std.fs.path.join(
             self.allocator,
             &.{ self.options.start_directory, source.source.name },
         );
         errdefer self.allocator.free(visible_path);
-        const exists = if (std.Io.Dir.cwd().statFile(
+        const existing = std.Io.Dir.cwd().statFile(
             self.io,
             visible_path,
             .{ .follow_symlinks = false },
-        )) |_| true else |err| switch (err) {
-            error.FileNotFound => false,
+        ) catch |err| switch (err) {
+            error.FileNotFound => null,
             else => return err,
         };
-        if (exists) {
+        if (existing) |stat| {
             // A direct local source already occupies its makepkg-visible
             // path. Never replace an unrelated user path for a renamed,
             // downloaded, or VCS source.
             if (source.source.kind == .local and
                 std.mem.eql(u8, source.source.location, source.source.name))
             {
+                self.allocator.free(visible_path);
+                continue;
+            }
+            if (source.source.kind == .git and cache_in_startdir and stat.kind == .directory) {
+                // Acquisition validated this mirror. Keep it visible to verify()
+                // and materialize its selected ref again after verification.
+                try view.cached_sources.append(self.allocator, index);
+                self.allocator.free(visible_path);
+                continue;
+            }
+            if (source.source.kind == .http and cache_in_startdir and stat.kind == .file) {
+                // Acquisition created or validated this exact cache entry.
+                // Expose the bytes that passed integrity checks, then copy
+                // any successful verify() changes back into staging. Keep
+                // cached files out of the temporary-link cleanup list.
+                try std.Io.Dir.copyFile(.cwd(), source.destination, .cwd(), visible_path, self.io, .{});
+                try view.cached_sources.append(self.allocator, index);
                 self.allocator.free(visible_path);
                 continue;
             }
@@ -292,9 +355,9 @@ fn exposeSourcesForVerify(self: *PackageBuilder, prepared: []const source_spec.P
             .{ .is_directory = source.source.kind == .git },
         );
         errdefer std.Io.Dir.cwd().deleteFile(self.io, visible_path) catch {};
-        try links.append(self.allocator, visible_path);
+        try view.links.append(self.allocator, visible_path);
     }
-    return links.toOwnedSlice(self.allocator);
+    return view;
 }
 
 fn downloadSource(
@@ -416,6 +479,11 @@ fn materializeGitSource(
         "--",
         acquired_repository,
         destination,
+    });
+    // Relative submodule URLs must resolve against upstream, not the
+    // acquisition directory that is removed before PKGBUILD steps run.
+    try runSourceCommand(self, operation, &.{
+        "-C", destination, "remote", "set-url", "origin", source.location,
     });
     if (source.reference) |reference| switch (reference.kind) {
         .branch => try runSourceCommand(self, operation, &.{
@@ -610,9 +678,11 @@ fn decompressSignedPayload(
         .lzo => &.{ "/usr/bin/lzop", "-d", "-q", "-c", "--", source_path },
         .lrz => &.{ "/usr/bin/lrzip", "-q", "-d", "-o", "-", source_path },
     };
+    var environment = try self.environ.createMap(self.allocator);
+    defer environment.deinit();
     var child = try std.process.spawn(self.io, .{
         .argv = argv,
-        .environ_map = null,
+        .environ_map = &environment,
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .ignore,
@@ -643,20 +713,77 @@ fn decompressSignedPayload(
     if (term != .exited or term.exited != 0) return error.SourceDecompressionFailed;
 }
 
-fn extractSourceArchive(
+fn decompressStandaloneSource(
+    self: *PackageBuilder,
+    operation: *op_context.Operation,
+    source: *const source_spec.PreparedSource,
+    extracted_files: *const ExtractedSourceFiles,
+    destination_root: []const u8,
+) !void {
+    const compression = (try archive.StandaloneCompression.fromFile(self.io, source.destination)) orelse return;
+    const output_name = compression.outputName(source.source.name) orelse return;
+    const relative = try archive.normalizeEntryPath(self.allocator, output_name);
+    defer self.allocator.free(relative);
+    try extracted_files.checkReservedPath(relative, .regular_file, null);
+    const destination = try std.fs.path.join(self.allocator, &.{ destination_root, relative });
+    defer self.allocator.free(destination);
+    try ensureSafeArchivePath(self, destination_root, relative, false);
+    try rejectExistingDestination(self.io, destination);
+
+    decompressStandalonePayload(self, operation, source.destination, destination, compression) catch |err| {
+        if (err == error.SourceDecompressionFailed or err == error.SourcePayloadTooLarge) {
+            const reason: []const u8 = if (err == error.SourcePayloadTooLarge)
+                "Could not extract the source because its decompressed size exceeds the 4 GiB limit. Check that the selected source archive is correct."
+            else
+                "The compressed file is damaged or incomplete. Download it again and retry the build.";
+            const message = try std.fmt.allocPrint(self.allocator, "Could not decompress source \"{s}\". {s}", .{ source.source.name, reason });
+            defer self.allocator.free(message);
+            operation.reportError(err, message, "sources", null, false);
+        }
+        return err;
+    };
+}
+
+fn decompressStandalonePayload(
+    self: *PackageBuilder,
+    operation: *op_context.Operation,
+    source_path: []const u8,
+    destination: []const u8,
+    compression: archive.StandaloneCompression,
+) !void {
+    try operation.checkCancelled();
+    var reader = try archive.CompressedReader.init(self.allocator, self.io, source_path, compression);
+    defer reader.deinit();
+    var output = try std.Io.Dir.cwd().createFile(self.io, destination, .{ .exclusive = true });
+    defer output.close(self.io);
+    errdefer std.Io.Dir.cwd().deleteFile(self.io, destination) catch {};
+    var writer = output.writer(self.io, &.{});
+    try reader.copyTo(&writer.interface, 4 * 1024 * 1024 * 1024, operation);
+}
+
+fn extractSourceArchiveIfRecognized(
     self: *PackageBuilder,
     operation: *op_context.Operation,
     archive_path: []const u8,
     destination_root: []const u8,
-) !void {
+    source_index: usize,
+    extracted_files: *ExtractedSourceFiles,
+) !bool {
     const DirectoryTimestamp = struct {
         path: []u8,
         mtime: std.Io.Timestamp,
     };
 
-    var reader = try archive.Reader.initAll(self.allocator, archive_path);
+    var reader = (try archive.Reader.initAllIfRecognized(self.allocator, archive_path)) orelse return false;
     defer reader.deinit();
+    const first_entry = switch (try reader.probe()) {
+        .not_archive => return false,
+        .archive => |entry| entry,
+    };
+    if (reader.isPlainSourceFile()) return false;
     var directory_timestamps: std.ArrayList(DirectoryTimestamp) = .empty;
+    var members: SourceArchiveMembers = .{};
+    defer members.deinit(self.allocator);
     defer {
         for (directory_timestamps.items) |timestamp| self.allocator.free(timestamp.path);
         directory_timestamps.deinit(self.allocator);
@@ -664,74 +791,99 @@ fn extractSourceArchive(
     var buffer: [64 * 1024]u8 = undefined;
     var entry_count: usize = 0;
     var total_size: u64 = 0;
-    while (try reader.next()) |entry| {
+    var next_entry = first_entry;
+    while (next_entry) |entry| {
         try operation.checkCancelled();
-        entry_count += 1;
-        if (entry_count > 1_000_000 or entry.size > 4 * 1024 * 1024 * 1024)
-            return error.SourceArchiveTooLarge;
-        if (isArchiveRootDirectoryEntry(entry.kind, entry.path)) {
-            try reader.skip();
-            continue;
-        }
-        const relative = try archive.normalizeEntryPath(self.allocator, entry.path);
-        defer self.allocator.free(relative);
-        const destination = try std.fs.path.join(self.allocator, &.{ destination_root, relative });
-        defer self.allocator.free(destination);
-        switch (entry.kind) {
-            .directory => {
-                try ensureSafeArchivePath(self, destination_root, relative, true);
-                if (entry.mtime) |mtime| {
-                    const owned_path = try self.allocator.dupe(u8, destination);
-                    errdefer self.allocator.free(owned_path);
-                    try directory_timestamps.append(self.allocator, .{
-                        .path = owned_path,
-                        .mtime = mtime,
+        entry_block: {
+            errdefer |err| reportArchiveEntryFailure(self, operation, archive_path, entry.path, entry.link_target, err);
+            entry_count += 1;
+            if (entry_count > 1_000_000 or entry.size > 4 * 1024 * 1024 * 1024)
+                return error.SourceArchiveTooLarge;
+            if (isArchiveRootDirectoryEntry(entry.kind, entry.path)) {
+                try reader.skip();
+                break :entry_block;
+            }
+            const relative = try archive.normalizePosixEntryPath(self.allocator, entry.path);
+            defer self.allocator.free(relative);
+            try extracted_files.checkReservedPath(relative, entry.kind, source_index);
+            const destination = try std.fs.path.join(self.allocator, &.{ destination_root, relative });
+            defer self.allocator.free(destination);
+            try members.add(self.allocator, relative, entry.kind, entry.link_target);
+            switch (entry.kind) {
+                .directory => {
+                    try ensureSafeArchivePath(self, destination_root, relative, true);
+                    if (entry.mtime) |mtime| {
+                        const owned_path = try self.allocator.dupe(u8, destination);
+                        errdefer self.allocator.free(owned_path);
+                        try directory_timestamps.append(self.allocator, .{
+                            .path = owned_path,
+                            .mtime = mtime,
+                        });
+                    }
+                },
+                .regular_file => {
+                    try ensureSafeArchivePath(self, destination_root, relative, false);
+                    if (extracted_files.regular_files.contains(relative)) {
+                        const stat = try std.Io.Dir.cwd().statFile(self.io, destination, .{ .follow_symlinks = false });
+                        if (stat.kind != .file) return error.UnsafeSourceArchivePath;
+                        // Later archive entries replace earlier regular files,
+                        // including read-only originals. Recreate the inode so
+                        // existing hard links retain their original contents.
+                        try std.Io.Dir.cwd().deleteFile(self.io, destination);
+                    } else {
+                        try rejectExistingDestination(self.io, destination);
+                    }
+                    var output = try std.Io.Dir.cwd().createFile(self.io, destination, .{
+                        .exclusive = true,
+                        .permissions = std.Io.File.Permissions.fromMode(entry.permissions & 0o777),
                     });
-                }
-            },
-            .regular_file => {
-                try ensureSafeArchivePath(self, destination_root, relative, false);
-                try rejectSymlinkDestination(self.io, destination);
-                var output = try std.Io.Dir.cwd().createFile(self.io, destination, .{
-                    .truncate = true,
-                    .permissions = std.Io.File.Permissions.fromMode(entry.permissions & 0o777),
-                });
-                defer output.close(self.io);
-                var writer = output.writer(self.io, &.{});
-                var entry_size: u64 = 0;
-                while (true) {
-                    const amount = try reader.read(&buffer);
-                    if (amount == 0) break;
-                    entry_size += amount;
-                    total_size += amount;
-                    if (entry_size > 4 * 1024 * 1024 * 1024 or total_size > 16 * 1024 * 1024 * 1024)
-                        return error.SourceArchiveTooLarge;
-                    try writer.interface.writeAll(buffer[0..amount]);
-                }
-                try writer.interface.flush();
-                if (entry.mtime) |mtime| try output.setTimestamps(self.io, .{
-                    .modify_timestamp = .{ .new = mtime },
-                });
-            },
-            .symbolic_link => {
-                const target = entry.link_target orelse return error.UnsafeSourceArchiveLink;
-                const safe_target = try source_spec.archiveLinkTarget(self.allocator, relative, target);
-                defer self.allocator.free(safe_target);
-                try ensureSafeArchivePath(self, destination_root, relative, false);
-                try rejectExistingDestination(self.io, destination);
-                try std.Io.Dir.cwd().symLink(self.io, safe_target, destination, .{});
-                if (entry.mtime) |mtime| try std.Io.Dir.cwd().setTimestamps(
-                    self.io,
-                    destination,
-                    .{
-                        .follow_symlinks = false,
+                    defer output.close(self.io);
+                    var writer = output.writer(self.io, &.{});
+                    var entry_size: u64 = 0;
+                    while (true) {
+                        const amount = try reader.read(&buffer);
+                        if (amount == 0) break;
+                        entry_size += amount;
+                        total_size += amount;
+                        if (entry_size > 4 * 1024 * 1024 * 1024 or total_size > 16 * 1024 * 1024 * 1024)
+                            return error.SourceArchiveTooLarge;
+                        try writer.interface.writeAll(buffer[0..amount]);
+                    }
+                    try writer.interface.flush();
+                    if (entry.mtime) |mtime| try output.setTimestamps(self.io, .{
                         .modify_timestamp = .{ .new = mtime },
-                    },
-                );
-            },
-            .other => return error.UnsupportedSourceArchiveEntry,
+                    });
+                    try extracted_files.recordRegularFile(self.allocator, relative, source_index);
+                },
+                .symbolic_link => {
+                    const target = entry.link_target orelse return error.UnsafeSourceArchiveLink;
+                    const safe_target = try source_spec.archiveLinkTarget(self.allocator, relative, target);
+                    defer self.allocator.free(safe_target);
+                    try ensureSafeArchivePath(self, destination_root, relative, false);
+                    try rejectExistingDestination(self.io, destination);
+                    try std.Io.Dir.cwd().symLink(self.io, safe_target, destination, .{});
+                    if (entry.mtime) |mtime| try std.Io.Dir.cwd().setTimestamps(
+                        self.io,
+                        destination,
+                        .{
+                            .follow_symlinks = false,
+                            .modify_timestamp = .{ .new = mtime },
+                        },
+                    );
+                },
+                .hard_link => {
+                    // Reserve the destination now; resolve targets only after all
+                    // archive members have been recorded (including forward links).
+                    try ensureSafeArchivePath(self, destination_root, relative, false);
+                    try rejectExistingDestination(self.io, destination);
+                    try reader.skip();
+                },
+                .other => return error.UnsupportedSourceArchiveEntry,
+            }
         }
+        next_entry = try reader.next();
     }
+    try members.resolve(self, operation, archive_path, destination_root);
 
     // Creating children changes directory mtimes. Restore recorded directory
     // timestamps only after the complete tree exists. Archive order is retained
@@ -742,6 +894,152 @@ fn extractSourceArchive(
             .modify_timestamp = .{ .new = timestamp.mtime },
         });
     }
+    return true;
+}
+
+/// Only completed regular archive entries are eligible for replacement. Raw
+/// sources, standalone outputs, Git files, and hard-link destinations never
+/// enter this registry, even when stat() describes them as regular files.
+const ExtractedSourceFiles = struct {
+    sources: []const source_spec.PreparedSource,
+    regular_files: std.StringHashMapUnmanaged(usize) = .empty,
+
+    fn deinit(self: *ExtractedSourceFiles, allocator: std.mem.Allocator) void {
+        var keys = self.regular_files.keyIterator();
+        while (keys.next()) |key| allocator.free(key.*);
+        self.regular_files.deinit(allocator);
+    }
+
+    fn recordRegularFile(self: *ExtractedSourceFiles, allocator: std.mem.Allocator, path: []const u8, source_index: usize) !void {
+        if (self.regular_files.getPtr(path)) |origin| {
+            origin.* = source_index;
+            return;
+        }
+        const owned_path = try allocator.dupe(u8, path);
+        errdefer allocator.free(owned_path);
+        try self.regular_files.putNoClobber(allocator, owned_path, source_index);
+    }
+
+    fn checkReservedPath(self: *const ExtractedSourceFiles, path: []const u8, kind: archive.EntryKind, source_index: ?usize) !void {
+        // Source aliases are single path components. Reserve their entire
+        // subtree before processing any archive, independent of source order.
+        for (self.sources) |source| {
+            const name = source.source.name;
+            const exact = std.mem.eql(u8, path, name);
+            const descendant = path.len > name.len and std.mem.startsWith(u8, path, name) and path[name.len] == '/';
+            if (!exact and !descendant) continue;
+            // An extensionless archive may own its matching root directory;
+            // its raw payload is then kept only in the acquisition staging tree.
+            if (source_index != null and source.index == source_index.? and
+                source.source.kind != .git and (descendant or kind == .directory)) continue;
+            return error.UnsafeSourceArchivePath;
+        }
+    }
+};
+
+const SourceArchiveMembers = struct {
+    const Member = struct {
+        kind: archive.EntryKind,
+        target: ?[]u8,
+        state: enum { pending, visiting, resolved } = .pending,
+    };
+
+    entries: std.StringArrayHashMapUnmanaged(Member) = .empty,
+
+    fn deinit(self: *SourceArchiveMembers, allocator: std.mem.Allocator) void {
+        for (self.entries.keys(), self.entries.values()) |path, member| {
+            allocator.free(path);
+            if (member.target) |target| allocator.free(target);
+        }
+        self.entries.deinit(allocator);
+    }
+
+    fn add(self: *SourceArchiveMembers, allocator: std.mem.Allocator, path: []const u8, kind: archive.EntryKind, link_target: ?[]const u8) !void {
+        if (self.entries.getIndex(path)) |index| {
+            const previous_kind = self.entries.values()[index].kind;
+            if (kind == .directory and previous_kind == .directory) return;
+            if (kind == .regular_file and previous_kind == .regular_file) return;
+            return error.UnsafeSourceArchivePath;
+        }
+        var parent = std.fs.path.dirname(path);
+        while (parent) |directory| : (parent = std.fs.path.dirname(directory)) {
+            if (self.entries.getIndex(directory)) |index| {
+                if (self.entries.values()[index].kind != .directory) return error.UnsafeSourceArchivePath;
+            }
+        }
+        const owned_path = try allocator.dupe(u8, path);
+        errdefer allocator.free(owned_path);
+        // Unlike symlink targets, hard-link targets are archive-root-relative.
+        const target = if (kind == .hard_link)
+            try archive.normalizePosixEntryPath(allocator, link_target orelse return error.UnsafeSourceArchiveLink)
+        else
+            null;
+        errdefer if (target) |value| allocator.free(value);
+        try self.entries.putNoClobber(allocator, owned_path, .{ .kind = kind, .target = target });
+    }
+
+    fn resolve(self: *SourceArchiveMembers, builder: *PackageBuilder, operation: *op_context.Operation, archive_path: []const u8, root: []const u8) !void {
+        // Iterative DFS visits each link once. No recursive stack growth or
+        // repeated full scans for long chains supplied by an untrusted archive.
+        var chain: std.ArrayList(usize) = .empty;
+        defer chain.deinit(builder.allocator);
+        const paths = self.entries.keys();
+        const members = self.entries.values();
+        for (members, 0..) |member, start| {
+            try operation.checkCancelled();
+            if (member.kind != .hard_link or member.state == .resolved) continue;
+            var index = start;
+            errdefer |err| reportArchiveEntryFailure(builder, operation, archive_path, paths[index], members[index].target, err);
+            while (members[index].kind == .hard_link and members[index].state != .resolved) {
+                try operation.checkCancelled();
+                if (members[index].state == .visiting) return error.CyclicSourceArchiveHardLink;
+                members[index].state = .visiting;
+                try chain.append(builder.allocator, index);
+                const target_index = self.entries.getIndex(members[index].target.?) orelse
+                    return error.MissingSourceArchiveHardLinkTarget;
+                switch (members[target_index].kind) {
+                    .regular_file, .hard_link => index = target_index,
+                    else => return error.UnsafeSourceArchiveLink,
+                }
+            }
+            while (chain.pop()) |link_index| {
+                index = link_index;
+                try operation.checkCancelled();
+                const target = members[index].target.?;
+                // Inspect every component without following symlinks, even
+                // though the target is also required to belong to this archive.
+                try ensureSafeArchivePath(builder, root, target, false);
+                try ensureSafeArchivePath(builder, root, paths[index], false);
+                const source = try std.fs.path.join(builder.allocator, &.{ root, target });
+                defer builder.allocator.free(source);
+                const destination = try std.fs.path.join(builder.allocator, &.{ root, paths[index] });
+                defer builder.allocator.free(destination);
+                const stat = try std.Io.Dir.cwd().statFile(builder.io, source, .{ .follow_symlinks = false });
+                if (stat.kind != .file) return error.UnsafeSourceArchiveLink;
+                try rejectExistingDestination(builder.io, destination);
+                try std.Io.Dir.hardLink(.cwd(), source, .cwd(), destination, builder.io, .{ .follow_symlinks = false });
+                // Mode and timestamps belong to the shared inode. Applying
+                // the link header's metadata would change the original file.
+                members[index].state = .resolved;
+            }
+        }
+    }
+};
+
+fn reportArchiveEntryFailure(self: *PackageBuilder, operation: *op_context.Operation, archive_path: []const u8, path: []const u8, target: ?[]const u8, err: anyerror) void {
+    if (err == error.Cancelled) return;
+    const safe = @import("diagnostics").safe;
+    const message = if (target) |value|
+        std.fmt.allocPrint(self.allocator, "Could not extract source archive {f}, entry {f}, link target {f}. Technical details: {s}", .{ safe(std.fs.path.basename(archive_path)), safe(path), safe(value), @errorName(err) }) catch return
+    else
+        std.fmt.allocPrint(self.allocator, "Could not extract source archive {f}, entry {f}. Technical details: {s}", .{ safe(std.fs.path.basename(archive_path)), safe(path), @errorName(err) }) catch return;
+    defer self.allocator.free(message);
+    operation.reportError(err, message, "sources", null, false);
+}
+
+fn pathExistsNoFollow(io: std.Io, path: []const u8) bool {
+    _ = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch return false;
+    return true;
 }
 
 fn isArchiveRootDirectoryEntry(kind: archive.EntryKind, path: []const u8) bool {
@@ -770,6 +1068,7 @@ test "PackageBuilder skips only source archive root directory markers" {
         try std.testing.expect(isArchiveRootDirectoryEntry(.directory, path));
         try std.testing.expect(!isArchiveRootDirectoryEntry(.regular_file, path));
         try std.testing.expect(!isArchiveRootDirectoryEntry(.symbolic_link, path));
+        try std.testing.expect(!isArchiveRootDirectoryEntry(.hard_link, path));
         try std.testing.expect(!isArchiveRootDirectoryEntry(.other, path));
     }
 
@@ -823,18 +1122,20 @@ fn raiseSourceMessage(self: *PackageBuilder, package_build: *const PackageBuild,
     });
 }
 
-fn rejectSymlinkDestination(io: std.Io, path: []const u8) !void {
-    const stat = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch |err| switch (err) {
-        error.FileNotFound => return,
-        else => return err,
-    };
-    if (stat.kind == .sym_link or stat.kind == .directory) return error.UnsafeSourceArchivePath;
-}
-
 fn rejectExistingDestination(io: std.Io, path: []const u8) !void {
     _ = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
     return error.UnsafeSourceArchivePath;
+}
+
+/// Acquisition only: callers choose whether to verify, hash, or extract.
+pub fn acquireSource(self: *PackageBuilder, operation: *op_context.Operation, source: source_spec.ParsedSource, destination: []const u8) !void {
+    try operation.checkCancelled();
+    switch (source.kind) {
+        .local => try copyLocalSource(self, source.location, destination),
+        .http => try acquireHttpSource(self, operation, source, destination, false),
+        .git => try cloneGitSource(self, operation, source, destination),
+    }
 }

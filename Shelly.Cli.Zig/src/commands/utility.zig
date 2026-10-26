@@ -1,4 +1,7 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
+const PackageManager = @import("PackageManager");
+const user_account = PackageManager.user_account;
 const test_support = @import("test_support.zig");
 const completions = @import("../cli/completions.zig");
 const documentation = @import("../cli/documentation.zig");
@@ -12,7 +15,6 @@ const spec = @import("../cli/spec.zig");
 const xdg = @import("../runtime/xdg.zig");
 
 const command_path = "shelly utility utility";
-const default_database_directory = "/var/lib/pacman";
 
 const Operation = union(enum) {
     fix_permissions,
@@ -54,7 +56,7 @@ pub fn dispatch(
         (operation == .pacfiles and pacfiles.requiresElevation(invocation));
     if (needs_elevation and !elevation.isRoot()) {
         const elevated_exit = elevation.relaunchIfNeeded(context, invocation.arguments) catch |err| {
-            try context.stderr.print("Unable to elevate utility operation: {t}\n", .{err});
+            try context.stderr.print("Could not obtain administrator privileges for utility operation. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
             return 1;
         };
         if (elevated_exit) |exit_code| return exit_code;
@@ -71,7 +73,7 @@ fn execute(
 ) anyerror!u8 {
     return switch (operation) {
         .fix_permissions => fixPermissions(context, invocation, permission_runner),
-        .repair_db => repairDb(context, invocation, default_database_directory),
+        .repair_db => repairConfiguredDb(context, invocation),
         .docs => generateDocs(context),
         .completions => |shell| generateCompletions(context, shell),
         .pacfiles => pacfiles.run(context, invocation),
@@ -152,7 +154,7 @@ fn fixPermissions(
     runner: anytype,
 ) anyerror!u8 {
     const user = try invokingUser(context) orelse {
-        const message = "Could not determine the invoking user (SUDO_USER, DOAS_USER, or PKEXEC_UID).";
+        const message = "Could not identify the regular user whose Shelly directories need repair. Run this command from your regular user session and approve authorization when requested.";
         try writeResponseMessage(context, invocation, false, message);
         return 1;
     };
@@ -169,7 +171,7 @@ fn fixPermissions(
         found = true;
         const exit_code = runner.run(context, user, path) catch |err| {
             failed = true;
-            const message = try std.fmt.allocPrint(context.allocator, "Failed to fix ownership for {s}: {t}", .{ path, err });
+            const message = try std.fmt.allocPrint(context.allocator, "Could not restore ownership of {0f} to the invoking user. {1s}\n\nTechnical details: {2s}", .{ diagnostics.safe(path), diagnostics.cause(err), @errorName(err) });
             try writeResponseMessage(context, invocation, false, message);
             continue;
         };
@@ -180,8 +182,8 @@ fn fixPermissions(
             failed = true;
             const message = try std.fmt.allocPrint(
                 context.allocator,
-                "Failed to fix ownership for {s}: chown exited with code {d}",
-                .{ path, exit_code },
+                "Could not restore ownership of {0f} to the invoking user.\n\nTechnical details: {1d}",
+                .{ diagnostics.safe(path), exit_code },
             );
             try writeResponseMessage(context, invocation, false, message);
         }
@@ -191,6 +193,17 @@ fn fixPermissions(
         try writeResponseMessage(context, invocation, true, "No Shelly directories need permission repair.");
     }
     return if (failed) 1 else 0;
+}
+
+fn repairConfiguredDb(context: *runtime.RuntimeContext, invocation: *const parser.Invocation) !u8 {
+    const Configuration = PackageManager.Manager.configuration.Configuration;
+    var config = try (if (context.config_path != null) &Configuration.parseStrict else &Configuration.parse)(
+        context.allocator,
+        context.io,
+        context.config_path orelse PackageManager.paths.config_file,
+    );
+    defer config.deinitialize();
+    return repairDb(context, invocation, config.database_path);
 }
 
 fn repairDb(
@@ -204,7 +217,7 @@ fn repairDb(
         return 0;
     };
     std.Io.Dir.deleteFileAbsolute(context.io, db_lock) catch |err| {
-        const message = try std.fmt.allocPrint(context.allocator, "Failed to remove pacman database lock: {t}", .{err});
+        const message = try std.fmt.allocPrint(context.allocator, "Could not remove the package database lock at {0f}. {1s} Only remove a leftover lock after confirming that no package manager is running.\n\nTechnical details: {2s}", .{ diagnostics.safe(db_lock), diagnostics.cause(err), @errorName(err) });
         try writeResponseMessage(context, invocation, false, message);
         return 1;
     };
@@ -268,22 +281,22 @@ fn validInvokingUser(user: []const u8) bool {
 }
 
 fn usernameForUid(context: *const runtime.RuntimeContext, wanted_uid: []const u8) !?[]const u8 {
-    const passwd = std.Io.Dir.cwd().readFileAlloc(
-        context.io,
-        "/etc/passwd",
-        context.allocator,
-        .limited(1024 * 1024),
-    ) catch return null;
-    var lines = std.mem.splitScalar(u8, passwd, '\n');
-    while (lines.next()) |line| {
-        var fields = std.mem.splitScalar(u8, line, ':');
-        const username = fields.next() orelse continue;
-        _ = fields.next() orelse continue;
-        const uid = fields.next() orelse continue;
-        if (std.mem.eql(u8, uid, wanted_uid) and validInvokingUser(username))
-            return username;
-    }
-    return null;
+    const account = (try user_account.byUidText(context.allocator, wanted_uid)) orelse return null;
+    defer account.deinit(context.allocator);
+    if (account.uid == 0 or !validInvokingUser(account.username)) return null;
+    return try context.allocator.dupe(u8, account.username);
+}
+
+test "NSS utility ownership lookup resolves UIDs and rejects root" {
+    var context: test_support.TestContext = .{};
+    context.init();
+    defer context.deinit();
+    const allocator = context.context.allocator;
+    const account = (try user_account.byName(allocator, "nobody")) orelse return error.SkipZigTest;
+    const uid = try std.fmt.allocPrint(allocator, "{d}", .{account.uid});
+    try std.testing.expectEqualStrings(account.username, (try usernameForUid(&context.context, uid)).?);
+    try std.testing.expect(try usernameForUid(&context.context, "0") == null);
+    try std.testing.expect(try usernameForUid(&context.context, "invalid") == null);
 }
 
 fn parseInvocation(
@@ -486,4 +499,44 @@ test "repairDb succeeds gracefully when no lock file is present" {
 fn expectArguments(expected: []const []const u8, actual: []const []const u8) !void {
     try std.testing.expectEqual(expected.len, actual.len);
     for (expected, actual) |wanted, value| try std.testing.expectEqualStrings(wanted, value);
+}
+
+test "repairDb uses the selected configuration database" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const allocator = tc.arena.allocator();
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const root = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    try temporary.dir.createDirPath(io, "selected-db");
+    try temporary.dir.writeFile(io, .{ .sub_path = "selected-db/db.lck", .data = "" });
+    try temporary.dir.writeFile(io, .{ .sub_path = "db.lck", .data = "untouched" });
+    const config = try std.fmt.allocPrint(allocator, "[options]\nDBPath = {s}/selected-db\n", .{root});
+    try temporary.dir.writeFile(io, .{ .sub_path = "shelly.conf", .data = config });
+    tc.context.config_path = try std.fs.path.join(allocator, &.{ root, "shelly.conf" });
+    const invocation = try parseInvocation(allocator, &.{ "utility", "--repair-db" });
+    try std.testing.expectEqual(@as(u8, 0), try execute(&tc.context, &invocation, .repair_db, Real{}));
+    try std.testing.expectError(error.FileNotFound, temporary.dir.access(io, "selected-db/db.lck", .{}));
+    try temporary.dir.access(io, "db.lck", .{});
+}
+
+test "repairDb rejects invalid explicit configuration before touching a lock" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const allocator = tc.arena.allocator();
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const root = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    try temporary.dir.writeFile(io, .{ .sub_path = "db.lck", .data = "untouched" });
+    tc.context.config_path = try std.fs.path.join(allocator, &.{ root, "shelly.conf" });
+    const invocation = try parseInvocation(allocator, &.{ "utility", "--repair-db" });
+    try std.testing.expectError(error.ConfigReadFailed, execute(&tc.context, &invocation, .repair_db, Real{}));
+    const invalid = try std.fmt.allocPrint(allocator, "[options]\nDBPath = {s}\nHookDirMode = invalid\n", .{root});
+    try temporary.dir.writeFile(io, .{ .sub_path = "shelly.conf", .data = invalid });
+    try std.testing.expectError(error.InvalidHookDirMode, execute(&tc.context, &invocation, .repair_db, Real{}));
+    try temporary.dir.access(io, "db.lck", .{});
 }

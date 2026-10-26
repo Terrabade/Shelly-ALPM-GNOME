@@ -69,6 +69,16 @@ pub const PlanDialog = extern struct {
 
         set_summary(p, question);
         add_plan_rows(p, question.packages);
+        for (question.migrations) |migration| {
+            const text = std.fmt.allocPrintSentinel(std.heap.page_allocator, "Preserve {s}: {s} → {s} ({s})", .{
+                migration.path, migration.source orelse "unowned", migration.destination, migration.origin,
+            }, 0) catch continue;
+            defer std.heap.page_allocator.free(text);
+            const label = gtk.Label.new(text);
+            gtk.Label.setXalign(label, 0);
+            gtk.Label.setWrap(label, 1);
+            gtk.Box.append(p.plan_list, label.as(gtk.Widget));
+        }
         return self;
     }
 
@@ -76,6 +86,23 @@ pub const PlanDialog = extern struct {
         var dl_buf: [32]u8 = undefined;
         var net_buf: [32]u8 = undefined;
         var buf: [256]u8 = undefined;
+
+        if (std.mem.eql(u8, q.action, "remove")) {
+            const removed = if (q.total_installed_size) |size|
+                SizeConverter.convert_null_term(&dl_buf, @intCast(size))
+            else
+                translations._("Unknown");
+            const text = std.fmt.bufPrintZ(&buf, "{d} {s} {s} {s} — {s} {s}", .{
+                q.packages.len,
+                translations._("package(s)"),
+                translations._("to"),
+                q.action,
+                removed,
+                translations._("removed size"),
+            }) catch "";
+            gtk.Label.setLabel(p.summary_label, text);
+            return;
+        }
 
         const dl = SizeConverter.convert_null_term(&dl_buf, @intCast(q.total_download_size orelse 0));
         const net = SizeConverter.convert_null_term(&net_buf, q.net_installed_size orelse 0);

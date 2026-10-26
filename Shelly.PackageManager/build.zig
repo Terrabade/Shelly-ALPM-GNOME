@@ -1,6 +1,45 @@
 const std = @import("std");
 const package_manifest = @import("build.zig.zon");
 
+// The pinned zig-toml parser requires a key even in {}. Patch its generated
+// source copy until the dependency supports empty inline tables (build.env = {}).
+// Never modify the dependency cache shared by other projects.
+fn patchedTomlModule(b: *std.Build, dependency: *std.Build.Dependency, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const source_path = dependency.path("src/table.zig").getPath3(b, null);
+    const source = source_path.root_dir.handle.readFileAlloc(b.graph.io, source_path.subPathOrDot(), b.allocator, .limited(1024 * 1024)) catch @panic("cannot read zig-toml table parser");
+    const before = "    while (true) {\n        spaces.skipSpacesAndLineBreaks(ctx);\n        var pair = try kv.parse(ctx);";
+    const after =
+        \\    spaces.skipSpacesAndLineBreaks(ctx);
+        \\    if (ctx.current() == '}') {
+        \\        _ = ctx.next();
+        \\        return table;
+        \\    }
+        \\    while (true) {
+        \\        spaces.skipSpacesAndLineBreaks(ctx);
+        \\        var pair = try kv.parse(ctx);
+    ;
+    if (std.mem.count(u8, source, before) != 1) @panic("zig-toml changed: review the empty inline table patch");
+    const patched = std.mem.replaceOwned(u8, b.allocator, source, before, after) catch @panic("OOM");
+    const files = b.addWriteFiles();
+    const directory = files.addCopyDirectory(dependency.path("src"), "src", .{ .exclude_extensions = &.{"table.zig"} });
+    _ = files.add("src/table.zig", patched);
+    return b.createModule(.{ .root_source_file = directory.path(b, "root.zig"), .target = target, .optimize = optimize });
+}
+
+// Match the pkg-config requirement of the libalpm header translation step.
+// Only native tests may infer availability from the host; cross builds and an
+// explicit -Dlibalpm selection must retain the requested backend coverage.
+fn testLibalpmEnabled(b: *std.Build, requested: ?bool, target: std.Build.ResolvedTarget) bool {
+    if (requested) |enabled| return enabled;
+    if (!target.query.isNative()) return true;
+    var code: u8 = 0;
+    _ = b.runAllowFail(&.{ "pkg-config", "--exists", "libalpm" }, &code, .ignore) catch {
+        std.log.warn("libalpm development files unavailable: test targets omit libalpm-specific tests (use -Dlibalpm=true to require them)", .{});
+        return false;
+    };
+    return true;
+}
+
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
 // executed by an external runner. The functions in `std.Build` implement a DSL
@@ -17,6 +56,41 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
+    const path_profile = b.option([]const u8, "path-profile", "Distribution path defaults: pacman or devario") orelse "pacman";
+    const paths = b.dependency("shelly_paths", .{ .target = target, .optimize = optimize, .@"path-profile" = path_profile }).module("paths");
+    const requested_libalpm = b.option(bool, "libalpm", "Include the libalpm backend alongside RLPM (tests auto-detect when omitted)");
+    const enable_libalpm = requested_libalpm orelse true;
+    const rlpm_dependency = b.dependency("shelly_rlpm", .{ .target = target, .optimize = optimize, .@"path-profile" = path_profile });
+    const diagnostics = b.dependency("shelly_diagnostics", .{ .target = target, .optimize = optimize }).module("diagnostics");
+    const operation_context_mod = b.createModule(.{
+        .root_source_file = b.path("src/shared/operation_context.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    operation_context_mod.addImport("diagnostics", diagnostics);
+    const native_output = b.createModule(.{
+        .root_source_file = b.path("src/shared/native_output.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const rlpm_adapter = b.addModule("rlpm_operation_adapter", .{
+        .root_source_file = b.path("src/rlpm/operation_adapter.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "native_output", .module = native_output },
+            .{ .name = "operation_context", .module = operation_context_mod },
+            .{ .name = "Shelly_Rlpm", .module = rlpm_dependency.module("Shelly_Rlpm") },
+            .{ .name = "diagnostics", .module = diagnostics },
+        },
+    });
+    const rlpm_adapter_tests = b.addRunArtifact(b.addTest(.{ .root_module = rlpm_adapter }));
+    const rlpm_adapter_step = b.step("rlpm-adapter-test", "Test RLPM lifecycle/deferred UI adapter in private roots");
+    rlpm_adapter_step.dependOn(&rlpm_adapter_tests.step);
+    rlpm_adapter_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = operation_context_mod })).step);
+    // Validate this opt-in adapter without building the other native backends.
+    if (b.option(bool, "rlpm-adapter-only", "Build only the RLPM callback adapter") orelse false) return;
+    const shelly_download = b.dependency("shelly_download", .{ .target = target, .optimize = optimize }).module("Shelly_Download");
     const shelly_http = b.dependency("shelly_http", .{
         .target = target,
         .optimize = optimize,
@@ -25,6 +99,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const toml_module = patchedTomlModule(b, toml, target, optimize);
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -32,29 +107,27 @@ pub fn build(b: *std.Build) void {
 
     // Generate the raw libalpm bindings from the installed system headers.
     // Zig caches the generated module and regenerates it when its inputs change.
-    const translate_alpm = b.addTranslateC(.{
-        .root_source_file = b.path("src/alpm/alpm_include.h"),
+
+    const user_account_mod = b.createModule(.{
+        .root_source_file = b.path("src/shared/user_account.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    translate_alpm.linkSystemLibrary("alpm", .{
-        .use_pkg_config = .force,
-    });
-    const alpm_c = translate_alpm.createModule();
-
-    const operation_context_mod = b.createModule(.{
-        .root_source_file = b.path("src/shared/operation_context.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    user_account_mod.addImport("diagnostics", diagnostics);
     const archive_mod = b.createModule(.{
         .root_source_file = b.path("src/shared/archive.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
+    archive_mod.addImport("diagnostics", diagnostics);
     archive_mod.linkSystemLibrary("archive", .{});
+    const compression_tests = b.addRunArtifact(b.addTest(.{
+        .root_module = archive_mod,
+        .filters = &.{ "compression presets", "archive writer", "archive virtual ownership" },
+    }));
+    b.step("compression-test", "Test package compression presets and metadata round trips").dependOn(&compression_tests.step);
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -63,7 +136,7 @@ pub fn build(b: *std.Build) void {
     // to our consumers. We must give it a name because a Zig package can expose
     // multiple modules and consumers will need to be able to specify which
     // module they want to access.
-    const mod = b.addModule("Zigalpm", .{
+    const mod = b.addModule("PackageManager", .{
         // The root source file is the "entry point" of this module. Users of
         // this module will only be able to access public declarations contained
         // in this file, which means that if you have declarations that you
@@ -77,16 +150,36 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    mod.addImport("alpm_c", alpm_c);
+    mod.addImport("native_output", native_output);
+    mod.addImport("diagnostics", diagnostics);
+    mod.addImport("paths", paths);
+    mod.addImport("Shelly_Download", shelly_download);
+    if (enable_libalpm) {
+        const translate_alpm = b.addTranslateC(.{
+            .root_source_file = b.path("src/alpm/alpm_include.h"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        translate_alpm.linkSystemLibrary("alpm", .{
+            .use_pkg_config = .force,
+        });
+        const alpm_c = translate_alpm.createModule();
+        mod.addImport("alpm_c", alpm_c);
+    }
+    mod.addImport("Shelly_Rlpm", rlpm_dependency.module("Shelly_Rlpm"));
     mod.addImport("archive", archive_mod);
     mod.addImport("operation_context", operation_context_mod);
+    mod.addImport("rlpm_operation_adapter", rlpm_adapter);
+    mod.addImport("user_account", user_account_mod);
     mod.addImport("ShellyHttp", shelly_http.module("ShellyHttp"));
-    mod.addImport("toml", toml.module("toml"));
+    mod.addImport("toml", toml_module);
     const package_options = b.addOptions();
     package_options.addOption([]const u8, "version", package_manifest.version);
     // Keep this generated module distinct from consumers that independently
     // expose an identically-valued `version` option.
     package_options.addOption(bool, "is_package_manager", true);
+    package_options.addOption(bool, "libalpm", enable_libalpm);
     mod.addOptions("package_options", package_options);
 
     // PackageManager imports only the backend's data-only protocol module.
@@ -112,6 +205,49 @@ pub fn build(b: *std.Build) void {
     );
     mod.addOptions("flatpak_backend_options", flatpak_backend_options);
 
+    // Keep production defaults stable while allowing tests on RLPM-only hosts.
+    // Consumers must use this module throughout their test graph as well.
+    const test_libalpm = testLibalpmEnabled(b, requested_libalpm, target);
+    const test_mod = b.addModule("PackageManagerTests", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    for (mod.import_table.keys(), mod.import_table.values()) |name, imported| {
+        if (std.mem.eql(u8, name, "alpm_c") and !test_libalpm) continue;
+        if (std.mem.eql(u8, name, "package_options")) continue;
+        test_mod.addImport(name, imported);
+    }
+    const test_options = b.addOptions();
+    test_options.addOption([]const u8, "version", package_manifest.version);
+    test_options.addOption(bool, "is_package_manager", true);
+    test_options.addOption(bool, "libalpm", test_libalpm);
+    test_mod.addOptions("package_options", test_options);
+
+    const native_backend_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/alpm/backend_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "PackageManager", .module = test_mod }},
+    }) });
+    b.step("native-backend-test", "Test native selection, transactions and interoperability in private roots").dependOn(&b.addRunArtifact(native_backend_tests).step);
+    const worker_fixture_options = b.addOptions();
+    worker_fixture_options.addOptionPath("path", rlpm_dependency.namedLazyPath("worker_fixture"));
+    native_backend_tests.root_module.addOptions("worker_fixture", worker_fixture_options);
+    const build_plan_tests = b.addTest(.{ .root_module = native_backend_tests.root_module, .filters = &.{"dependency plan"} });
+    b.step("build-plan-test", "Test native dependency planning and pinned provisioning in private roots").dependOn(&b.addRunArtifact(build_plan_tests).step);
+
+    const native_environment_tests = b.addTest(.{
+        .root_module = test_mod,
+        .filters = &.{
+            "Manager.sync keeps included repository mirrors separate during fallback",
+            "ALPM package and database downloads honor limits across mirror retries",
+            "PackageBuilder signs published packages with the configured signing key",
+        },
+    });
+    b.step("native-environment-test", "Test loopback downloads and temporary-keyring signing").dependOn(&b.addRunArtifact(native_environment_tests).step);
+
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
     // to the module defined above, it's sometimes preferable to split business
@@ -129,7 +265,7 @@ pub fn build(b: *std.Build) void {
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
     const exe = b.addExecutable(.{
-        .name = "Zigalpm",
+        .name = "PackageManager",
         .root_module = b.createModule(.{
             // b.createModule defines a new module just like b.addModule but,
             // unlike b.addModule, it does not expose the module to consumers of
@@ -144,19 +280,21 @@ pub fn build(b: *std.Build) void {
             // List of modules available for import in source files part of the
             // root module.
             .imports = &.{
-                // Here "Zigalpm" is the name you will use in your source code to
-                // import this module (e.g. `@import("Zigalpm")`). The name is
+                // Here "PackageManager" is the name you will use in your source code to
+                // import this module (e.g. `@import("PackageManager")`). The name is
                 // repeated because you are allowed to rename your imports, which
                 // can be extremely useful in case of collisions (which can happen
                 // importing modules from different packages).
-                .{ .name = "Zigalpm", .module = mod },
+                .{ .name = "PackageManager", .module = mod },
             },
         }),
     });
+    exe.root_module.addImport("diagnostics", diagnostics);
 
     const zig_time_dep = b.dependency("zig-time", .{});
     exe.root_module.addImport("zig-time", zig_time_dep.module("zig-time"));
     mod.addImport("zig-time", zig_time_dep.module("zig-time"));
+    test_mod.addImport("zig-time", zig_time_dep.module("zig-time"));
 
     const goose_dep = b.dependency("goose", .{});
     exe.root_module.addImport("goose", goose_dep.module("goose"));
@@ -164,6 +302,7 @@ pub fn build(b: *std.Build) void {
     const xml_dep = b.dependency("zig-xml", .{});
     exe.root_module.addImport("zig-xml", xml_dep.module("xml"));
     mod.addImport("zig-xml", xml_dep.module("xml"));
+    test_mod.addImport("zig-xml", xml_dep.module("xml"));
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default
@@ -199,8 +338,10 @@ pub fn build(b: *std.Build) void {
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.
+    const test_filters = b.option([]const []const u8, "test-filter", "Run root tests whose names contain this text") orelse &.{};
     const mod_tests = b.addTest(.{
-        .root_module = mod,
+        .root_module = test_mod,
+        .filters = test_filters,
     });
 
     // A run step that will run the test executable.
@@ -209,8 +350,17 @@ pub fn build(b: *std.Build) void {
     // Creates an executable that will run `test` blocks from the executable's
     // root module. Note that test executables only test one module at a time,
     // hence why we have to create two separate ones.
+    const exe_test_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    for (exe.root_module.import_table.keys(), exe.root_module.import_table.values()) |name, imported| {
+        exe_test_module.addImport(name, if (std.mem.eql(u8, name, "PackageManager")) test_mod else imported);
+    }
     const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
+        .root_module = exe_test_module,
+        .filters = test_filters,
     });
 
     // A run step that will run the second test executable.
@@ -220,16 +370,102 @@ pub fn build(b: *std.Build) void {
     // times and since the two run steps do not depend on one another, this will
     // make the two of them run in parallel.
     const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&rlpm_adapter_tests.step);
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&compression_tests.step);
+
+    const bootstrap_tests = b.addTest(.{
+        .root_module = test_mod,
+        .filters = &.{ "bootstrap", "provisioning", "root finalizer" },
+    });
+    const bootstrap_step = b.step("bootstrap-test", "Test isolated root configuration and diagnostics");
+    bootstrap_step.dependOn(&b.addRunArtifact(bootstrap_tests).step);
+
+    const hook_helper = b.addExecutable(.{
+        .name = "bootstrap-hook-helper",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/alpm/bootstrap_hook_helper.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const hook_fixture = b.addOptions();
+    hook_fixture.addOptionPath("helper", hook_helper.getEmittedBin());
+    const hook_test_module = b.createModule(.{
+        .root_source_file = b.path("src/alpm/bootstrap_hook_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    hook_test_module.addImport("PackageManager", test_mod);
+    hook_test_module.addOptions("hook_fixture", hook_fixture);
+    hook_test_module.addOptions("worker_fixture", worker_fixture_options);
+    const hook_tests = b.addTest(.{ .root_module = hook_test_module });
+    const run_hook_tests = b.addSystemCommand(&.{ "unshare", "--user", "--map-root-user", "--mount", "--pid", "--mount-proc", "--fork" });
+    run_hook_tests.addArtifactArg(hook_tests);
+    run_hook_tests.has_side_effects = true;
+    const hook_step = b.step("bootstrap-hook-test", "Test real guest hooks in a disposable user namespace (no host root)");
+    hook_step.dependOn(&run_hook_tests.step);
+
+    const account_tests = b.addTest(.{
+        .name = "user-account-test",
+        .root_module = test_mod,
+        .filters = &.{ "NSS", "invoking-user", "VCS build commands" },
+    });
+    const run_account_tests = b.addRunArtifact(account_tests);
+    const account_test_step = b.step("user-account-test", "Test NSS account resolution and invoking-user build commands");
+    account_test_step.dependOn(&run_account_tests.step);
+    const account_lookup_tests = b.addTest(.{ .root_module = user_account_mod });
+    const run_account_lookup_tests = b.addRunArtifact(account_lookup_tests);
+    account_test_step.dependOn(&run_account_lookup_tests.step);
+    test_step.dependOn(&run_account_lookup_tests.step);
+
+    const path_profile_tests = b.addTest(.{ .root_module = test_mod, .filters = &.{"native helper path defaults"} });
+    b.step("path-profile-test", "Test helper defaults and explicit path overrides")
+        .dependOn(&b.addRunArtifact(path_profile_tests).step);
+
+    const pacfile_tests = b.addTest(.{
+        .root_module = test_mod,
+        .filters = &.{ "pacfile", "pacman database discovery", "find discovery", "base archive selection", "three-way merge" },
+    });
+    const pacfile_test_step = b.step("pacfile-test", "Test native pacfile discovery, ownership, and merging");
+    pacfile_test_step.dependOn(&b.addRunArtifact(pacfile_tests).step);
+
+    const buildinfo_tests = b.addTest(.{ .root_module = test_mod, .filters = &.{"BUILDINFO"} });
+    const buildinfo_test_step = b.step("buildinfo-test", "Test native build metadata and database selection");
+    buildinfo_test_step.dependOn(&b.addRunArtifact(buildinfo_tests).step);
+
+    const sandbox_policy_tests = b.addTest(.{ .root_module = test_mod, .filters = &.{"sandbox policy denies paths"} });
+    const sandbox_policy_test_step = b.step("sandbox-policy-test", "Test sandbox allow-list boundaries under /tmp");
+    sandbox_policy_test_step.dependOn(&b.addRunArtifact(sandbox_policy_tests).step);
+
+    const checksum_update_tests = b.addTest(.{ .root_module = test_mod, .filters = &.{"updpkgsums"} });
+    b.step("updpkgsums-test", "Test checksum editing and metadata publication").dependOn(&b.addRunArtifact(checksum_update_tests).step);
+    const builder_tests = b.addTest(.{
+        .name = "builder-test",
+        .root_module = test_mod,
+        .filters = &.{ "PackageBuilder", "dynamic function output", "updpkgsums" },
+    });
+    const run_builder_tests = b.addRunArtifact(builder_tests);
+    const builder_test_step = b.step("builder-test", "Run native package builder regressions");
+    builder_test_step.dependOn(&run_builder_tests.step);
+    builder_test_step.dependOn(&compression_tests.step);
+    builder_test_step.dependOn(buildinfo_test_step);
+    builder_test_step.dependOn(sandbox_policy_test_step);
 
     const shellybuild_test_module = b.createModule(.{
         .root_source_file = b.path("src/aur/shellybuild.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
-    shellybuild_test_module.addImport("toml", toml.module("toml"));
+    shellybuild_test_module.addImport("native_output", native_output);
+    shellybuild_test_module.addImport("diagnostics", diagnostics);
+    shellybuild_test_module.addImport("archive", archive_mod);
+    shellybuild_test_module.addImport("Shelly_Download", shelly_download);
+    shellybuild_test_module.addImport("toml", toml_module);
     shellybuild_test_module.addImport("operation_context", operation_context_mod);
+    shellybuild_test_module.addImport("user_account", user_account_mod);
     const shellybuild_tests = b.addTest(.{
         .name = "shellybuild-test",
         .root_module = shellybuild_test_module,
@@ -250,6 +486,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    local_test_module.addImport("diagnostics", diagnostics);
+    local_test_module.addImport("Shelly_Download", shelly_download);
     local_test_module.addImport("archive", archive_mod);
     local_test_module.addImport("operation_context", operation_context_mod);
     const local_tests = b.addTest(.{ .root_module = local_test_module });
@@ -259,7 +497,7 @@ pub fn build(b: *std.Build) void {
 
     const operation_tests = b.addTest(.{
         .name = "operation-test",
-        .root_module = mod,
+        .root_module = test_mod,
         .filters = &.{
             "operation context emits correlated parent and child events",
             "operation context supports immediate and deferred question responses",
@@ -271,7 +509,7 @@ pub fn build(b: *std.Build) void {
     const run_operation_tests = b.addRunArtifact(operation_tests);
     const adapter_tests = b.addTest(.{
         .name = "operation-adapter-test",
-        .root_module = mod,
+        .root_module = test_mod,
         .filters = &.{
             "backend dispatchers share one operation event stream",
             "ALPM and AUR questions use the shared response hook",
@@ -286,11 +524,24 @@ pub fn build(b: *std.Build) void {
     operation_test_step.dependOn(&run_operation_tests.step);
     operation_test_step.dependOn(&run_adapter_tests.step);
 
+    const parser_tests = b.addTest(.{
+        .name = "pkgbuild-parser-test",
+        .root_module = test_mod,
+        .filters = &.{ "pkgbuild.parser", "issue 1880" },
+    });
+    const run_parser_tests = b.addRunArtifact(parser_tests);
+    b.step("pkgbuild-parser-test", "Test static shell word and PKGBUILD semantics").dependOn(&run_parser_tests.step);
+
     const pkgbuild_review_tests = b.addTest(.{
         .name = "pkgbuild-review-test",
-        .root_module = mod,
+        .root_module = test_mod,
         .filters = &.{
+            "issue 1880",
             "PKGBUILD validation combines post-install and homograph findings",
+            "PKGBUILD review accepts empty auxiliary selections and rejects missing files",
+            "parser_content: empty optional filenames mean no auxiliary file",
+            "parser_content: empty split auxiliary overrides clear global filenames",
+            "parser_content: nonempty optional filenames retain exact bytes",
             "review digest covers exact local source contents and missing sources fail closed",
             "fixture checkout cannot invoke fake makepkg before review and integrity gates pass",
             "embedded whitespace does not bypass homograph analysis",
@@ -303,8 +554,12 @@ pub fn build(b: *std.Build) void {
             "parser_content: issue 1750 source command substitution is deferred and overridden",
             "parser_content: dynamic source keeps assignment and architecture append ordering",
             "parser_content: conditional source integrity arrays are deferred as one family",
+            "PackageBuilder issue 1981",
+            "PackageBuilder supports CachyOS generated split package functions",
+            "dynamic function output",
             "PackageBuilder resolves issue 1750 source command substitution after review",
             "PackageBuilder evaluates conditional source and checksum arrays atomically",
+            "PackageBuilder preserves issue 1891",
             "PackageBuilder preserves generic shell-created scalar defaults for lifecycle steps",
             "PackageBuilder preserves generic conditional indexed arrays for lifecycle steps",
             "PackageBuilder remaps shell-resolved split package names by reviewed order",
@@ -330,29 +585,39 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    downloader_test_module.addImport("diagnostics", diagnostics);
+    downloader_test_module.addImport("Shelly_Download", shelly_download);
     downloader_test_module.addImport("operation_context", operation_context_mod);
     downloader_test_module.addImport("ShellyHttp", shelly_http.module("ShellyHttp"));
     const downloader_tests = b.addTest(.{ .name = "downloader-test", .root_module = downloader_test_module });
     const run_downloader_tests = b.addRunArtifact(downloader_tests);
     const downloader_test_step = b.step("downloader-test", "Run safe downloader and cancellation tests");
     downloader_test_step.dependOn(&run_downloader_tests.step);
-
-    const cache_test_module = b.createModule(.{
-        .root_source_file = b.path("src/alpm/cache_manager.zig"),
+    const download_queue_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/shared/download_queue.zig"),
         .target = target,
         .optimize = optimize,
-        .link_libc = true,
+    }) });
+    download_queue_tests.root_module.addImport("Shelly_Download", shelly_download);
+    downloader_test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = shelly_download })).step);
+    const run_download_queue_tests = b.addRunArtifact(download_queue_tests);
+    downloader_test_step.dependOn(&run_download_queue_tests.step);
+    const download_limit_tests = b.addTest(.{
+        .root_module = test_mod,
+        .filters = &.{"ALPM package and database downloads honor limits across mirror retries"},
     });
-    cache_test_module.addImport("alpm_c", alpm_c);
-    cache_test_module.addImport("operation_context", operation_context_mod);
-    const cache_tests = b.addTest(.{ .name = "cache-test", .root_module = cache_test_module });
+    const run_download_limit_tests = b.addRunArtifact(download_limit_tests);
+    downloader_test_step.dependOn(&run_download_limit_tests.step);
+
+    const cache_test_module = test_mod;
+    const cache_tests = b.addTest(.{ .name = "cache-test", .root_module = cache_test_module, .filters = &.{"cache"} });
     const run_cache_tests = b.addRunArtifact(cache_tests);
     const cache_test_step = b.step("cache-test", "Run safe package-cache tests");
     cache_test_step.dependOn(&run_cache_tests.step);
 
     const archive_tests = b.addTest(.{
         .name = "archive-test",
-        .root_module = mod,
+        .root_module = test_mod,
         .filters = &.{
             "archive endpoints include Arch and selected CachyOS variants",
             "archive listing parses package filenames",
@@ -367,11 +632,20 @@ pub fn build(b: *std.Build) void {
     const archive_test_step = b.step("archive-test", "Run safe ALPM downgrade archive tests");
     archive_test_step.dependOn(&run_archive_tests.step);
 
+    const removal_tests = b.addTest(.{
+        .name = "alpm-removal-test",
+        .root_module = test_mod,
+        .filters = &.{"remove_packages"},
+    });
+    const removal_test_step = b.step("alpm-removal-test", "Test removal plans and cancellation using isolated databases");
+    removal_test_step.dependOn(&b.addRunArtifact(removal_tests).step);
+
     const alpm_query_tests = b.addTest(.{
         .name = "alpm-query-test",
-        .root_module = mod,
+        .root_module = test_mod,
         .filters = &.{
             "public ALPM query helpers expose typed results",
+            "ALPM package completion events preserve package identity and action",
             "compare_package_versions uses libalpm ordering",
             "dependencyName strips constraints",
             "is_cachyos exposes the detected manager state",
@@ -392,6 +666,7 @@ pub fn build(b: *std.Build) void {
             "get_foreign_packages excludes packages provided by a sync database",
             "fetchCallback accepts prepared cache entries and rejects missing artifacts",
             "parses repositories, servers, siglevel and usage",
+            "configuration includes",
             "hold package mutations rewrite HoldPkg and preserve shelly",
             "add_repository appends a repository section to the config file",
             "add_repository rejects duplicate and invalid repository names",
@@ -400,17 +675,22 @@ pub fn build(b: *std.Build) void {
             "remove_repository is a no-op for unknown repositories",
             "Manager hold APIs mutate HoldPkg while retaining shelly",
             "dependency query APIs resolve exact, versioned, and virtual remote packages",
+            "dependency query misses do not emit failures but real errors and cancellation survive",
             "install_packages predownloads prepared repository packages before commit",
             "install_packages exposes its prepared plan and decline prevents downloads",
+            "install_packages needed",
+            "install_local_packages needed",
             "install_local_packages installs multiple archives in a DB-only transaction",
             "install_local_packages predownloads repository dependencies before commit",
             "Manager.init applies configured libalpm options and callback contexts",
             "ALPM queries honor shared cancellation",
+            "Manager.sync exposes cancellable logical database downloads during mirror failover",
             "single-server repositories receive a three second setup timeout",
             "multi-mirror repositories receive a one second setup timeout",
             "database downloads defer file durability to the batch barrier",
             "database batch barrier synchronizes its directory",
             "process-wide address-family default is configurable",
+            "ALPM managers inherit the configured parallel download count",
             "onDownloadEvent does not duplicate progress when a common operation is attached",
             "OperationScope does not duplicate a detailed ALPM error",
             "OperationScope emits one generic ALPM error when no detail was reported",
@@ -423,7 +703,7 @@ pub fn build(b: *std.Build) void {
 
     const required_packages_tests = b.addTest(.{
         .name = "required-packages-test",
-        .root_module = mod,
+        .root_module = test_mod,
         .filters = &.{
             "get_required_packages",
             "Package owned reverse dependency queries",
@@ -439,7 +719,7 @@ pub fn build(b: *std.Build) void {
 
     const alpm_sync_tests = b.addTest(.{
         .name = "alpm-sync-test",
-        .root_module = mod,
+        .root_module = test_mod,
         .filters = &.{
             "database signature policy distinguishes disabled optional and required",
             "optional database signatures are retained beside world-readable databases",
@@ -447,6 +727,7 @@ pub fn build(b: *std.Build) void {
             "required missing database signature fails without leaving a database",
             "invalid optional database signature is fatal and cleaned up",
             "Manager.sync downloads the configured database into DBPath/sync",
+            "Manager.sync keeps included repository mirrors separate during fallback",
             "Manager.sync exposes cancellable logical database downloads during mirror failover",
             "refresh reloads an externally replaced sync database cache",
             "refresh reports a detailed reinitialization failure",
@@ -458,7 +739,7 @@ pub fn build(b: *std.Build) void {
 
     const restart_tests = b.addTest(.{
         .name = "restart-test",
-        .root_module = mod,
+        .root_module = test_mod,
         .filters = &.{
             "restart parsing identifies deleted shared libraries and system services",
             "restart report detects kernels and records structured service results",
@@ -470,7 +751,7 @@ pub fn build(b: *std.Build) void {
 
     const flatpak_tests = b.addTest(.{
         .name = "flatpak-test",
-        .root_module = mod,
+        .root_module = test_mod,
         .filters = &.{
             "Flatpak public facade does not expose generated native bindings",
             "Flatpak dispatcher forwards typed status and progress",
@@ -488,6 +769,13 @@ pub fn build(b: *std.Build) void {
             "Flatpak remote operation-hooked public APIs compile",
             "Flatpak AppStream operations honor shared cancellation",
             "Flatpak AppStream operation-hooked public APIs compile",
+            "flatpak permission classifier groups tokens into one row per concern",
+            "flatpak permission classifier names a capability once when two tokens spell it",
+            "flatpak permission classifier reads the policy groups on their own axis",
+            "flatpak permission classifier interprets denials and conditions",
+            "flatpak permission classifier rates a folder below the tree it sits in",
+            "flatpak permission classifier keeps an unread request separate from none",
+            "flatpak permission classifier keeps unknown vocabulary visible",
         },
     });
     const run_flatpak_tests = b.addRunArtifact(flatpak_tests);
@@ -500,6 +788,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    fake_backend_module.addImport("diagnostics", diagnostics);
     fake_backend_module.addImport(
         "Shelly_Flatpak_Protocol",
         flatpak_backend_dep.module("Shelly_Flatpak_Protocol"),
@@ -509,6 +798,7 @@ pub fn build(b: *std.Build) void {
         .linkage = .dynamic,
         .root_module = fake_backend_module,
     });
+    fake_backend.root_module.addImport("diagnostics", diagnostics);
     const fake_backend_filename =
         "libshelly-flatpak-backend-package-manager-test.so";
     const install_fake_backend = b.addInstallArtifact(fake_backend, .{
@@ -534,6 +824,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
+    backend_integration_module.addImport("diagnostics", diagnostics);
     backend_integration_module.addImport(
         "Shelly_Flatpak_Protocol",
         flatpak_backend_dep.module("Shelly_Flatpak_Protocol"),
@@ -559,12 +850,15 @@ pub fn build(b: *std.Build) void {
 
     const aur_tests = b.addTest(.{
         .name = "aur-test",
-        .root_module = mod,
+        .root_module = test_mod,
         .filters = &.{
+            "AUR optional dependency failures",
             "AUR dispatcher forwards package stages and build progress",
+            "AUR needed",
             "AUR dispatcher returns provider selections",
             "AUR handlers can be removed through the manager-facing dispatcher",
             "AUR RPC URL and form encoding matches the C# requests",
+            "AUR availability",
             "AUR suggestions are returned as owned strings",
             "partial info failures preserve packages returned by earlier chunks",
             "PKGBUILD validation combines post-install and homograph findings",
@@ -578,6 +872,8 @@ pub fn build(b: *std.Build) void {
             "unsafe package bases cannot escape the AUR cache",
             "RPC client keeps an owned copy of its configured endpoint",
             "custom AUR base fetches PKGBUILDs from its Git checkout",
+            "AUR preview scan uses cached Atoll files and matches install validation",
+            "AUR dependency planning uses sandbox-evaluated conditional arrays",
             "custom AUR base PKGBUILD failures stay actionable",
             "custom AUR base ignores unverified cached SRCINFO provenance",
             "endpoint switching replaces a checkout with a mismatched origin",
@@ -596,7 +892,6 @@ pub fn build(b: *std.Build) void {
             "signed Git source parser accepts query before or after fragment",
             "bare Git protocol source parser preserves location and supports metadata",
             "detached source pairing handles exact renamed and compressed payload names",
-            "isExtractableArchive recognizes archive suffixes case-insensitively",
             "archiveLinkTarget contains relative traversal and rebases absolute targets",
             "is_inside_conditional_block:",
             "parse_array: Cachy-style comments do not hide unconditional package names",
@@ -614,13 +909,22 @@ pub fn build(b: *std.Build) void {
             "helper cache identity recognizes installed split-package members",
             "prepared non-chroot split package builds use the custom builder",
             "all requested PKGBUILDs are reviewed before the first build",
+            "AUR upgrades skip declined reviews",
             "AUR package failures are emitted after all builds and fail the operation",
+            "AUR metadata",
             "AUR package preparation failure does not stop valid packages",
             "build-only dependencies are removed after a failed build",
             "PackageBuilder init keeps the provided collaborators",
+            "PackageBuilder functionless metapackages",
+            "PackageBuilder permits optional lifecycle steps",
+            "PackageBuilder SRCINFO failures",
             "non-root builder guard rejects root effective uid",
             "PackageBuilder rejects a PKGBUILD changed after review",
+            "PackageBuilder issue 1981",
+            "PackageBuilder supports CachyOS generated split package functions",
+            "dynamic function output",
             "PackageBuilder resolves issue 1750 source command substitution after review",
+            "PackageBuilder preserves issue 1891",
             "PackageBuilder preserves generic shell-created scalar defaults for lifecycle steps",
             "PackageBuilder preserves generic conditional indexed arrays for lifecycle steps",
             "PackageBuilder remaps shell-resolved split package names by reviewed order",
@@ -629,9 +933,14 @@ pub fn build(b: *std.Build) void {
             "PackageBuilder rejects an explicitly selected disabled dynamic member",
             "PackageBuilder requires supplemental review for a dynamically discovered local source",
             "PackageBuilder rejects a legacy unwritable package tree",
-            "PackageBuilder cannot perform privileged package filesystem operations",
+            "PackageBuilder rejects retained temporary device nodes",
+            "PackageBuilder external helpers preserve ownership and temporary devices",
+            "PackageBuilder parallel external helpers serialize metadata",
+            "PackageBuilder rejects unsafe external device operations",
             "PackageBuilder simulates root ownership without host chown",
             "PackageBuilder preserves non-root virtual ownership and special modes",
+            "PackageBuilder install option clusters preserve virtual ownership",
+            "PackageBuilder install rejects unsupported and malformed ownership options",
             "PackageBuilder virtual ownership follows identities and recursive snapshots",
             "virtual ownership identities distinguish reused inode numbers",
             "PackageBuilder isolates virtual ownership between split members",
@@ -641,9 +950,14 @@ pub fn build(b: *std.Build) void {
             "PackageBuilder provides makepkg messaging helpers to lifecycle steps",
             "PackageBuilder emits makepkg-compatible BUILDINFO and MTREE metadata",
             "PackageBuilder exports configured build environment to lifecycle steps",
+            "PackageBuilder establishes one SOURCE_DATE_EPOCH for PKGBUILD evaluation and metadata",
+            "PackageBuilder preserves a caller-provided SOURCE_DATE_EPOCH",
+            "PackageBuilder rejects an invalid SOURCE_DATE_EPOCH before PKGBUILD execution",
             "PackageBuilder honors PKGBUILD build flag make flag and LTO negations",
             "PackageBuilder packages exact reviewed install and changelog files",
             "PackageBuilder strips ELF debug sections unless PKGBUILD disables strip",
+            "PackageBuilder preserves unsupported ELF binaries and reports strip warnings",
+            "PackageBuilder discards partial output from failed strip commands",
             "PackageBuilder runs local declarations and reviewed helper functions inside package steps",
             "PackageBuilder accepts b2 checksums and honors noextract",
             "PackageBuilder stages and verifies local sources before build steps",
@@ -660,6 +974,14 @@ pub fn build(b: *std.Build) void {
             "PackageBuilder leaves packages unsigned when signing is disabled",
             "PackageBuilder rejects a source checksum mismatch without committing srcdir",
             "PackageBuilder extracts source archives into srcdir",
+            "PackageBuilder extracts fish source archive duplicate regular files using the last entry",
+            "PackageBuilder rejects duplicate source archive entries with conflicting types",
+            "PackageBuilder overlays source archives",
+            "PackageBuilder standalone",
+            "PackageBuilder detects source archives by content including zip and tar zstd",
+            "PackageBuilder preserves literal backslashes in GStreamer source archive filenames",
+            "PackageBuilder rejects source archive traversal even alongside literal backslashes",
+            "PackageBuilder extracts an extensionless source over its matching archive root",
             "PackageBuilder preserves source archive modification timestamps",
             "PackageBuilder extracts VSIX sources into srcdir",
             "PackageBuilder rebases Zoom absolute source archive link inside srcdir",
@@ -671,6 +993,7 @@ pub fn build(b: *std.Build) void {
             "PackageBuilder rejects unsupported source protocols",
             "PackageBuilder cancels source preparation without committing srcdir",
             "PackageBuilder runs relative VCS paths from srcdir before pkgver",
+            "PackageBuilder resolves relative Git submodules after staging cleanup",
             "PackageBuilder verifies real checksums for pinned VCS sources",
             "PackageBuilder applies generic patch arrays and propagates dynamic pkgver",
             "PackageBuilder rejects invalid dynamic pkgver output",
@@ -678,7 +1001,7 @@ pub fn build(b: *std.Build) void {
             "PackageBuilder retains failed and cancelled build logs",
             "PackageBuilder fails before PKGBUILD execution when log destination is unusable",
             "PackageBuilder reports failure when a step exits non-zero",
-            "PackageBuilder reports failure instead of crashing without execution steps",
+            "PackageBuilder builds a metapackage without execution steps",
             "PackageBuilder builds all requested split members after shared steps run once",
             "PackageBuilder keeps shared split builds under the global pkgname",
             "PackageBuilder preserves selected split metadata in PKGINFO",
@@ -700,27 +1023,55 @@ pub fn build(b: *std.Build) void {
             "archive virtual ownership is shared by package and mtree writers",
             "AUR operation-hooked public APIs compile",
             "coordinator child build arguments bind review package set and policies",
-            "clean invoking-user build command drops the elevated environment",
+            "AUR isolated",
+            "clean invoking-user build command",
             "build progress parser recognizes makepkg percentage lines",
             "build environment exports flags hosts and compiler wrapper paths",
+            "native build PATH",
+            "PackageBuilder uses configured PATH",
+            "PackageBuilder build.env",
+            "PackageBuilder reports invalid configured PATH",
             "disabled build environment removes inherited flags and hosts",
             "streaming process execution forwards stdout stderr and a final unterminated line",
             "streaming process execution delivers output before the child exits",
             "streaming process execution terminates when the shared operation is cancelled",
+            ".SRCINFO dependency parser merges global selected and architecture scopes",
         },
     });
     const run_aur_tests = b.addRunArtifact(aur_tests);
     const aur_test_step = b.step("aur-test", "Run safe AUR manager and event tests");
     aur_test_step.dependOn(&run_aur_tests.step);
+    const source_compression_tests = b.addTest(.{
+        .name = "source-compression-test",
+        .root_module = archive_mod,
+        .filters = &.{"standalone compression"},
+    });
+    const run_source_compression_tests = b.addRunArtifact(source_compression_tests);
+    aur_test_step.dependOn(&run_source_compression_tests.step);
+    test_step.dependOn(&run_source_compression_tests.step);
+    const source_archive_tests = b.addTest(.{
+        .name = "source-archive-test",
+        .root_module = archive_mod,
+        .filters = &.{"archive reader"},
+    });
+    const run_source_archive_tests = b.addRunArtifact(source_archive_tests);
+    b.step("source-archive-test", "Run source archive reader regressions").dependOn(&run_source_archive_tests.step);
+    builder_test_step.dependOn(&run_source_archive_tests.step);
+    test_step.dependOn(&run_source_archive_tests.step);
 
     const appimage_tests = b.addTest(.{
         .name = "appimage-test",
-        .root_module = mod,
+        .root_module = test_mod,
         .filters = &.{
+            "environment ",
+            "desktop composition",
+            "configureEnvironment",
             "AppImage dispatcher forwards typed status and download progress",
             "AppImage classification is case insensitive and extension based",
+            "AppImage desktop discovery skips files that only borrow the desktop extension",
+            "AppImage desktop entry detection requires a leading Desktop Entry group",
+            "AppImage icon discovery matches the Icon name and prefers the best shipped source",
             "AppImage metadata discovery rejects symlinks outside the extraction root",
-            "test isAppImage",
             "get_update returns optional owned results for configured providers",
             "providerUpdateOrWarn",
             "get_updates returns an owned update list",
@@ -741,7 +1092,7 @@ pub fn build(b: *std.Build) void {
             "getAppImagesFromLocalDb leaves native database unchanged",
             "getAppImagesFromLocalDb leaves a malformed database unchanged",
             "removeAppImageFromLocalDb removes an orphaned entry by name",
-            "syncAppImageMeta removes a stale entry when the AppImage file is missing",
+            "syncAppImageMeta ",
             "installAppImage preserves an existing install when staged validation fails",
             "installAppImage atomically replaces a validated AppImage",
             "installAppImage follows a symlinked install directory",
@@ -766,6 +1117,44 @@ pub fn build(b: *std.Build) void {
     const run_appimage_tests = b.addRunArtifact(appimage_tests);
     const appimage_test_step = b.step("appimage-test", "Run safe AppImage parity tests");
     appimage_test_step.dependOn(&run_appimage_tests.step);
+
+    const repo_db_tests = b.addTest(.{
+        .name = "repo-db-test",
+        .root_module = test_mod,
+        .filters = &.{
+            "pkginfo parses keys and repeated values",
+            "pkginfo reads the PKGINFO entry from a package archive",
+            "pkginfo rejects archives without PKGINFO",
+            "package file list excludes archive root dotfiles and keeps nested dotfiles",
+            "package file list is byte-sorted and deduplicated",
+            "desc writes repo-add section order and omits empty sections",
+            "desc includes stat size streamed sha256 and PKGINFO isize",
+            "pgpsig is embedded only when requested",
+            "pgpsig rejects armored and oversized signatures",
+            "add creates db and files archives with a matching entry",
+            "add replacement keeps both databases in lockstep",
+            "add with new skips an existing identical entry without rewriting",
+            "add with prevent_downgrade skips only strictly newer existing versions",
+            "failed add leaves the database files unchanged",
+            "remove deletes entries by package name from both databases",
+            "remove of an unknown name fails without publishing",
+            "removing the last entry produces valid empty databases",
+            "publication keeps one old generation and refreshes the extension-less symlink",
+            "remove old files deletes package and signature only after publication",
+            "remove with remove old files deletes each matched package after publication",
+            "lock contention fails without modifying the database",
+            "database derives the files path and rejects unsupported extensions",
+            "publication signs each database archive and rotates the signature into place",
+            "a failed signature still publishes the database unsigned",
+            "a staged signature from an aborted run is not published",
+            "verify checks the signature of both database archives",
+            "verify reports a missing signature as skipped",
+            "verify stops at an unusable signature",
+        },
+    });
+    const run_repo_db_tests = b.addRunArtifact(repo_db_tests);
+    const repo_db_test_step = b.step("repo-db-test", "Run repository database tests");
+    repo_db_test_step.dependOn(&run_repo_db_tests.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //

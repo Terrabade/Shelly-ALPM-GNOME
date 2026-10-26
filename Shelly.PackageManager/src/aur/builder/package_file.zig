@@ -2,6 +2,7 @@
 //! install-script and changelog placement, archive creation, and signing.
 
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const archive = @import("archive");
 const process_runner = @import("../builder.zig");
 const install_script = @import("../../pkgbuild/install_script.zig");
@@ -10,32 +11,64 @@ const package_signer = @import("../../shared/package_signer.zig");
 const package_options = @import("package_options");
 const metadata = @import("metadata.zig");
 const virtual_ownership = @import("virtual_ownership.zig");
+const package_permissions = @import("package_permissions.zig");
 const steps = @import("steps.zig");
-const alpm_bindings = @import("../../alpm/bindings.zig").libalpm;
-const raw_alpm = alpm_bindings.alpm;
+const PackageManager = @import("../../alpm/manager.zig").Manager;
+const package_types = @import("../../alpm/types.zig");
 const PackageBuilder = @import("builder.zig").PackageBuilder;
 const BuildArtifact = @import("builder.zig").BuildArtifact;
 const PackageBuild = @import("../../pkgbuild/pkgbuild_parser.zig").Pkgbuild;
 
 pub fn preparePackageDirectory(self: *PackageBuilder, package_build: *const PackageBuild) !void {
     const package_name = package_build.pkg_name orelse return error.MissingPackageName;
+    self.failure_location = .{ .package_name = package_name, .step_name = "package-cleanup" };
     const pkgdir = try std.fs.path.join(
         self.allocator,
         &.{ self.options.work_directory, "pkg", package_name },
     );
     defer self.allocator.free(pkgdir);
-    std.Io.Dir.cwd().deleteTree(self.io, pkgdir) catch {
+    var parent = try openPackageParent(self);
+    defer parent.close(self.io);
+    package_permissions.removeTree(self.allocator, self.io, parent, package_name) catch |err| {
+        if (err == error.Cancelled) return err;
+        reportPackageAccessError(self, "cleaning package directory", pkgdir, err);
         steps.reportUnwritableBuildDirectory(self, pkgdir);
         return error.BuildDirectoryNotWritable;
     };
-    std.Io.Dir.cwd().createDirPath(self.io, pkgdir) catch {
+    parent.createDir(self.io, package_name, .default_dir) catch {
         steps.reportUnwritableBuildDirectory(self, pkgdir);
         return error.BuildDirectoryNotWritable;
     };
 }
 
+pub fn cleanPackageTree(self: *PackageBuilder) !void {
+    var work = try std.Io.Dir.cwd().openDir(self.io, self.options.work_directory, .{ .follow_symlinks = false });
+    defer work.close(self.io);
+    try package_permissions.removeTree(self.allocator, self.io, work, "pkg");
+}
+
+fn openPackageParent(self: *PackageBuilder) !std.Io.Dir {
+    var work = try std.Io.Dir.cwd().openDir(self.io, self.options.work_directory, .{ .follow_symlinks = false });
+    defer work.close(self.io);
+    work.createDir(self.io, "pkg", .default_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+    return work.openDir(self.io, "pkg", .{ .follow_symlinks = false });
+}
+
+fn reportPackageAccessError(self: *PackageBuilder, phase: []const u8, path: []const u8, err: anyerror) void {
+    const message = std.fmt.allocPrint(self.allocator, "Error {s} at {f}: {s}", .{
+        phase, diagnostics.safe(path), @errorName(err),
+    }) catch return;
+    defer self.allocator.free(message);
+    if (self.active_log) |log| log.writeRecord("error", message) catch {};
+    if (self.active_operation) |operation|
+        operation.reportError(err, message, "build", null, false);
+}
+
 /// Applies the small, content-affecting subset of makepkg's tidy phase
-/// currently modeled by Shelly. PKGBUILD options override makepkg.conf
+/// currently modeled by Shelly. PKGBUILD options override shellybuild.conf
 /// options using the same `option`/`!option` convention as makepkg.
 fn tidyPackage(self: *PackageBuilder, package_build: *const PackageBuild, pkgdir: []const u8) !void {
     const effective = try metadata.effectivePackageOptions(
@@ -44,6 +77,14 @@ fn tidyPackage(self: *PackageBuilder, package_build: *const PackageBuild, pkgdir
         package_build.options orelse &.{},
     );
     defer metadata.freeOwnedStrings(self.allocator, effective);
+    if (metadata.optionEnabled(effective, "purge")) {
+        var directory = try std.Io.Dir.cwd().openDir(self.io, pkgdir, .{
+            .iterate = true,
+            .follow_symlinks = false,
+        });
+        defer directory.close(self.io);
+        try purgePackageDirectory(self, directory, "");
+    }
     if (!metadata.optionEnabled(effective, "strip")) return;
 
     var directory = try std.Io.Dir.cwd().openDir(self.io, pkgdir, .{ .iterate = true });
@@ -64,12 +105,28 @@ fn tidyPackage(self: *PackageBuilder, package_build: *const PackageBuild, pkgdir
             .shared => self.shellybuild_config.package.strip_shared,
             .static => self.shellybuild_config.package.strip_static,
         };
+        // Keep strip's output outside the payload tree. A failed strip may
+        // leave partial output, and bundled binaries may target another CPU.
+        var random_suffix: [16]u8 = undefined;
+        self.io.random(&random_suffix);
+        const temporary_directory = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}/.shelly-strip-{s}",
+            .{ self.options.work_directory, std.fmt.bytesToHex(random_suffix, .lower) },
+        );
+        defer self.allocator.free(temporary_directory);
+        try std.Io.Dir.cwd().createDir(self.io, temporary_directory, .fromMode(0o700));
+        defer std.Io.Dir.cwd().deleteTree(self.io, temporary_directory) catch {};
+        const output_path = try std.fs.path.join(self.allocator, &.{ temporary_directory, "output" });
+        defer self.allocator.free(output_path);
+
         var command: std.ArrayList([]const u8) = .empty;
         defer command.deinit(self.allocator);
         try command.append(self.allocator, "strip");
         for (flags) |flag| try command.append(self.allocator, flag);
+        try command.appendSlice(self.allocator, &.{ "-o", output_path, "--" });
         try command.append(self.allocator, path);
-        var result = try process_runner.runWithEnvironment(
+        var result = try process_runner.runWithBuildEnvironment(
             self.allocator,
             self.io,
             self.environ,
@@ -78,12 +135,78 @@ fn tidyPackage(self: *PackageBuilder, package_build: *const PackageBuild, pkgdir
             60,
         );
         defer result.deinit(self.allocator);
-        if (result.exit_code != 0) return error.StripFailed;
+        if (self.active_operation) |operation| try operation.checkCancelled();
+        if (result.exit_code != 0) {
+            const warning = try std.fmt.allocPrint(
+                self.allocator,
+                "Could not strip {0f}; keeping the original file. Review the strip output in the build details.\n\nTechnical details: {1d}; {2f}",
+                .{ diagnostics.safe(entry.path), result.exit_code, diagnostics.safe(std.mem.trimEnd(u8, result.stderr, "\r\n")) },
+            );
+            defer self.allocator.free(warning);
+            if (self.active_operation) |operation| {
+                var context = steps.StepStreamContext{
+                    .operation = operation,
+                    .package_name = package_build.pkg_name orelse "",
+                    .log = self.active_log,
+                };
+                steps.forwardStepLine(&context, .stderr, warning);
+            } else if (self.active_log) |log| {
+                log.writeStream(.stderr, warning);
+            }
+            if (self.active_log) |log| try log.ensureHealthy();
+            continue;
+        }
+
+        // Write through the existing inode, as makepkg does, so hardlinks and
+        // ownership survive. Only successful strip output reaches the payload.
+        var output = try std.Io.Dir.cwd().openFile(self.io, output_path, .{});
+        defer output.close(self.io);
+        var original = try entry.dir.openFile(self.io, entry.basename, .{ .mode = .write_only });
+        defer original.close(self.io);
+        var buffer: [64 * 1024]u8 = undefined;
+        var offset: u64 = 0;
+        while (true) {
+            const amount = try output.readPositionalAll(self.io, &buffer, offset);
+            if (amount == 0) break;
+            try original.writePositionalAll(self.io, buffer[0..amount], offset);
+            offset += amount;
+        }
+        try original.setLength(self.io, offset);
+        try original.setPermissions(self.io, stat.permissions);
+    }
+}
+
+/// Standard makepkg PURGE_TARGETS: path targets are package-root relative,
+/// while .packlist and *.pod match non-directory basenames at any depth.
+/// Open each directory component without following symlinks, and unlink only
+/// basenames relative to its handle so a package link cannot redirect cleanup.
+fn purgePackageDirectory(self: *PackageBuilder, directory: std.Io.Dir, relative_path: []const u8) !void {
+    var iterator = directory.iterate();
+    while (try iterator.next(self.io)) |entry| {
+        if (self.active_operation) |operation| try operation.checkCancelled();
+        const path = try std.fs.path.join(self.allocator, &.{ relative_path, entry.name });
+        defer self.allocator.free(path);
+        if (entry.kind == .directory) {
+            var child = try directory.openDir(self.io, entry.name, .{
+                .iterate = true,
+                .follow_symlinks = false,
+            });
+            defer child.close(self.io);
+            try purgePackageDirectory(self, child, path);
+        } else if (std.mem.eql(u8, path, "usr/info/dir") or
+            std.mem.eql(u8, path, "usr/share/info/dir") or
+            std.mem.eql(u8, entry.name, ".packlist") or
+            std.mem.endsWith(u8, entry.name, ".pod"))
+        {
+            try directory.deleteFile(self.io, entry.name);
+        }
     }
 }
 
 pub fn assemblePackage(self: *PackageBuilder, package_build: *const PackageBuild) !BuildArtifact {
     const package_name = package_build.pkg_name orelse return error.MissingPackageName;
+    self.failure_location = .{ .package_name = package_name, .step_name = "package-assembly" };
+    try steps.logPhase(self, "package-assembly");
     const full_version = try package_build.get_full_version(self.allocator);
     defer self.allocator.free(full_version);
     if (full_version.len == 0) return error.MissingPackageVersion;
@@ -95,6 +218,33 @@ pub fn assemblePackage(self: *PackageBuilder, package_build: *const PackageBuild
     );
     defer self.allocator.free(pkgdir);
 
+    var parent = try openPackageParent(self);
+    defer parent.close(self.io);
+    var access: package_permissions.Access = .{ .allocator = self.allocator, .io = self.io, .operation = self.active_operation };
+    defer {
+        access.restore() catch |err| reportPackageAccessError(self, "restoring package permissions", pkgdir, err);
+        access.deinit();
+    }
+    access.prepare(parent, package_name) catch |err| {
+        const failed_path = std.fs.path.join(self.allocator, &.{ pkgdir, access.failure_path orelse "" }) catch null;
+        defer if (failed_path) |path| self.allocator.free(path);
+        reportPackageAccessError(self, "preparing package permissions", failed_path orelse pkgdir, err);
+        return err;
+    };
+    if (self.active_operation) |operation| try operation.checkCancelled();
+
+    if (self.virtual_ownership_tracker) |*tracker| {
+        if (try tracker.retainedDevicePath(self.io, pkgdir)) |path| {
+            defer self.allocator.free(path);
+            const message = try std.fmt.allocPrint(self.allocator, "Cannot package {f}: a temporary mknod placeholder remains. Device nodes in finished packages are unsupported; remove the temporary node in package().", .{diagnostics.safe(path)});
+            defer self.allocator.free(message);
+            if (self.active_log) |log| try log.writeRecord("error", message);
+            if (self.active_operation) |operation|
+                operation.reportError(error.PrivilegedPackageOperationUnsupported, message, "build", null, false);
+            return error.PrivilegedPackageOperationUnsupported;
+        }
+    }
+
     // Resolve inode-attached ownership before tidy tools such as `strip` can
     // replace a file behind the same final package path.
     var owned_virtual_metadata: ?virtual_ownership.OwnedMetadata = if (self.virtual_ownership_tracker) |*tracker|
@@ -105,7 +255,8 @@ pub fn assemblePackage(self: *PackageBuilder, package_build: *const PackageBuild
     else
         null;
     defer if (owned_virtual_metadata) |*owned| owned.deinit();
-    const virtual_metadata: archive.VirtualMetadata = if (owned_virtual_metadata) |*owned| owned.view() else .{};
+    var virtual_metadata: archive.VirtualMetadata = if (owned_virtual_metadata) |*owned| owned.view() else .{};
+    virtual_metadata.mode_overrides = access.modes.items;
 
     try tidyPackage(self, package_build, pkgdir);
 
@@ -113,7 +264,7 @@ pub fn assemblePackage(self: *PackageBuilder, package_build: *const PackageBuild
     defer pkgdir_handle.close(self.io);
 
     const payload_size = try directorySize(self.allocator, self.io, pkgdir_handle);
-    const build_date = std.Io.Clock.real.now(self.io).toSeconds();
+    const build_date = self.source_date_epoch orelse return error.MissingSourceDateEpoch;
     try writePackageInfo(self, package_build, pkgdir_handle, full_version, package_arch, payload_size, build_date);
     try writeBuildInfo(self, package_build, pkgdir_handle, full_version, package_arch, build_date);
     if (package_build.install_file) |install_file| {
@@ -168,11 +319,16 @@ pub fn assemblePackage(self: *PackageBuilder, package_build: *const PackageBuild
     errdefer std.Io.Dir.cwd().deleteFile(self.io, temporary_path) catch {};
 
     {
-        var writer = try archive.Writer.initWithMetadata(self.allocator, self.io, temporary_path, virtual_metadata);
+        var writer = try archive.Writer.initWithOptions(self.allocator, self.io, temporary_path, virtual_metadata, .{
+            .compression_level = self.shellybuild_config.package.compression_level,
+        });
         defer writer.deinit();
         try writer.addDirectory(pkgdir);
         try writer.finish();
     }
+
+    // Restore before publishing any artifact, and also on every early return.
+    try access.restore();
 
     var temporary_signature_path: ?[]u8 = null;
     defer if (temporary_signature_path) |path| self.allocator.free(path);
@@ -285,7 +441,9 @@ fn packageArchitecture(self: *const PackageBuilder, package_build: *const Packag
             if (std.mem.eql(u8, architecture, "any")) return "any";
         }
     }
-    return self.shellybuild_config.build.carch;
+    // PACKAGECARCH equivalent: only the artifact is relabelled; the PKGBUILD
+    // was evaluated and checked against build.carch.
+    return self.shellybuild_config.packageCarch();
 }
 
 pub fn packageSupportsArchitecture(
@@ -320,6 +478,15 @@ fn writePackageInfo(
     try writeKeyValue(writer, "pkgbase", package_base);
     try writeKeyValue(writer, "xdata", if (package_build.is_split) "pkgtype=split" else "pkgtype=pkg");
     try writeKeyValues(writer, "xdata", package_build.xdata);
+    const migration = @import("Shelly_Rlpm").Migration;
+    if (package_build.shelly_migrate) |declarations| {
+        try migration.validateDeclarations(self.allocator, declarations);
+        for (declarations) |declaration| {
+            const value = try std.fmt.allocPrint(self.allocator, "{s}={s}", .{ migration.metadata_key, declaration });
+            defer self.allocator.free(value);
+            try writeKeyValue(writer, "xdata", value);
+        }
+    }
     try writeKeyValue(writer, "pkgver", full_version);
     if (package_build.pkg_desc) |value| try writeKeyValue(writer, "pkgdesc", value);
     if (package_build.url) |value| try writeKeyValue(writer, "url", value);
@@ -392,7 +559,7 @@ fn writeBuildInfo(
     if (self.options.installed_packages) |installed| {
         for (installed) |value| try writeKeyValue(writer, "installed", value);
     } else {
-        const installed = try collectInstalledPackages(self.allocator);
+        const installed = try collectInstalledPackages(self.allocator, self.environ, self.options.native_database);
         defer metadata.freeOwnedStrings(self.allocator, installed);
         for (installed) |value| try writeKeyValue(writer, "installed", value);
     }
@@ -421,24 +588,24 @@ fn stripKind(io: std.Io, path: []const u8) !?StripKind {
     };
 }
 
-fn collectInstalledPackages(allocator: std.mem.Allocator) ![][]u8 {
-    var alpm_error: raw_alpm.alpm_errno_t = 0;
-    const handle = raw_alpm.alpm_initialize("/", "/var/lib/pacman", &alpm_error) orelse
-        return error.LocalDatabaseOpenFailed;
-    defer _ = raw_alpm.alpm_release(handle);
-    const database = raw_alpm.alpm_get_localdb(handle) orelse
-        return error.LocalDatabaseOpenFailed;
-    var packages = raw_alpm.alpm_db_get_pkgcache(database);
+fn collectInstalledPackages(
+    allocator: std.mem.Allocator,
+    environ: std.process.Environ,
+    database: @import("builder.zig").BuildDatabase,
+) ![][]u8 {
+    const manager = try PackageManager.init(allocator, environ, database.initOptions());
+    defer manager.deinit();
+    const packages = try manager.get_installed_packages();
+    defer package_types.OwnedPackage.deinitSlice(allocator, packages);
     var installed: std.ArrayList([]u8) = .empty;
     errdefer {
         for (installed.items) |value| allocator.free(value);
         installed.deinit(allocator);
     }
-    while (packages != null) : (packages = packages.?.*.next) {
-        const package = packages.?.*.data orelse continue;
-        const name = alpm_bindings.str(raw_alpm.alpm_pkg_get_name(@ptrCast(package))) orelse continue;
-        const version = alpm_bindings.str(raw_alpm.alpm_pkg_get_version(@ptrCast(package))) orelse continue;
-        const architecture = alpm_bindings.str(raw_alpm.alpm_pkg_get_arch(@ptrCast(package))) orelse continue;
+    for (packages) |package| {
+        const name = package.name_value;
+        const version = package.version_value;
+        const architecture = package.architecture_value orelse continue;
         try installed.append(
             allocator,
             try std.fmt.allocPrint(allocator, "{s}-{s}-{s}", .{ name, version, architecture }),
@@ -506,4 +673,69 @@ fn writeKeyValues(
     values: ?[][]const u8,
 ) !void {
     for (values orelse return) |value| try writeKeyValue(writer, key, value);
+}
+
+test "BUILDINFO reads selected configuration and database overrides" {
+    const t = std.testing;
+    var arena = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var temporary = t.tmpDir(.{});
+    defer temporary.cleanup();
+    const root = try temporary.dir.realPathFileAlloc(t.io, ".", allocator);
+    try temporary.dir.createDirPath(t.io, "selected/local/example-2.0-1");
+    try temporary.dir.createDirPath(t.io, "override/local");
+    for ([_][]const u8{ "selected", "override" }) |name| {
+        const version_file = try std.fmt.allocPrint(allocator, "{s}/local/ALPM_DB_VERSION", .{name});
+        try temporary.dir.writeFile(t.io, .{ .sub_path = version_file, .data = "9\n" });
+    }
+    try temporary.dir.writeFile(t.io, .{
+        .sub_path = "selected/local/example-2.0-1/desc",
+        .data = "%NAME%\nexample\n\n%VERSION%\n2.0-1\n\n%ARCH%\nany\n\n%REASON%\n0\n\n%VALIDATION%\nnone\n\n",
+    });
+    try temporary.dir.writeFile(t.io, .{ .sub_path = "selected/local/example-2.0-1/files", .data = "%FILES%\n\n" });
+    const config = try std.fmt.allocPrint(allocator, "[options]\nDBPath = {s}/selected\nCacheDir = {s}/cache\nGPGDir = {s}/gnupg\nLogFile = {s}/shelly.log\n", .{ root, root, root, root });
+    try temporary.dir.writeFile(t.io, .{ .sub_path = "shelly.conf", .data = config });
+    const config_path = try std.fs.path.join(allocator, &.{ root, "shelly.conf" });
+    const installed = try collectInstalledPackages(t.allocator, t.environ, .{ .backend = .rlpm, .config_path = config_path });
+    defer metadata.freeOwnedStrings(t.allocator, installed);
+    try t.expectEqual(@as(usize, 1), installed.len);
+    try t.expectEqualStrings("example-2.0-1-any", installed[0]);
+    const database_path = try std.fs.path.join(allocator, &.{ root, "override" });
+    const overridden = try collectInstalledPackages(t.allocator, t.environ, .{ .backend = .rlpm, .config_path = config_path, .database_path = database_path, .root_directory = root });
+    defer metadata.freeOwnedStrings(t.allocator, overridden);
+    try t.expectEqual(@as(usize, 0), overridden.len);
+
+    const active = try PackageManager.init(t.allocator, t.environ, .{
+        .backend = .rlpm,
+        .config_path = config_path,
+        .database_path = database_path,
+        .root_directory = root,
+    });
+    defer active.deinit();
+    const selection = @import("builder.zig").BuildDatabase.fromManager(active, config_path);
+    try t.expectEqual(PackageManager.Backend.rlpm, selection.backend.?);
+    try t.expectEqualStrings(root, selection.root_directory.?);
+    // A dependency appears after selecting the build database. The later
+    // BUILDINFO read must see it without including packages from the other DB.
+    try temporary.dir.createDirPath(t.io, "override/local/build-dep-1-1");
+    try temporary.dir.writeFile(t.io, .{
+        .sub_path = "override/local/build-dep-1-1/desc",
+        .data = "%NAME%\nbuild-dep\n\n%VERSION%\n1-1\n\n%ARCH%\nany\n\n%REASON%\n1\n\n%VALIDATION%\nnone\n\n",
+    });
+    try temporary.dir.writeFile(t.io, .{ .sub_path = "override/local/build-dep-1-1/files", .data = "%FILES%\n\n" });
+    const late = try collectInstalledPackages(t.allocator, t.environ, selection);
+    defer metadata.freeOwnedStrings(t.allocator, late);
+    try t.expectEqual(@as(usize, 1), late.len);
+    try t.expectEqualStrings("build-dep-1-1-any", late[0]);
+
+    // A guest chooses its own configuration; its metadata must not include
+    // packages from the host configuration used for provisioning.
+    const guest_config = try std.fmt.allocPrint(allocator, "[options]\nDBPath = {s}/override\nCacheDir = {s}/cache\nGPGDir = {s}/gnupg\nLogFile = {s}/guest.log\n", .{ root, root, root, root });
+    try temporary.dir.writeFile(t.io, .{ .sub_path = "guest.conf", .data = guest_config });
+    const guest_config_path = try std.fs.path.join(allocator, &.{ root, "guest.conf" });
+    const guest = try collectInstalledPackages(t.allocator, t.environ, .{ .backend = .rlpm, .config_path = guest_config_path });
+    defer metadata.freeOwnedStrings(t.allocator, guest);
+    try t.expectEqual(@as(usize, 1), guest.len);
+    try t.expectEqualStrings("build-dep-1-1-any", guest[0]);
 }

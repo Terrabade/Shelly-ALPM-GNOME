@@ -12,6 +12,9 @@ pub const Pkgbuild = struct {
     groups: ?[][]const u8 = null,
     arch: ?[][]const u8 = null,
     depends: ?[][]const u8 = null,
+    /// Build-environment dependencies before package() overrides, including
+    /// the active architecture. Output runtime metadata stays in `depends`.
+    global_depends: ?[][]const u8 = null,
     make_depends: ?[][]const u8 = null,
     opt_depends: ?[][]const u8 = null,
     provides: ?[][]const u8 = null,
@@ -20,6 +23,7 @@ pub const Pkgbuild = struct {
     backup: ?[][]const u8 = null,
     options: ?[][]const u8 = null,
     xdata: ?[][]const u8 = null,
+    shelly_migrate: ?[][]const u8 = null,
     source: ?[][]const u8 = null,
     valid_pgp_keys: ?[][]const u8 = null,
     no_extract: ?[][]const u8 = null,
@@ -42,6 +46,7 @@ pub const Pkgbuild = struct {
     local_source_files: ?[][]const u8 = null,
     local_source_contents: std.StringHashMap([]const u8),
     parsed_depends: ?[]parsed_dep = null,
+    parsed_global_depends: ?[]parsed_dep = null,
     parsed_make_depends: ?[]parsed_dep = null,
     parsed_check_depends: ?[]parsed_dep = null,
     check_depends: ?[][]const u8 = null,
@@ -81,6 +86,10 @@ pub const Pkgbuild = struct {
             for (a) |item| allocator.free(item);
             allocator.free(a);
         }
+        if (self.global_depends) |a| {
+            for (a) |item| allocator.free(item);
+            allocator.free(a);
+        }
         if (self.make_depends) |a| {
             for (a) |item| allocator.free(item);
             allocator.free(a);
@@ -110,6 +119,10 @@ pub const Pkgbuild = struct {
             allocator.free(a);
         }
         if (self.options) |a| {
+            for (a) |item| allocator.free(item);
+            allocator.free(a);
+        }
+        if (self.shelly_migrate) |a| {
             for (a) |item| allocator.free(item);
             allocator.free(a);
         }
@@ -183,6 +196,10 @@ pub const Pkgbuild = struct {
             for (deps) |d| d.deinit(allocator);
             allocator.free(deps);
         }
+        if (self.parsed_global_depends) |deps| {
+            for (deps) |d| d.deinit(allocator);
+            allocator.free(deps);
+        }
         if (self.parsed_make_depends) |deps| {
             for (deps) |d| d.deinit(allocator);
             allocator.free(deps);
@@ -205,8 +222,10 @@ pub const Pkgbuild = struct {
     pub fn get_full_version(self: Pkgbuild, allocator: std.mem.Allocator) ![]const u8 {
         const version = self.pkg_version;
         const version_part: []const u8 = version orelse "";
-        const epoch_part: []const u8 = if (self.epoch) |e| e else "";
-        const epoch_sep: []const u8 = if (self.epoch != null) ":" else "";
+        const epoch = self.epoch orelse "";
+        // makepkg omits absent, empty and zero epochs from the full version.
+        const epoch_part: []const u8 = if (std.mem.trim(u8, epoch, "0").len > 0) epoch else "";
+        const epoch_sep: []const u8 = if (epoch_part.len > 0) ":" else "";
         const rel_sep: []const u8 = if (self.pkg_rel != null) "-" else "";
         const rel_part: []const u8 = if (self.pkg_rel) |r| r else "";
 
@@ -296,7 +315,8 @@ pub const dynamic_array_assignment = struct {
 /// execution_plan because it runs before source extraction.
 pub const execution_step = struct {
     name: []const u8,
-    /// The function body exactly as written in the PKGBUILD.
+    /// The static function body, or a quoted call to an evaluated function
+    /// whose complete declaration is owned by the execution plan.
     body: []const u8,
     /// `body` with every statically knowable variable expanded: PKGBUILD
     /// assignments plus the makepkg built-ins that are known at parse time
@@ -304,7 +324,7 @@ pub const execution_step = struct {
     /// resolve (command substitutions, loop variables, unknown names) are
     /// left untouched for the shell, and single-quoted, backslash-escaped,
     /// and quoted-heredoc regions are preserved verbatim to match bash
-    /// expansion rules.
+    /// expansion rules. Evaluated functions retain the quoted call unchanged.
     expanded_body: []const u8,
     pub fn deinit(self: execution_step, allocator: std.mem.Allocator) void {
         allocator.free(self.name);

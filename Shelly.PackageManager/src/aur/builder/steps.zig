@@ -3,6 +3,8 @@
 //! environment, pkgver, and package metadata.
 
 const std = @import("std");
+const diagnostics = @import("diagnostics");
+const user_errors = @import("../../shared/user_errors.zig");
 const package_metadata = @import("../../pkgbuild/package_metadata.zig");
 const events = @import("../events.zig");
 const op_context = @import("operation_context");
@@ -13,6 +15,8 @@ const sandbox = @import("sandbox.zig");
 const virtual_ownership = @import("virtual_ownership.zig");
 const PackageBuilder = @import("builder.zig").PackageBuilder;
 const ExecutionStep = @import("../../pkgbuild/pkgbuild_parser.zig").execution_step;
+const PkgbuildParser = @import("../../pkgbuild/pkgbuild_parser.zig").PkgbuildParser;
+const parser_execution = @import("../../pkgbuild/parser/execution.zig");
 
 pub fn validateBuildDirectories(self: *PackageBuilder) !void {
     const cwd = std.Io.Dir.cwd();
@@ -63,8 +67,8 @@ fn validateWritableDirectory(self: *PackageBuilder, root_path: []const u8) !void
 pub fn reportUnwritableBuildDirectory(self: *PackageBuilder, path: []const u8) void {
     const message = std.fmt.allocPrint(
         self.allocator,
-        "Build directory is not writable by the non-root builder: {s}. Remove it or restore ownership to the invoking user.",
-        .{path},
+        "The build user the invoking user cannot write to build directory {0f}. Check its ownership and permissions before retrying.",
+        .{diagnostics.safe(path)},
     ) catch return;
     defer self.allocator.free(message);
     if (self.active_operation) |operation|
@@ -114,14 +118,22 @@ pub fn runStep(
     const package_step = isPackageStep(step_name);
     const capture_pkgver = std.mem.eql(u8, step_name, "pkgver");
     const capture_metadata = package_step;
+    const wrappers_path = if (package_step) try createPackageWrappers(self) else null;
+    defer if (wrappers_path) |path| {
+        std.Io.Dir.cwd().deleteTree(self.io, path) catch {};
+        self.allocator.free(path);
+    };
     const executable_body = try std.fmt.allocPrint(
         self.allocator,
-        "{s}\n{s}\n{s}\ndeclare -- startdir=\"$4\"\ndeclare -- srcdir=\"$5\"\n{s}\n{s}\n{s}\ndeclare -- pkgver=\"$1\"\n__shelly_step() {{\n{s}\n}}\n{s}",
+        "{s}\n{s}\n{s}\ndeclare -- startdir=\"$4\"\ndeclare -- srcdir=\"$5\"\n{s}\n{s}\n{s}\ndeclare -- pkgver=\"$1\" pkgrel=\"$9\"\n__shelly_step() {{\n{s}\n}}\n{s}",
         .{
             if (package_step) virtualMetadataShellPrelude else "",
             if (package_step) package_metadata.shell_capture_prelude else "",
             execution_prelude,
-            if (package_step) "declare -- pkgdir=\"$6\"\ndeclare -r __shelly_virtual_ownership_log=\"$7\"" else "",
+            if (package_step)
+                "declare -- pkgdir=\"$6\"\ndeclare -rx __shelly_virtual_ownership_log=\"$7\"\nexport __shelly_package_root=\"$pkgdir\"\nexport PATH=\"$8:$PATH\""
+            else
+                "",
             messagingShellPrelude,
             helper_definitions,
             body,
@@ -133,7 +145,7 @@ pub fn runStep(
     const command_body = if (capture_metadata)
         try std.fmt.allocPrint(
             self.allocator,
-            "{s}\n__shelly_capture_metadata > \"$3\"\nprintf 'E\\0' >> \"$__shelly_virtual_ownership_log\"",
+            "{s}\n__shelly_capture_metadata > \"$3\"\n__shelly_append_metadata E",
             .{executable_body},
         )
     else
@@ -163,7 +175,7 @@ pub fn runStep(
     defer self.allocator.free(metadata_result_path);
     const ownership_result_path = try std.fs.path.join(
         self.allocator,
-        &.{ self.options.work_directory, ".shelly-virtual-ownership" },
+        &.{ wrappers_path orelse self.options.work_directory, ".shelly-virtual-ownership" },
     );
     defer self.allocator.free(ownership_result_path);
     if (capture_pkgver) {
@@ -211,7 +223,21 @@ pub fn runStep(
         self.package_builds[0].options orelse &.{},
     );
     defer metadata.freeOwnedStrings(self.allocator, effective_options);
-    const step_argv: []const []const u8 = &.{ "/bin/bash", "-e", "-c", command_body, "shelly-step", current_pkgver, pkgver_result_path, metadata_result_path, runtime_startdir, srcdir, runtime_pkgdir, ownership_result_path };
+    // Generated split bases can exceed Linux's per-argument limit. Keep the
+    // script in the sandbox's private work directory instead of a bash -c
+    // argument; sourcing without extra arguments preserves $0 and $1..$9.
+    var script_random: [8]u8 = undefined;
+    self.io.random(&script_random);
+    const script_suffix = std.fmt.bytesToHex(script_random, .lower);
+    const script_path = try std.fmt.allocPrint(self.allocator, "{s}/.shelly-step-{s}.bash", .{ self.options.work_directory, script_suffix });
+    defer self.allocator.free(script_path);
+    var script_file = try std.Io.Dir.cwd().createFile(self.io, script_path, .{ .exclusive = true, .permissions = .fromMode(0o600) });
+    defer std.Io.Dir.cwd().deleteFile(self.io, script_path) catch {};
+    {
+        defer script_file.close(self.io);
+        try script_file.writeStreamingAll(self.io, command_body);
+    }
+    const step_argv: []const []const u8 = &.{ "/bin/bash", "-e", "-c", "builtin source -- \"${10}\"", "shelly-step", current_pkgver, pkgver_result_path, metadata_result_path, runtime_startdir, srcdir, runtime_pkgdir, ownership_result_path, wrappers_path orelse "", self.package_builds[0].pkg_rel orelse "", script_path };
     const sandbox_enabled = self.shellybuild_config.sandbox.enabled;
     const wrapped = if (sandbox_enabled) try wrapStepCommand(self, step_argv) else null;
     defer if (wrapped) |command| command.deinit(self.allocator);
@@ -227,10 +253,20 @@ pub fn runStep(
         operation,
     );
     if (self.active_log) |log| try log.ensureHealthy();
+    if (wrappers_path) |path| {
+        const rejected_path = try std.fs.path.join(self.allocator, &.{ path, ".shelly-virtual-ownership.failed" });
+        defer self.allocator.free(rejected_path);
+        if (std.Io.Dir.cwd().access(self.io, rejected_path, .{})) |_| {
+            return error.PrivilegedPackageOperationUnsupported;
+        } else |err| if (err != error.FileNotFound) return err;
+    }
     if (package_step and exit_code == virtual_metadata_rejected_exit_code)
         return error.PrivilegedPackageOperationUnsupported;
     if (exit_code != 0) {
         if (sandbox_enabled) writeSandboxFailureHint(self);
+        const message = try user_errors.buildFailed(self.allocator, package_name, step_name, exit_code);
+        defer self.allocator.free(message);
+        operation.reportError(error.StepFailed, message, "build", exit_code, false);
         return error.StepFailed;
     }
     if (capture_pkgver) {
@@ -262,10 +298,53 @@ pub fn runStep(
             runtime_pkgdir,
         ) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => return error.PrivilegedPackageOperationUnsupported,
+            else => {
+                const message = try std.fmt.allocPrint(self.allocator, "Cannot read package ownership journal for {f}: {s}.", .{ diagnostics.safe(package_name), @errorName(err) });
+                defer self.allocator.free(message);
+                if (self.active_log) |log| try log.writeRecord("error", message);
+                operation.reportError(error.PrivilegedPackageOperationUnsupported, message, "build", null, false);
+                return error.PrivilegedPackageOperationUnsupported;
+            },
         };
     }
     operation.status(.information, step_name, "aur_build_output", @intFromEnum(events.EventType.aur_build_output));
+}
+
+/// Commands in this private directory are inherited by Meson, make, and /bin/sh.
+fn createPackageWrappers(self: *PackageBuilder) ![]u8 {
+    var random: [8]u8 = undefined;
+    self.io.random(&random);
+    const suffix = std.fmt.bytesToHex(random, .lower);
+    const path = try std.fmt.allocPrint(self.allocator, "{s}/.shelly-package-commands-{s}", .{ self.options.work_directory, suffix });
+    errdefer self.allocator.free(path);
+    try std.Io.Dir.cwd().createDir(self.io, path, .fromMode(0o700));
+    errdefer std.Io.Dir.cwd().deleteTree(self.io, path) catch {};
+    var directory = try std.Io.Dir.cwd().openDir(self.io, path, .{});
+    defer directory.close(self.io);
+    try directory.writeFile(self.io, .{ .sub_path = "metadata.sh", .data = virtualMetadataShellPrelude });
+    try directory.setFilePermissions(self.io, "metadata.sh", .fromMode(0o600), .{});
+    const launcher =
+        \\#!/bin/bash
+        \\set -e
+        \\: "${__shelly_package_root:?missing Shelly package root}"
+        \\: "${__shelly_virtual_ownership_log:?missing Shelly metadata journal}"
+        \\declare -r pkgdir="$__shelly_package_root"
+        \\source "${0%/*}/metadata.sh"
+        \\trap '__shelly_status=$?; if [ "$__shelly_status" -ne 0 ]; then printf "shelly: %s failed (exit %s); arguments:" "${0##*/}" "$__shelly_status" >&2; printf " %q" "$@" >&2; printf "\n" >&2; fi' EXIT
+        \\case "${0##*/}" in
+        \\  chown) chown "$@" ;;
+        \\  chgrp) chgrp "$@" ;;
+        \\  install) install "$@" ;;
+        \\  mknod) mknod "$@" ;;
+        \\  *) exit 97 ;;
+        \\esac
+        \\
+    ;
+    for ([_][]const u8{ "chown", "chgrp", "install", "mknod" }) |name| {
+        try directory.writeFile(self.io, .{ .sub_path = name, .data = launcher });
+        try directory.setFilePermissions(self.io, name, .fromMode(0o700), .{});
+    }
+    return path;
 }
 
 const WrappedStepCommand = struct {
@@ -299,6 +378,14 @@ fn wrapStepCommand(self: *PackageBuilder, child_argv: []const []const u8) !Wrapp
     defer read_write.deinit(self.allocator);
     try read_write.append(self.allocator, self.options.work_directory);
     try read_write.append(self.allocator, self.options.start_directory);
+    // Metadata review can run before validateBuildDirectories. A configured
+    // source cache must exist before Landlock can grant lifecycle access.
+    std.Io.Dir.cwd().createDirPath(self.io, self.options.source_destination) catch {
+        reportUnwritableBuildDirectory(self, self.options.source_destination);
+        return error.BuildDirectoryNotWritable;
+    };
+    try validateWritableDirectory(self, self.options.source_destination);
+    try read_write.append(self.allocator, self.options.source_destination);
     for (sandbox_config.extra_write) |path|
         try read_write.append(self.allocator, path);
 
@@ -342,6 +429,7 @@ pub const DynamicMetadataOverrides = struct {
     arrays: DynamicArrayOverrides,
     unset_arrays: DynamicArrayUnsets,
     shell_options: ShellOptionDelta,
+    functions: std.StringHashMap([]const u8),
 
     pub fn deinit(self: *DynamicMetadataOverrides, allocator: std.mem.Allocator) void {
         deinitDynamicScalarOverrides(allocator, &self.scalars);
@@ -349,6 +437,7 @@ pub const DynamicMetadataOverrides = struct {
         deinitDynamicArrayOverrides(allocator, &self.arrays);
         deinitDynamicArrayUnsets(allocator, &self.unset_arrays);
         self.shell_options.deinit(allocator);
+        deinitDynamicScalarOverrides(allocator, &self.functions);
         self.* = undefined;
     }
 };
@@ -695,9 +784,73 @@ fn parseDynamicArrayOutput(
     return .{ .values = values, .unsets = unsets };
 }
 
+// Function records contain a name and the complete Bash declaration. This is
+// an authoritative snapshot, so absent names (including unset -f) stay absent.
+const dynamic_function_capture_prelude =
+    \\declare -A __shelly_before_functions=()
+    \\__shelly_snapshot_functions() {
+    \\  local __shelly_name
+    \\  while IFS= read -r __shelly_name; do
+    \\    __shelly_before_functions["$__shelly_name"]=$(builtin declare -f -- "$__shelly_name")
+    \\  done < <(builtin compgen -A function)
+    \\}
+    \\__shelly_capture_functions() {
+    \\  local __shelly_name __shelly_definition __shelly_count=0 __shelly_bytes=0
+    \\  : > "$1"
+    \\  while IFS= read -r __shelly_name; do
+    \\    case "$__shelly_name" in __shelly_*) continue ;; esac
+    \\    __shelly_definition=$(builtin declare -f -- "$__shelly_name") || return 1
+    \\    if [[ ${__shelly_before_functions[$__shelly_name]+present} == present && ${__shelly_before_functions[$__shelly_name]} == "$__shelly_definition" ]]; then
+    \\      continue
+    \\    fi
+    \\    __shelly_count=$((__shelly_count + 1))
+    \\    __shelly_bytes=$((__shelly_bytes + ${#__shelly_name} + ${#__shelly_definition} + 2))
+    \\    (( __shelly_count <= 4096 && __shelly_bytes <= 4194304 )) || return 1
+    \\    builtin printf '%s\0%s\0' "$__shelly_name" "$__shelly_definition" >> "$1"
+    \\  done < <(builtin compgen -A function)
+    \\}
+    \\readonly -f __shelly_snapshot_functions __shelly_capture_functions
+;
+
+fn parseDynamicFunctionOutput(allocator: std.mem.Allocator, output: []const u8) !std.StringHashMap([]const u8) {
+    const function_body = @import("../../pkgbuild/parser/function_body.zig");
+    var functions = std.StringHashMap([]const u8).init(allocator);
+    errdefer deinitDynamicScalarOverrides(allocator, &functions);
+    if (output.len > 4 * 1024 * 1024) return error.InvalidDynamicFunctionOutput;
+    var records = std.mem.splitScalar(u8, output, 0);
+    while (true) {
+        const name = records.next() orelse return error.InvalidDynamicFunctionOutput;
+        if (name.len == 0) {
+            if (records.next() != null) return error.InvalidDynamicFunctionOutput;
+            break;
+        }
+        if (functions.count() >= 4096 or functions.contains(name) or
+            std.mem.startsWith(u8, name, "__shelly_")) return error.InvalidDynamicFunctionOutput;
+        for (name) |byte| {
+            if (!std.ascii.isAlphanumeric(byte) and std.mem.indexOfScalar(u8, "_-+.:", byte) == null)
+                return error.InvalidDynamicFunctionOutput;
+        }
+        const definition = records.next() orelse return error.InvalidDynamicFunctionOutput;
+        // Accept one complete canonical declaration, never trailing commands.
+        if (!std.mem.startsWith(u8, definition, name)) return error.InvalidDynamicFunctionOutput;
+        const suffix = definition[name.len..];
+        if (!std.mem.startsWith(u8, suffix, " () \n")) return error.InvalidDynamicFunctionOutput;
+        const end = (try function_body.function_end(definition, name)) orelse return error.InvalidDynamicFunctionOutput;
+        if (end > definition.len or std.mem.trim(u8, definition[end..], " \t\r\n").len != 0)
+            return error.InvalidDynamicFunctionOutput;
+        const key = try allocator.dupe(u8, name);
+        errdefer allocator.free(key);
+        const value = try allocator.dupe(u8, definition);
+        errdefer allocator.free(value);
+        try functions.put(key, value);
+    }
+    return functions;
+}
+
 /// Sources the reviewed PKGBUILD in the same sandbox used for lifecycle steps
-/// and captures one coherent snapshot of changed scalar and indexed-array
-/// state. Sourcing preserves arbitrary top-level
+/// and captures one coherent snapshot of PKGBUILD scalar, indexed-array, and
+/// function state. Each evaluation starts from the base PKGBUILD, never from a previous
+/// evaluation's declarations. Sourcing preserves arbitrary top-level
 /// parameter defaults, `if`, `case`, helper calls, and short-circuit control
 /// flow; lifecycle functions are defined by Bash but are not invoked here.
 pub fn evaluateDynamicMetadata(
@@ -705,7 +858,28 @@ pub fn evaluateDynamicMetadata(
     operation: *op_context.Operation,
 ) !DynamicMetadataOverrides {
     const package_build = &self.package_builds[0];
-    const execution = package_build.execution orelse return error.MissingExecutionSteps;
+    const pkgbuild_path = self.options.pkgbuild_path orelse
+        return error.UnreviewedBuilderRequest;
+    const canonical_pkgbuild_path = try std.Io.Dir.cwd().realPathFileAlloc(self.io, pkgbuild_path, self.allocator);
+    defer self.allocator.free(canonical_pkgbuild_path);
+    const content = try std.Io.Dir.cwd().readFileAlloc(self.io, canonical_pkgbuild_path, self.allocator, .limited(32 * 1024 * 1024));
+    defer self.allocator.free(content);
+    const parser: PkgbuildParser = .{
+        .allocator = self.allocator,
+        .io = self.io,
+        .package_carch = self.shellybuild_config.build.carch,
+    };
+    var base = try parser.parser_content(content, self.options.start_directory);
+    defer base.deinit(self.allocator);
+    var array_names = try parser_execution.collect_top_level_array_names(parser, content);
+    defer {
+        for (array_names.items) |name| self.allocator.free(name);
+        array_names.deinit(self.allocator);
+    }
+    const srcdir = try std.fs.path.join(self.allocator, &.{ self.options.work_directory, "src" });
+    defer self.allocator.free(srcdir);
+    const pkgdir = try std.fs.path.join(self.allocator, &.{ self.options.work_directory, "pkg", base.pkg_name orelse "" });
+    defer self.allocator.free(pkgdir);
 
     var array_result: DynamicArrayOverrides = .init(self.allocator);
     errdefer deinitDynamicArrayOverrides(self.allocator, &array_result);
@@ -721,18 +895,37 @@ pub fn evaluateDynamicMetadata(
     const writer = &script.writer;
     try writer.writeAll(messagingShellPrelude);
     try writer.writeAll("\n");
-    try writer.writeAll(execution.shared_prelude);
+    // Only makepkg context belongs in the bootstrap. Seeding PKGBUILD values
+    // changes Bash defaults/appends and causes repeated evaluation to lose
+    // unchanged values when the snapshot is applied to a fresh static parse.
+    try writer.writeAll("declare -- startdir=\"$5\" srcdir=\"$6\" pkgdir=\"$7\" CARCH=\"$8\"\n");
     try writer.writeAll("\n");
     try writer.writeAll(dynamic_scalar_capture_prelude);
     try writer.writeAll("\n");
     try writer.writeAll(dynamic_array_capture_prelude);
+    try writer.writeAll("\n");
+    try writer.writeAll(dynamic_function_capture_prelude);
     try writer.writeAll(
         "\n__shelly_clear_user_arrays\n" ++
             "__shelly_snapshot_scalars\n" ++
-            "__shelly_snapshot_arrays\n" ++
+            "__shelly_snapshot_arrays\n",
+    );
+    // Track names from the original static parse without assigning them in
+    // Bash. An empty declaration forces capture even when the final value
+    // equals the inherited environment; absent names produce unset records.
+    // This prevents static assignments from resurrecting explicitly unset
+    // variables or arrays, including during the second review/build pass.
+    var names = base.variables.keyIterator();
+    while (names.next()) |name| try writeTrackedMetadataName(writer, name.*, "scalar");
+    for (base.dynamic_assignments) |assignment|
+        try writeTrackedMetadataName(writer, assignment.name, "scalar");
+    for (array_names.items) |name| try writeTrackedMetadataName(writer, name, "array");
+    try writer.writeAll(
+        "__shelly_snapshot_functions\n" ++
             "__shelly_before_bashopts=$BASHOPTS\n" ++
             "__shelly_before_shellopts=$SHELLOPTS\n" ++
             "source \"$4\"\n" ++
+            "__shelly_capture_functions \"$9\"\n" ++
             "__shelly_capture_scalar_changes \"$1\"\n" ++
             "__shelly_capture_array_changes \"$2\"\n" ++
             "printf '%s\\0%s\\0%s\\0%s\\0' \"$__shelly_before_bashopts\" \"$BASHOPTS\" \"$__shelly_before_shellopts\" \"$SHELLOPTS\" > \"$3\"\n",
@@ -771,14 +964,13 @@ pub fn evaluateDynamicMetadata(
     };
     defer std.Io.Dir.cwd().deleteFile(self.io, shell_option_result_path) catch {};
 
-    const pkgbuild_path = self.options.pkgbuild_path orelse
-        return error.UnreviewedBuilderRequest;
-    const canonical_pkgbuild_path = try std.Io.Dir.cwd().realPathFileAlloc(
-        self.io,
-        pkgbuild_path,
-        self.allocator,
-    );
-    defer self.allocator.free(canonical_pkgbuild_path);
+    const function_result_path = try std.fs.path.join(self.allocator, &.{ self.options.work_directory, ".shelly-dynamic-functions" });
+    defer self.allocator.free(function_result_path);
+    std.Io.Dir.cwd().deleteFile(self.io, function_result_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
+    defer std.Io.Dir.cwd().deleteFile(self.io, function_result_path) catch {};
 
     try logPhase(self, "dynamic-metadata");
     try operation.checkCancelled();
@@ -795,7 +987,7 @@ pub fn evaluateDynamicMetadata(
     const effective_options = try metadata.effectivePackageOptions(
         self.allocator,
         self.shellybuild_config.package.options,
-        package_build.options orelse &.{},
+        base.options orelse &.{},
     );
     defer metadata.freeOwnedStrings(self.allocator, effective_options);
     const argv: []const []const u8 = &.{
@@ -808,6 +1000,11 @@ pub fn evaluateDynamicMetadata(
         array_result_path,
         shell_option_result_path,
         canonical_pkgbuild_path,
+        self.options.start_directory,
+        srcdir,
+        pkgdir,
+        self.shellybuild_config.build.carch,
+        function_result_path,
     };
     const sandbox_enabled = self.shellybuild_config.sandbox.enabled;
     const wrapped = if (sandbox_enabled) try wrapStepCommand(self, argv) else null;
@@ -826,6 +1023,9 @@ pub fn evaluateDynamicMetadata(
     if (self.active_log) |log| try log.ensureHealthy();
     if (exit_code != 0) {
         if (sandbox_enabled) writeSandboxFailureHint(self);
+        const message = try user_errors.buildFailed(self.allocator, self.requested_names[0], "dynamic metadata evaluation", exit_code);
+        defer self.allocator.free(message);
+        operation.reportError(error.StepFailed, message, "build", exit_code, false);
         return error.StepFailed;
     }
 
@@ -864,13 +1064,25 @@ pub fn evaluateDynamicMetadata(
     defer self.allocator.free(shell_option_output);
     var shell_options = try parseShellOptionDelta(self.allocator, shell_option_output);
     errdefer shell_options.deinit(self.allocator);
+    const function_output = try std.Io.Dir.cwd().readFileAlloc(self.io, function_result_path, self.allocator, .limited(4 * 1024 * 1024));
+    defer self.allocator.free(function_output);
+    const functions = try parseDynamicFunctionOutput(self.allocator, function_output);
     return .{
+        .functions = functions,
         .scalars = scalar_result,
         .unset_scalars = unset_scalar_result,
         .arrays = array_result,
         .unset_arrays = unset_array_result,
         .shell_options = shell_options,
     };
+}
+
+fn writeTrackedMetadataName(writer: *std.Io.Writer, name: []const u8, comptime kind: []const u8) !void {
+    if (!isShellVariableName(name)) return;
+    try writer.print(
+        "if ! __shelly_ignore_{s} {s}; then __shelly_before_{s}s[{s}]=''; fi\n",
+        .{ kind, name, kind, name },
+    );
 }
 
 test "dynamic scalar output preserves values, newlines, empty strings, and unsets" {
@@ -975,7 +1187,7 @@ fn writeSandboxFailureHint(self: *const PackageBuilder) void {
     const log = self.active_log orelse return;
     log.writeRecord(
         "sandbox",
-        "step failed inside the Landlock sandbox; if it hit a permission error, grant additional paths through [sandbox] extra_read or extra_write",
+        "The build step failed inside the Landlock sandbox. If the build log identifies a required path that was denied, review the sandbox extra_read or extra_write setting.",
     ) catch {};
 }
 
@@ -998,19 +1210,35 @@ pub fn buildEnvironment(
             self.shellybuild_config.build.distcc_hosts
         else
             null,
+        .source_date_epoch = self.source_date_epoch,
+        .source_destination = self.options.source_destination,
         .ccache = self.shellybuild_config.build.ccache,
         .distcc = self.shellybuild_config.build.distcc,
     };
 }
 
 fn applyDynamicPkgver(self: *PackageBuilder, output: []const u8) !void {
-    const version = std.mem.trimEnd(u8, output, "\r\n");
+    const version = std.mem.trimEnd(u8, output, "\n");
     try metadata.validatePkgver(version);
+
+    if (self.options.pkgbuild_path != null) {
+        const owned = try self.allocator.dupe(u8, version);
+        if (self.pending_pkgver) |old| self.allocator.free(old);
+        self.pending_pkgver = owned;
+        return;
+    }
+    // Path-less unit fixtures have no PKGBUILD to rewrite or re-evaluate.
+    const changed = !std.mem.eql(u8, version, self.package_builds[0].pkg_version orelse "");
 
     for (self.package_builds) |*package_build| {
         const owned_version = try self.allocator.dupe(u8, version);
         if (package_build.pkg_version) |old| self.allocator.free(old);
         package_build.pkg_version = owned_version;
+        if (changed) {
+            const release = try self.allocator.dupe(u8, "1");
+            if (package_build.pkg_rel) |old| self.allocator.free(old);
+            package_build.pkg_rel = release;
+        }
 
         const map_value = try self.allocator.dupe(u8, version);
         if (package_build.variables.fetchRemove("pkgver")) |old| {
@@ -1102,11 +1330,61 @@ const messagingShellPrelude =
 const virtualMetadataShellPrelude =
     \\__shelly_metadata_reject() {
     \\  printf '%s\n' 'shelly: unsupported privileged package metadata operation' >&2
+    \\  if [ "$#" -gt 0 ]; then printf 'shelly: %s: %q\n' "$1" "${2-}" >&2; fi
+    \\  if [ -n "${__shelly_virtual_ownership_log:-}" ]; then
+    \\    : > "${__shelly_virtual_ownership_log}.failed"
+    \\  fi
     \\  return 97
     \\}
+    \\__shelly_append_metadata() (
+    \\  local __shelly_fd
+    \\  exec {__shelly_fd}>> "$__shelly_virtual_ownership_log" || { __shelly_metadata_reject 'cannot open metadata journal' "$__shelly_virtual_ownership_log"; return $?; }
+    \\  /usr/bin/flock -x "$__shelly_fd" || { __shelly_metadata_reject 'cannot lock metadata journal' "$__shelly_virtual_ownership_log"; return $?; }
+    \\  printf '%s\0' "$@" >&"$__shelly_fd" || { __shelly_metadata_reject 'cannot write metadata journal' "$__shelly_virtual_ownership_log"; return $?; }
+    \\)
     \\mknod() {
-    \\  printf '%s\n' 'shelly: package steps cannot create device nodes' >&2
-    \\  return 1
+    \\  local -a __shelly_operands=()
+    \\  local __shelly_mode='' __shelly_root __shelly_parent __shelly_target __shelly_kind __shelly_number
+    \\  while [ "$#" -gt 0 ]; do
+    \\    case "$1" in
+    \\      --) shift; __shelly_operands+=("$@"); break ;;
+    \\      -m|--mode)
+    \\        [ "$#" -ge 2 ] || { __shelly_metadata_reject 'mknod requires a mode for' "$1"; return $?; }
+    \\        __shelly_mode=$2; shift 2
+    \\        [[ "$__shelly_mode" =~ ^[0-7]{1,4}$ ]] || { __shelly_metadata_reject 'mknod supports octal modes only' "$__shelly_mode"; return $?; } ;;
+    \\      --mode=*|-m?*)
+    \\        if [[ "$1" = --mode=* ]]; then __shelly_mode=${1#*=}; else __shelly_mode=${1:2}; fi
+    \\        shift
+    \\        [[ "$__shelly_mode" =~ ^[0-7]{1,4}$ ]] || { __shelly_metadata_reject 'mknod supports octal modes only' "$__shelly_mode"; return $?; } ;;
+    \\      -*) __shelly_metadata_reject 'mknod unsupported option' "$1"; return $? ;;
+    \\      *) __shelly_operands+=("$1"); shift ;;
+    \\    esac
+    \\  done
+    \\  [ "${#__shelly_operands[@]}" -eq 4 ] || { __shelly_metadata_reject 'mknod requires PATH TYPE MAJOR MINOR' "${__shelly_operands[*]}"; return $?; }
+    \\  __shelly_kind=${__shelly_operands[1]}
+    \\  case "$__shelly_kind" in
+    \\    c|b) ;;
+    \\    u) __shelly_kind=c ;;
+    \\    *) __shelly_metadata_reject 'mknod unsupported device type' "$__shelly_kind"; return $? ;;
+    \\  esac
+    \\  for __shelly_number in "${__shelly_operands[@]:2:2}"; do
+    \\    [[ "$__shelly_number" =~ ^[0-9]{1,10}$ ]] && [ "$((10#$__shelly_number))" -le 4294967295 ] || { __shelly_metadata_reject 'mknod invalid device number' "$__shelly_number"; return $?; }
+    \\  done
+    \\  __shelly_root=$(/usr/bin/realpath -e -- "$pkgdir") || { __shelly_metadata_reject 'mknod invalid package root' "$pkgdir"; return $?; }
+    \\  __shelly_parent=$(/usr/bin/realpath -e -- "$(/usr/bin/dirname -- "${__shelly_operands[0]}")") || { __shelly_metadata_reject 'mknod missing parent directory' "${__shelly_operands[0]}"; return $?; }
+    \\  __shelly_target="$__shelly_parent/$(/usr/bin/basename -- "${__shelly_operands[0]}")"
+    \\  case "$__shelly_target" in
+    \\    "$__shelly_root"/*) ;;
+    \\    *) __shelly_metadata_reject 'mknod target outside package' "$__shelly_target"; return $? ;;
+    \\  esac
+    \\  if [ -e "$__shelly_target" ] || [ -L "$__shelly_target" ]; then
+    \\    __shelly_metadata_reject 'mknod target already exists' "$__shelly_target"; return $?
+    \\  fi
+    \\  # A placeholder provides existence/removal semantics, never a real device.
+    \\  (set -o noclobber; : > "$__shelly_target") || { __shelly_metadata_reject 'mknod cannot create placeholder' "$__shelly_target"; return $?; }
+    \\  __shelly_record_ownership N "$__shelly_kind:${__shelly_operands[2]}:${__shelly_operands[3]}" "$__shelly_target" || return $?
+    \\  if [ -n "$__shelly_mode" ]; then /usr/bin/chmod "$__shelly_mode" -- "$__shelly_target" || return $?; fi
+    \\  return 0
     \\}
     \\__shelly_record_ownership() {
     \\  local __shelly_operation=$1 __shelly_specification=$2 __shelly_target=$3 __shelly_follow=${4:-1}
@@ -1121,16 +1399,17 @@ const virtualMetadataShellPrelude =
     \\  fi
     \\  case "$__shelly_canonical" in
     \\    "$__shelly_root"|"$__shelly_root"/*) ;;
-    \\    *) __shelly_metadata_reject; return $? ;;
+    \\    *) __shelly_metadata_reject 'ownership target outside package' "$__shelly_canonical"; return $? ;;
     \\  esac
+    \\  # Journal timestamps use a decimal point regardless of the package locale.
     \\  if [ "$__shelly_follow" -eq 1 ]; then
-    \\    __shelly_identity=$(/usr/bin/stat -Lc '%Hd:%Ld:%i:%.9W' -- "$__shelly_canonical") || { __shelly_metadata_reject; return $?; }
+    \\    __shelly_identity=$(LC_ALL=C /usr/bin/stat -Lc '%Hd:%Ld:%i:%.9W' -- "$__shelly_canonical") || { __shelly_metadata_reject; return $?; }
     \\  else
-    \\    __shelly_identity=$(/usr/bin/stat -c '%Hd:%Ld:%i:%.9W' -- "$__shelly_canonical") || { __shelly_metadata_reject; return $?; }
+    \\    __shelly_identity=$(LC_ALL=C /usr/bin/stat -c '%Hd:%Ld:%i:%.9W' -- "$__shelly_canonical") || { __shelly_metadata_reject; return $?; }
     \\  fi
     \\  __shelly_birth=${__shelly_identity##*:}
     \\  [ "$__shelly_birth" != '0.000000000' ] || { __shelly_metadata_reject; return $?; }
-    \\  printf '%s\0%s\0%s\0%s\0' "$__shelly_operation" "$__shelly_identity" "$__shelly_specification" "$__shelly_canonical" >> "$__shelly_virtual_ownership_log" || return 97
+    \\  __shelly_append_metadata "$__shelly_operation" "$__shelly_identity" "$__shelly_specification" "$__shelly_canonical"
     \\}
     \\__shelly_record_ownership_recursive() {
     \\  local __shelly_operation=$1 __shelly_specification=$2 __shelly_target=$3 __shelly_follow=${4:-1}
@@ -1153,6 +1432,8 @@ const virtualMetadataShellPrelude =
     \\}
     \\chown() {
     \\  local __shelly_recursive=0 __shelly_follow=1 __shelly_specification __shelly_target
+    \\  local -a __shelly_operands=()
+    \\  # GNU ownership commands accept options after the owner and paths.
     \\  while [ "$#" -gt 0 ]; do
     \\    case "$1" in
     \\      -R|--recursive) __shelly_recursive=1; shift ;;
@@ -1160,11 +1441,12 @@ const virtualMetadataShellPrelude =
     \\      -h|--no-dereference) __shelly_follow=0; shift ;;
     \\      --dereference) __shelly_follow=1; shift ;;
     \\      -H|-L|--from=*|--reference=*) __shelly_metadata_reject; return $? ;;
-    \\      --) shift; break ;;
+    \\      --) shift; __shelly_operands+=("$@"); break ;;
     \\      -*) __shelly_metadata_reject; return $? ;;
-    \\      *) break ;;
+    \\      *) __shelly_operands+=("$1"); shift ;;
     \\    esac
     \\  done
+    \\  set -- "${__shelly_operands[@]}"
     \\  [ "$#" -ge 2 ] || { __shelly_metadata_reject; return $?; }
     \\  [ -n "$1" ] && [ "$1" != ':' ] || { __shelly_metadata_reject; return $?; }
     \\  __shelly_specification=$1; shift
@@ -1179,6 +1461,7 @@ const virtualMetadataShellPrelude =
     \\}
     \\chgrp() {
     \\  local __shelly_recursive=0 __shelly_follow=1 __shelly_specification __shelly_target
+    \\  local -a __shelly_operands=()
     \\  while [ "$#" -gt 0 ]; do
     \\    case "$1" in
     \\      -R|--recursive) __shelly_recursive=1; shift ;;
@@ -1186,11 +1469,12 @@ const virtualMetadataShellPrelude =
     \\      -h|--no-dereference) __shelly_follow=0; shift ;;
     \\      --dereference) __shelly_follow=1; shift ;;
     \\      -H|-L|--from=*|--reference=*) __shelly_metadata_reject; return $? ;;
-    \\      --) shift; break ;;
+    \\      --) shift; __shelly_operands+=("$@"); break ;;
     \\      -*) __shelly_metadata_reject; return $? ;;
-    \\      *) break ;;
+    \\      *) __shelly_operands+=("$1"); shift ;;
     \\    esac
     \\  done
+    \\  set -- "${__shelly_operands[@]}"
     \\  [ "$#" -ge 2 ] || { __shelly_metadata_reject; return $?; }
     \\  [ -n "$1" ] || { __shelly_metadata_reject; return $?; }
     \\  __shelly_specification=$1; shift
@@ -1204,63 +1488,96 @@ const virtualMetadataShellPrelude =
     \\  return 0
     \\}
     \\install() {
-    \\  local -a __shelly_install_args=() __shelly_operands=()
+    \\  local -a __shelly_original_args=("$@") __shelly_install_args=() __shelly_operands=()
     \\  local __shelly_owner='' __shelly_group='' __shelly_have_owner=0 __shelly_have_group=0
     \\  local __shelly_directory_mode=0 __shelly_no_target_directory=0 __shelly_target_directory=''
-    \\  local __shelly_ambiguous=0 __shelly_value __shelly_source __shelly_destination __shelly_target
+    \\  local __shelly_ambiguous='' __shelly_value __shelly_source __shelly_destination __shelly_target
+    \\  local __shelly_short_options __shelly_option
     \\  while [ "$#" -gt 0 ]; do
     \\    case "$1" in
     \\      --)
     \\        __shelly_install_args+=("$1"); shift
     \\        while [ "$#" -gt 0 ]; do __shelly_install_args+=("$1"); __shelly_operands+=("$1"); shift; done
     \\        break ;;
-    \\      -o|--owner)
-    \\        [ "$#" -ge 2 ] || { __shelly_metadata_reject; return $?; }
-    \\        [ -n "$2" ] || { __shelly_metadata_reject; return $?; }
+    \\      --owner)
+    \\        [ "$#" -ge 2 ] && [ -n "$2" ] || { __shelly_metadata_reject 'install requires a nonempty argument for' "$1"; return $?; }
     \\        __shelly_owner=$2; __shelly_have_owner=1
     \\        shift 2 ;;
-    \\      -g|--group)
-    \\        [ "$#" -ge 2 ] || { __shelly_metadata_reject; return $?; }
-    \\        [ -n "$2" ] || { __shelly_metadata_reject; return $?; }
+    \\      --group)
+    \\        [ "$#" -ge 2 ] && [ -n "$2" ] || { __shelly_metadata_reject 'install requires a nonempty argument for' "$1"; return $?; }
     \\        __shelly_group=$2; __shelly_have_group=1
     \\        shift 2 ;;
     \\      --owner=*)
-    \\        [ -n "${1#*=}" ] || { __shelly_metadata_reject; return $?; }
+    \\        [ -n "${1#*=}" ] || { __shelly_metadata_reject 'install requires a nonempty argument for' "$1"; return $?; }
     \\        __shelly_owner=${1#*=}; __shelly_have_owner=1
     \\        shift ;;
     \\      --group=*)
-    \\        [ -n "${1#*=}" ] || { __shelly_metadata_reject; return $?; }
+    \\        [ -n "${1#*=}" ] || { __shelly_metadata_reject 'install requires a nonempty argument for' "$1"; return $?; }
     \\        __shelly_group=${1#*=}; __shelly_have_group=1
     \\        shift ;;
-    \\      -o?*) __shelly_owner=${1:2}; __shelly_have_owner=1; shift ;;
-    \\      -g?*) __shelly_group=${1:2}; __shelly_have_group=1; shift ;;
-    \\      -m|--mode|-S|--suffix)
-    \\        [ "$#" -ge 2 ] || { __shelly_metadata_reject; return $?; }
+    \\      --mode|--suffix)
+    \\        [ "$#" -ge 2 ] || { __shelly_metadata_reject 'install requires an argument for' "$1"; return $?; }
     \\        __shelly_install_args+=("$1" "$2"); shift 2 ;;
-    \\      -t|--target-directory)
-    \\        [ "$#" -ge 2 ] || { __shelly_metadata_reject; return $?; }
+    \\      --target-directory)
+    \\        [ "$#" -ge 2 ] || { __shelly_metadata_reject 'install requires an argument for' "$1"; return $?; }
     \\        __shelly_target_directory=$2
     \\        __shelly_install_args+=("$1" "$2"); shift 2 ;;
     \\      --target-directory=*)
     \\        __shelly_target_directory=${1#*=}; __shelly_install_args+=("$1"); shift ;;
-    \\      -d|--directory)
+    \\      --directory)
     \\        __shelly_directory_mode=1; __shelly_install_args+=("$1"); shift ;;
-    \\      -T|--no-target-directory)
+    \\      --no-target-directory)
     \\        __shelly_no_target_directory=1; __shelly_install_args+=("$1"); shift ;;
-    \\      -D|-p|--preserve-timestamps|-s|--strip|-v|--verbose|-C|--compare|-b|-Z|--backup|--backup=*|--mode=*|-m?*|-Dm?*)
+    \\      --preserve-timestamps|--strip|--verbose|--compare|--backup|--backup=*|--mode=*|--suffix=*)
     \\        __shelly_install_args+=("$1"); shift ;;
-    \\      -*)
-    \\        __shelly_ambiguous=1; __shelly_install_args+=("$1"); shift ;;
+    \\      --*)
+    \\        __shelly_ambiguous=$1; shift ;;
+    \\      -?*)
+    \\        # Parse clusters like -dm700 and -Dpo42. An option taking a
+    \\        # value consumes the rest of the cluster or the next argument.
+    \\        __shelly_short_options=${1:1}; shift
+    \\        while [ -n "$__shelly_short_options" ]; do
+    \\          __shelly_option=${__shelly_short_options:0:1}
+    \\          __shelly_short_options=${__shelly_short_options:1}
+    \\          case "$__shelly_option" in
+    \\            o|g|m|S|t)
+    \\              if [ -n "$__shelly_short_options" ]; then
+    \\                __shelly_value=$__shelly_short_options; __shelly_short_options=''
+    \\              else
+    \\                [ "$#" -ge 1 ] || { __shelly_metadata_reject 'install requires an argument for' "-$__shelly_option"; return $?; }
+    \\                __shelly_value=$1; shift
+    \\              fi
+    \\              case "$__shelly_option" in
+    \\                o|g)
+    \\                  [ -n "$__shelly_value" ] || { __shelly_metadata_reject 'install requires a nonempty argument for' "-$__shelly_option"; return $?; }
+    \\                  if [ "$__shelly_option" = o ]; then
+    \\                    __shelly_owner=$__shelly_value; __shelly_have_owner=1
+    \\                  else
+    \\                    __shelly_group=$__shelly_value; __shelly_have_group=1
+    \\                  fi ;;
+    \\                *)
+    \\                  if [ "$__shelly_option" = t ]; then __shelly_target_directory=$__shelly_value; fi
+    \\                  __shelly_install_args+=("-$__shelly_option" "$__shelly_value") ;;
+    \\              esac ;;
+    \\            d|T|D|p|s|v|C|b|Z|c)
+    \\              if [ "$__shelly_option" = d ]; then __shelly_directory_mode=1; fi
+    \\              if [ "$__shelly_option" = T ]; then __shelly_no_target_directory=1; fi
+    \\              __shelly_install_args+=("-$__shelly_option") ;;
+    \\            *) __shelly_ambiguous="-$__shelly_option" ;;
+    \\          esac
+    \\        done ;;
     \\      *)
     \\        __shelly_install_args+=("$1"); __shelly_operands+=("$1")
     \\        shift ;;
     \\    esac
     \\  done
-    \\  if { [ "$__shelly_have_owner" -eq 1 ] || [ "$__shelly_have_group" -eq 1 ]; } && [ "$__shelly_ambiguous" -eq 1 ]; then
-    \\    __shelly_metadata_reject; return $?
+    \\  if [ "$__shelly_have_owner" -eq 0 ] && [ "$__shelly_have_group" -eq 0 ]; then
+    \\    /usr/bin/install "${__shelly_original_args[@]}"; return $?
+    \\  fi
+    \\  if [ -n "$__shelly_ambiguous" ]; then
+    \\    __shelly_metadata_reject 'install cannot record ownership with unsupported option' "$__shelly_ambiguous"; return $?
     \\  fi
     \\  /usr/bin/install "${__shelly_install_args[@]}" || return $?
-    \\  if [ "$__shelly_have_owner" -eq 0 ] && [ "$__shelly_have_group" -eq 0 ]; then return 0; fi
     \\  __shelly_record_install_target() {
     \\    __shelly_target=$1
     \\    if [ "$__shelly_have_owner" -eq 1 ]; then
@@ -1324,4 +1641,43 @@ pub fn isPackageStep(name: []const u8) bool {
 pub fn findPackageStep(steps: []const ExecutionStep) ?*const ExecutionStep {
     for (steps) |*step| if (isPackageStep(step.name)) return step;
     return null;
+}
+
+test "dynamic function output validates complete bounded declarations" {
+    const allocator = std.testing.allocator;
+    const definition = "package_demo () \n{ \n    depends=(\"bash\");\n    printf '%s' \"$pkgdir\"\n}";
+    var functions = try parseDynamicFunctionOutput(allocator, "package_demo\x00" ++ definition ++ "\x00");
+    defer deinitDynamicScalarOverrides(allocator, &functions);
+    try std.testing.expectEqualStrings(definition, functions.get("package_demo").?);
+    const negated_group = "package () \n{\n    if ! {\n        [[ -L /proc/self/ns/user ]] && unshare --user true\n    }; then\n        chmod 4755 \"${pkgdir}/opt/Grok Bot/chrome-sandbox\";\n    fi\n}";
+    var negated_functions = try parseDynamicFunctionOutput(allocator, "package\x00" ++ negated_group ++ "\x00");
+    defer deinitDynamicScalarOverrides(allocator, &negated_functions);
+    try std.testing.expectEqualStrings(negated_group, negated_functions.get("package").?);
+    for ([_][]const u8{
+        "demo\x00",
+        "demo\x00demo () \n{ :; }",
+        "demo\x00demo () \n{ :; }\x00\x00",
+        "demo\x00demo () \n{ :; }\x00demo\x00demo () \n{ :; }\x00",
+        "demo\x00demo () \n{ :; }; touch unwanted\x00",
+        "demo\x00demo () \n{ :;\x00",
+        "other\x00demo () \n{ :; }\x00",
+        "__shelly_step\x00__shelly_step () \n{ :; }\x00",
+        "bad name\x00bad name () \n{ :; }\x00",
+    }) |invalid| try std.testing.expectError(error.InvalidDynamicFunctionOutput, parseDynamicFunctionOutput(allocator, invalid));
+    var empty = try parseDynamicFunctionOutput(allocator, "");
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty.count());
+}
+
+test "dynamic function output rejects oversized snapshots" {
+    const allocator = std.testing.allocator;
+    const oversized = try allocator.alloc(u8, 4 * 1024 * 1024 + 1);
+    defer allocator.free(oversized);
+    try std.testing.expectError(error.InvalidDynamicFunctionOutput, parseDynamicFunctionOutput(allocator, oversized));
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    for (0..4097) |index| {
+        try output.writer.print("f{d}\x00f{d} () \n{{ :; }}\x00", .{ index, index });
+    }
+    try std.testing.expectError(error.InvalidDynamicFunctionOutput, parseDynamicFunctionOutput(allocator, output.written()));
 }

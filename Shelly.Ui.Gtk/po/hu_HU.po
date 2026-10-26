@@ -1,8 +1,8 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: shelly-ui 2.2.4.1\n"
-"Report-Msgid-Bugs-To: csnyder@seafoamlabs.org\n"
-"POT-Creation-Date: 2026-08-13 00:37+0200\n"
+"Report-Msgid-Bugs-To: csnyder@seafoam-labs.org\n"
+"POT-Creation-Date: 2026-10-11 18:31-0300\n"
 "PO-Revision-Date: 2026-08-13 11:51+0200\n"
 "Last-Translator: Impostor0729\n"
 "Language-Team: csnyder@seafoam-labs.org\n"
@@ -20,6 +20,27 @@ msgstr "Nem állnak rendelkezésre telepíthető kiegészítők"
 msgid "Close"
 msgstr "Bezárás"
 
+msgid "Enable AUR?"
+msgstr "Engedélyezi az AUR-t?"
+
+msgid ""
+"The Arch User Repository contains build scripts that are known as PKGBUILDs. "
+"Those scripts are uploaded by users, and are not verified or vetted in any "
+"way. Only enable this feature if you are comfortable in verifying the build "
+"scripts."
+msgstr ""
+
+msgid ""
+"<a href=\"https://www.seafoam-labs.org/shelly-alpm/docs/aur-safety/\">AUR "
+"Safety Guide</a>"
+msgstr ""
+
+msgid "Enable"
+msgstr "Engedélyezés"
+
+msgid "Cancel"
+msgstr "Mégse"
+
 msgid "Keep configuration"
 msgstr "Tartsa meg a beállításokat"
 
@@ -35,11 +56,12 @@ msgstr "Az alkalmazás adatai véglegesen törlésre kerülnek."
 msgid "Confirm"
 msgstr "Megerősítés"
 
-msgid "Cancel"
-msgstr "Mégse"
+#| msgid "No description available."
+msgid "Permissions unavailable"
+msgstr ""
 
-msgid "Skip"
-msgstr "Kihagyás"
+msgid "Shelly could not read the permissions for this app."
+msgstr ""
 
 msgid "No special permissions requested"
 msgstr "Nincs szükség különleges engedélyekre"
@@ -86,6 +108,16 @@ msgstr ""
 
 msgid "Review PKGBUILD"
 msgstr "PKGBUILD áttekintése"
+
+#| msgid "Review PKGBUILD"
+msgid "PKGBUILD"
+msgstr ""
+
+msgid "Retry"
+msgstr ""
+
+msgid "Skip"
+msgstr "Kihagyás"
 
 msgid "Search..."
 msgstr "Keresés..."
@@ -137,10 +169,9 @@ msgstr "További információ az URL frissítéséről / Tárhelyadatokról"
 msgid "e.g. owner/repo or https://..."
 msgstr "pl. tulajdonos/tároló vagy https://..."
 
-msgid "Invalid format. Use owner/repo (e.g., seafoam-labs/shelly-alpm)"
+msgid ""
+"Enter the repository as owner/repo, for example seafoam-labs/shelly-alpm."
 msgstr ""
-"Érvénytelen formátum. Használja a tulajdonos/tároló formátumot (pl. seafoam-"
-"labs/shelly-alpm)"
 
 msgid "Allow Prerelease"
 msgstr "Előzetes kiadás engedélyezése"
@@ -151,6 +182,16 @@ msgstr "Telepítési útvonal"
 msgid "Launch Flags"
 msgstr "Indítási paraméterek"
 
+msgid "Environment Variables"
+msgstr ""
+
+msgid ""
+"One KEY=value per line. Remove a line to restore the normal environment."
+msgstr ""
+
+msgid "Save Environment"
+msgstr ""
+
 msgid "Save"
 msgstr "Mentés"
 
@@ -160,14 +201,12 @@ msgstr "Szinkronizálás"
 msgid "Remove"
 msgstr "Eltávolítás"
 
-msgid "Information"
-msgstr "Információ"
-
-msgid "Preview Pkgbuild"
-msgstr "PKGBUILD előnézete"
-
 msgid "Search the AUR by name or keyword"
 msgstr "Keresés az AUR-ban név vagy kulcsszó alapján"
+
+#| msgid "Search..."
+msgid "Search By"
+msgstr ""
 
 msgid "Installed Only"
 msgstr "Csak telepített"
@@ -175,11 +214,25 @@ msgstr "Csak telepített"
 msgid "Show only installed packages"
 msgstr "Csak a telepített csomagok megjelenítése"
 
+msgid "Previous page"
+msgstr ""
+
+msgid "Page 1 of 1"
+msgstr ""
+
+#| msgid "Default page"
+msgid "Next page"
+msgstr ""
+
 msgid "Additional Options"
 msgstr "További lehetőségek"
 
 msgid "Install Selected"
 msgstr "Kijelöltek telepítése"
+
+#| msgid "Selected"
+msgid "Select"
+msgstr ""
 
 msgid "Name"
 msgstr "Név"
@@ -190,12 +243,11 @@ msgstr "Szavazatok"
 msgid "Popularity"
 msgstr "Népszerűség"
 
-msgid "Search the AUR"
-msgstr "Keresés az AUR-ban"
-
-msgid "The AUR has no browsable index. Type a package name to begin."
+msgid "Loading the AUR index"
 msgstr ""
-"Az AUR-nak nincs böngészhető indexe. A kezdéshez írja be a csomag nevét."
+
+msgid "Powered by Atoll."
+msgstr ""
 
 msgid "Run checks"
 msgstr "Ellenőrzések futtatása"
@@ -208,6 +260,19 @@ msgstr "Részletek ablak elrejtése"
 
 msgid "Hide the detail pane on the right"
 msgstr "A jobb oldali részletek panel elrejtése"
+
+msgid "Information"
+msgstr "Információ"
+
+msgid "Preview Pkgbuild"
+msgstr "PKGBUILD előnézete"
+
+msgid "Search the AUR"
+msgstr "Keresés az AUR-ban"
+
+msgid "The AUR has no browsable index. Type a package name to begin."
+msgstr ""
+"Az AUR-nak nincs böngészhető indexe. A kezdéshez írja be a csomag nevét."
 
 msgid "Install a local Flatpak"
 msgstr "Helyi Flatpak telepítése"
@@ -236,6 +301,9 @@ msgstr "felhasználó"
 
 msgid "Install"
 msgstr "Telepítés"
+
+msgid "No matching applications found"
+msgstr ""
 
 msgid "Loading Flatpak Data..."
 msgstr "Flatpak adatok betöltése..."
@@ -330,6 +398,10 @@ msgstr "Névjegy"
 msgid "Shelly"
 msgstr "Shelly"
 
+#| msgid "Optional Depends"
+msgid "Install Optional Deps"
+msgstr ""
+
 msgid "Reinstall"
 msgstr "Újratelepítés"
 
@@ -371,6 +443,9 @@ msgstr "Tároló"
 
 msgid "Install Date"
 msgstr "Telepítés dátuma"
+
+msgid "No matching packages found"
+msgstr ""
 
 msgid "Had an issue loading your packages. Check if you have a db lock."
 msgstr ""
@@ -447,11 +522,9 @@ msgid "Search everywhere"
 msgstr "Keressen mindenhol"
 
 msgid ""
-"Search standard repositories, the AUR and Flatpak at once. Type a name to "
-"begin."
+"Search the standard repositories, the AUR, and Flatpak all at once. Type a "
+"name to begin."
 msgstr ""
-"Keresés a hivatalos tárolókban, az AUR-ban és a Flatpakben egyszerre. Írjon "
-"be egy nevet a kezdéshez."
 
 msgid "General"
 msgstr "Általános"
@@ -479,6 +552,12 @@ msgstr "Tálcaikon hozzáadása az automatikus indításhoz"
 
 msgid "Use weekly schedule"
 msgstr "Heti ütemezés használata"
+
+msgid "Run Tray as cron"
+msgstr ""
+
+msgid "Tray update with ui"
+msgstr ""
 
 msgid "Tray Check Interval (Hours)"
 msgstr "Tálcaellenőrzési időköz (órákban)"
@@ -566,11 +645,8 @@ msgstr "Megerősítés kihagyása"
 msgid "Enable Shelly Search"
 msgstr "Shelly keresés engedélyezése"
 
-msgid "Enable Package Downgrade"
-msgstr "Korábbi verzióra váltás engedélyezése"
-
-msgid "Enable Webview Visualization (experimental)"
-msgstr "Webview vizualizáció engedélyezése (kísérleti)"
+msgid "Enable Atoll Powered AUR"
+msgstr ""
 
 msgid "AppImage Install Path"
 msgstr "AppImage telepítési útvonala"
@@ -596,6 +672,9 @@ msgstr "Támogató"
 msgid "Toggle output"
 msgstr "Kimenet váltása"
 
+msgid "Done"
+msgstr "Kész"
+
 msgid "Available Updates"
 msgstr "Elérhető frissítések"
 
@@ -620,8 +699,8 @@ msgstr "Frissítések keresése…"
 msgid "Your system is up to date"
 msgstr "A rendszered naprakész"
 
-msgid "Could not check for updates"
-msgstr "Nem sikerült ellenőrizni a frissítéseket"
+msgid "Could not check for updates."
+msgstr ""
 
 msgid "Utilities"
 msgstr "Segédprogramok"
@@ -752,20 +831,30 @@ msgstr "Következő"
 msgid "Start Shelly"
 msgstr "Shelly indítása"
 
-msgid "Filesystem"
-msgstr "Fájlrendszer"
+#| msgid "System bus"
+msgid "System files"
+msgstr ""
+
+msgid "Other folders"
+msgstr ""
+
+msgid "Running services"
+msgstr ""
+
+msgid "Other apps' data"
+msgstr ""
+
+msgid "Home folder"
+msgstr ""
+
+msgid "User folders"
+msgstr ""
+
+msgid "Persistent files"
+msgstr ""
 
 msgid "Devices"
 msgstr "Eszközök"
-
-msgid "Sockets"
-msgstr "Csatlakozások"
-
-msgid "Shared"
-msgstr "Megosztva"
-
-msgid "Environment"
-msgstr "Környezet"
 
 msgid "Session bus"
 msgstr "Munkamenet busz"
@@ -773,8 +862,39 @@ msgstr "Munkamenet busz"
 msgid "System bus"
 msgstr "Rendszerbusz"
 
+#| msgid "Network"
+msgid "Network access"
+msgstr ""
+
+msgid "Display server"
+msgstr ""
+
+msgid "Sandbox features"
+msgstr ""
+
+msgid "Environment"
+msgstr "Környezet"
+
+msgid "Sound"
+msgstr ""
+
+msgid "Printing"
+msgstr ""
+
+msgid "Inter-process communication"
+msgstr ""
+
 msgid "Other"
 msgstr "Egyéb"
+
+msgid "No network access"
+msgstr ""
+
+msgid "No device access"
+msgstr ""
+
+msgid "No access to system files"
+msgstr ""
 
 msgid "Review PKGBUILD changes for"
 msgstr "PKGBUILD-módosítások áttekintése a"
@@ -797,11 +917,11 @@ msgstr "A biztonsági ellenőrzés befejeződött – nem található probléma.
 msgid "used in"
 msgstr "használt"
 
-msgid "Warning"
-msgstr "Figyelmeztetés"
-
 msgid "Install Anyway"
 msgstr "Telepítés mindenképpen"
+
+msgid "Unknown"
+msgstr "Ismeretlen"
 
 msgid "package(s)"
 msgstr "csomag(ok)"
@@ -809,11 +929,35 @@ msgstr "csomag(ok)"
 msgid "to"
 msgstr "hogy"
 
+msgid "removed size"
+msgstr ""
+
 msgid "download"
 msgstr "letöltés"
 
 msgid "net"
 msgstr "net"
+
+msgid "Scanning PKGBUILD…"
+msgstr ""
+
+#| msgid "No description available."
+msgid "Security scan unavailable."
+msgstr ""
+
+msgid "Could not load the PKGBUILD preview."
+msgstr ""
+
+msgid ""
+"PKGBUILD changed. Close and reopen the preview to scan the current version."
+msgstr ""
+
+#| msgid "Flatpak files"
+msgid "No related files."
+msgstr ""
+
+msgid "Previous"
+msgstr ""
 
 msgid "Dismiss"
 msgstr "Elvetés"
@@ -839,20 +983,13 @@ msgstr "Frissítés érhető el"
 msgid "Version ?"
 msgstr "Verzió ?"
 
-msgid "Invalid format. Use owner/repo (e.g. seafoam-labs/shelly-alpm)"
+msgid "Enter a download URL beginning with http:// or https://."
 msgstr ""
-"Érvénytelen formátum. Használja a tulajdonos/tároló formátumot (pl. seafoam-"
-"labs/shelly-alpm)"
-
-msgid "Invalid URL. Must start with http:// or https://"
-msgstr "Érvénytelen URL. http:// vagy https:// karakterekkel kell kezdődnie"
 
 msgid ""
-"Invalid Forgejo URL. Use http(s)://host/owner/repo or http(s)://host/owner/"
-"repo/releases"
+"Enter a Forgejo repository URL as http(s)://host/owner/repo or http(s)://"
+"host/owner/repo/releases."
 msgstr ""
-"Érvénytelen Forgejo URL. Használja a http(s)://host/owner/repo or http(s)://"
-"host/owner/repo/releases címet"
 
 msgid "Choose an AppImage file"
 msgstr "Válasszon ki egy AppImage fájlt"
@@ -860,8 +997,8 @@ msgstr "Válasszon ki egy AppImage fájlt"
 msgid "AppImage files"
 msgstr "AppImage fájlok"
 
-msgid "Only .AppImage files can be installed"
-msgstr "Csak .AppImage fájlok telepíthetők"
+msgid "Only.AppImage files can be installed"
+msgstr ""
 
 msgid "Installing AppImage"
 msgstr "AppImage telepítése"
@@ -877,6 +1014,14 @@ msgstr "AppImage-k szinkronizálása"
 
 msgid "Syncing AppImage"
 msgstr "AppImage szinkronizálása"
+
+msgid ""
+"Use unique KEY=value lines. Keys must start with a letter or underscore and "
+"contain only letters, digits, or underscores."
+msgstr ""
+
+msgid "Saving AppImage environment"
+msgstr ""
 
 msgid "Saving update configuration"
 msgstr "Frissítési konfiguráció mentése"
@@ -896,8 +1041,72 @@ msgstr "AppImage eltávolítása"
 msgid "Operation completed successfully"
 msgstr "A művelet sikeresen befejeződött"
 
-msgid "Operation failed"
-msgstr "A művelet sikertelen"
+msgid "Could not complete the requested operation."
+msgstr ""
+
+msgid "Discard environment changes?"
+msgstr ""
+
+msgid "Your environment changes have not been saved."
+msgstr ""
+
+msgid "Discard"
+msgstr ""
+
+msgid "No packages found"
+msgstr "Nem találhatók csomagok"
+
+msgid "Try a shorter or more general keyword."
+msgstr "Próbálkozzon rövidebb vagy általánosabb kulcsszóval."
+
+msgid "Could not reach Atoll"
+msgstr ""
+
+msgid "Check your connection and try again."
+msgstr "Ellenőrizze a kapcsolatot, és próbálja meg újra."
+
+msgid "Flagged out of date"
+msgstr "Elavultként megjelölve"
+
+msgid "Installed"
+msgstr "Telepítve"
+
+msgid "Remove Selected"
+msgstr "Kijelöltek eltávolítása"
+
+msgid "Select one or more packages"
+msgstr "Válasszon ki egy vagy több csomagot"
+
+msgid "Package(s)"
+msgstr "Csomag(ok)"
+
+msgid "Page"
+msgstr ""
+
+msgid "of"
+msgstr "közülük"
+
+msgid "Remove Packages"
+msgstr "Csomagok eltávolítása"
+
+msgid "Remove the selected AUR packages?"
+msgstr "Eltávolítja a kiválasztott AUR-csomagokat?"
+
+msgid "Build from AUR"
+msgstr "Építés AUR-ból"
+
+msgid "Build and install the selected packages? This may take a while."
+msgstr ""
+"Összeállítja és telepíti a kiválasztott csomagokat? Ez eltarthat egy ideig."
+
+msgid "Build"
+msgstr "Építés"
+
+msgid "Installing AUR packages"
+msgstr "AUR csomagok telepítése"
+
+msgid "Removing AUR packages"
+msgstr "AUR csomagok eltávolítása"
 
 msgid "Maintainer"
 msgstr "Karbantartó"
@@ -930,54 +1139,8 @@ msgid "The AUR has no browsable index — type a package name to begin."
 msgstr ""
 "Az AUR-nak nincs böngészhető indexe — írjon be egy csomagnevet a kezdéshez."
 
-msgid "No packages found"
-msgstr "Nem találhatók csomagok"
-
-msgid "Try a shorter or more general keyword."
-msgstr "Próbálkozzon rövidebb vagy általánosabb kulcsszóval."
-
-msgid "Could not reach the AUR"
-msgstr "Nem sikerült elérni az AUR-t"
-
-msgid "Check your connection and try again."
-msgstr "Ellenőrizze a kapcsolatot, és próbálja meg újra."
-
-msgid "Flagged out of date"
-msgstr "Elavultként megjelölve"
-
-msgid "Installed"
-msgstr "Telepítve"
-
-msgid "Remove Selected"
-msgstr "Kijelöltek eltávolítása"
-
-msgid "Select one or more packages"
-msgstr "Válasszon ki egy vagy több csomagot"
-
-msgid "Package(s)"
-msgstr "Csomag(ok)"
-
-msgid "Remove Packages"
-msgstr "Csomagok eltávolítása"
-
-msgid "Remove the selected AUR packages?"
-msgstr "Eltávolítja a kiválasztott AUR-csomagokat?"
-
-msgid "Build from AUR"
-msgstr "Építés AUR-ból"
-
-msgid "Build and install the selected packages? This may take a while."
+msgid "Could not search the configured AUR service."
 msgstr ""
-"Összeállítja és telepíti a kiválasztott csomagokat? Ez eltarthat egy ideig."
-
-msgid "Build"
-msgstr "Építés"
-
-msgid "Installing AUR packages"
-msgstr "AUR csomagok telepítése"
-
-msgid "Removing AUR packages"
-msgstr "AUR csomagok eltávolítása"
 
 msgid "Choose a Flatpak file"
 msgstr "Válasszon ki egy Flatpak fájlt"
@@ -985,15 +1148,14 @@ msgstr "Válasszon ki egy Flatpak fájlt"
 msgid "Flatpak files"
 msgstr "Flatpak fájlok"
 
-msgid "Unsupported file type. Choose a .flatpak or .flatpakref file."
+msgid "Unsupported file type. Choose a.flatpak or.flatpakref file."
 msgstr ""
-"Nem támogatott fájltípus. Válasszon ki egy .flatpak vagy .flatpakref fájlt."
 
 msgid "Installing local flatpak"
 msgstr "Flatpak helyi telepítése"
 
-msgid "Installation failed."
-msgstr "A telepítés sikertelen volt."
+msgid "Could not install the selected packages."
+msgstr ""
 
 msgid "Installation complete."
 msgstr "A telepítés sikeres."
@@ -1010,6 +1172,15 @@ msgstr "Mutasson kevesebbet"
 msgid "Installing flatpak"
 msgstr "Flatpak telepítése"
 
+msgid "Remove this Flatpak?"
+msgstr "Eltávolítja ezt a Flatpak csomagot?"
+
+msgid "Remove Flatpak"
+msgstr "Flatpak eltávolítása"
+
+msgid "Removing Flatpak"
+msgstr "Flatpak eltávolítása"
+
 msgid "Permissions"
 msgstr "Jogosultságok"
 
@@ -1021,9 +1192,6 @@ msgstr "Flatpak-bővítmény telepítése"
 
 msgid "Unknown developer"
 msgstr "Ismeretlen fejlesztő"
-
-msgid "Unknown"
-msgstr "Ismeretlen"
 
 msgid "Version: Unknown"
 msgstr "Verzió: Ismeretlen"
@@ -1052,14 +1220,14 @@ msgstr "Letöltés"
 msgid "No description available."
 msgstr "Nincs elérhető leírás."
 
-msgid "Unable to load screenshot"
-msgstr "A képernyőkép betöltése nem sikerült"
+msgid "Could not load this application screenshot."
+msgstr ""
 
-msgid "Unable to download screenshot"
-msgstr "A képernyőkép letöltése nem sikerült"
+msgid "Could not download this application screenshot."
+msgstr ""
 
-msgid "Unable to display screenshot"
-msgstr "Képernyőkép nem jeleníthető meg"
+msgid "Could not display the downloaded application screenshot."
+msgstr ""
 
 msgid "Open link in browser"
 msgstr "Hivatkozást megnyitása böngészőben"
@@ -1088,14 +1256,16 @@ msgstr "Kapcsolat"
 msgid "Translate"
 msgstr "Fordítás"
 
-msgid "Unable to allocate memory while loading Flatpak data."
-msgstr "A Flatpak adatok betöltése közben nem sikerült memóriát lefoglalni."
+msgid ""
+"Could not load Flatpak applications because Shelly ran out of memory. Close "
+"other applications and try again."
+msgstr ""
 
-msgid "Unable to start the Flatpak data loader."
-msgstr "Nem sikerült elindítani a Flatpak adatbetöltőt."
+msgid "Could not start loading Flatpak applications."
+msgstr ""
 
-msgid "Unable to load Flatpak applications."
-msgstr "Nem sikerült betölteni a Flatpak alkalmazásokat."
+msgid "Could not load Flatpak applications from the selected remote."
+msgstr ""
 
 msgid "No Flatpak applications are available."
 msgstr "Nem érhetők el Flatpak alkalmazások."
@@ -1150,15 +1320,6 @@ msgstr "Távoli tároló eltávolítása"
 
 msgid "Adding Remote"
 msgstr "Távoli tároló hozzáadása"
-
-msgid "Remove this Flatpak?"
-msgstr "Eltávolítja ezt a Flatpak csomagot?"
-
-msgid "Remove Flatpak"
-msgstr "Flatpak eltávolítása"
-
-msgid "Removing Flatpak"
-msgstr "Flatpak eltávolítása"
 
 msgid "App ID"
 msgstr "App ID"
@@ -1223,6 +1384,13 @@ msgstr "Csomag kifejezetten telepítetté tétele"
 msgid "Making Package Dependency"
 msgstr "Csomagfüggőség készítése"
 
+msgid "Select Optional Dependencies to Install"
+msgstr ""
+
+#| msgid "Installing packages"
+msgid "Installing optional dependencies"
+msgstr ""
+
 msgid "Package is already installed"
 msgstr "A csomag már telepítve van"
 
@@ -1259,8 +1427,15 @@ msgstr "Csomagok eltávolítása"
 msgid "Installing packages"
 msgstr "Csomagok telepítése"
 
-msgid "Search failed"
-msgstr "A keresés sikertelen"
+msgid ""
+"Search standard repositories, the AUR and Flatpak at once. Type a name to "
+"begin."
+msgstr ""
+"Keresés a hivatalos tárolókban, az AUR-ban és a Flatpakben egyszerre. Írjon "
+"be egy nevet a kezdéshez."
+
+msgid "Could not search the selected sources."
+msgstr ""
 
 msgid "Installation in progress"
 msgstr "Telepítés folyamatban"
@@ -1277,8 +1452,10 @@ msgstr "Csomagok telepítése"
 msgid "Install the selected packages?"
 msgstr "Telepíti a kiválasztott csomagokat?"
 
-msgid "Failed to save settings"
-msgstr "Nem sikerült menteni a beállításokat"
+msgid ""
+"Could not save settings to the configured file. Your latest changes were not "
+"saved."
+msgstr ""
 
 msgid "Settings saved"
 msgstr "A beállítások mentve"
@@ -1289,17 +1466,17 @@ msgstr "Flatpak támogatás telepítése"
 msgid "Installing AppImage support"
 msgstr "AppImage támogatás telepítése"
 
-msgid "Failed to start Flatpak support installation"
-msgstr "Nem sikerült elindítani a Flatpak támogatás telepítését"
+msgid "Could not start installing Flatpak support."
+msgstr ""
 
-msgid "Failed to start AppImage support installation"
-msgstr "Nem sikerült elindítani az AppImage támogatás telepítését"
+msgid "Could not start installing AppImage support."
+msgstr ""
 
-msgid "Flatpak support installation failed"
-msgstr "A Flatpak támogatás telepítése sikertelen"
+msgid "Could not install Flatpak support."
+msgstr ""
 
-msgid "AppImage support installation failed"
-msgstr "Az AppImage támogatás telepítése sikertelen"
+msgid "Could not install AppImage support."
+msgstr ""
 
 msgid "Flatpak support enabled"
 msgstr "Flatpak támogatás engedélyezve"
@@ -1313,8 +1490,8 @@ msgstr "Nem találhatók változásnapló bejegyzések"
 msgid "No details for this release"
 msgstr "Nincsenek részletek ehhez a kiadáshoz"
 
-msgid "Failed to load changelog"
-msgstr "Nem sikerült betölteni a változásnaplót"
+msgid "Could not load the release notes."
+msgstr ""
 
 msgid "Changelog"
 msgstr "Változásnapló"
@@ -1334,38 +1511,25 @@ msgstr "AppImage telepítési könyvtár kiválasztása"
 msgid "Tray enabled"
 msgstr "Tálca engedélyezve"
 
-msgid "Tray disabled, but autostart service remains"
+msgid ""
+"The tray is disabled, but its autostart service could not be removed. It may "
+"start again at the next login."
 msgstr ""
-"A tálcaikon le van tiltva, de az automatikus indítási szolgáltatás megmarad"
 
 msgid "Tray disabled"
 msgstr "Tálca letiltva"
 
-msgid "Failed to add systemd startup service"
-msgstr "Nem sikerült hozzáadni a rendszerindítási szolgáltatást"
+msgid "Could not enable the tray autostart service."
+msgstr ""
 
 msgid "Systemd startup service added."
 msgstr "Indítási szolgáltatás hozzáadva a Systemd-hez."
 
-msgid "Failed to remove systemd startup service"
-msgstr "Nem sikerült eltávolítani a rendszerindítási szolgáltatást"
+msgid "Could not disable the tray autostart service."
+msgstr ""
 
 msgid "Systemd startup service removed."
 msgstr "Indítási szolgáltatás eltávolítva a Systemd-ből."
-
-msgid "Enable AUR?"
-msgstr "Engedélyezi az AUR-t?"
-
-msgid ""
-"The Arch User Repository (AUR) is a community-driven repository. Packages "
-"are user-produced and may contain risks. Do you want to enable it?"
-msgstr ""
-"Az Arch User Repository (AUR) egy közösség által irányított adattár. A "
-"csomagokat a felhasználók állítják elő, és kockázatokat tartalmazhatnak. "
-"Szeretné engedélyezni?"
-
-msgid "Enable"
-msgstr "Engedélyezés"
 
 msgid "AUR enabled"
 msgstr "AUR engedélyezve"
@@ -1424,11 +1588,38 @@ msgstr "Shelly-keresés"
 msgid "Update"
 msgstr "Frissítés"
 
-msgid "Failed to start operation."
-msgstr "Nem sikerült elindítani a műveletet."
-
 msgid "Pending"
 msgstr "Függőben"
+
+msgid "Working"
+msgstr "Dolgozom"
+
+msgid "Upgraded"
+msgstr ""
+
+msgid "Downgraded"
+msgstr ""
+
+msgid "Reinstalled"
+msgstr ""
+
+msgid "Removed"
+msgstr ""
+
+msgid "Failed"
+msgstr "Sikertelen"
+
+msgid "Not processed"
+msgstr ""
+
+msgid "Interrupted"
+msgstr ""
+
+msgid "Cancelled"
+msgstr "Törölt<"
+
+msgid "Could not start the requested operation."
+msgstr ""
 
 msgid "Synchronizing databases"
 msgstr "Adatbázisok szinkronizálása"
@@ -1472,14 +1663,14 @@ msgstr "Konfliktusok ellenőrzése"
 msgid "Checking disk space"
 msgstr "Lemezterület ellenőrzése"
 
-msgid "Working"
-msgstr "Dolgozom"
+msgid "Transaction Completed"
+msgstr ""
 
-msgid "Done"
-msgstr "Kész"
+msgid "Operation failed"
+msgstr "A művelet sikertelen"
 
-msgid "Failed"
-msgstr "Sikertelen"
+msgid "Operation cancelled"
+msgstr ""
 
 msgid "Finished"
 msgstr "Befejezett"
@@ -1487,8 +1678,24 @@ msgstr "Befejezett"
 msgid "exit"
 msgstr "kilépés"
 
-msgid "Cancelled"
-msgstr "Törölt<"
+msgid "Operation cancelled."
+msgstr ""
+
+msgid "All operations finished successfully."
+msgstr ""
+
+msgid ""
+"Permission to manage packages was not granted. Try again and approve the "
+"authorization request to continue."
+msgstr ""
+
+msgid ""
+"{package_one}-{version_one} conflicts with {package_two}-{version_two}. "
+"Remove {package_to_remove}?"
+msgstr ""
+
+msgid "Would you like to remove extra cache entries?"
+msgstr ""
 
 msgid "System package update"
 msgstr "Rendszercsomag frissítése"
@@ -1496,16 +1703,8 @@ msgstr "Rendszercsomag frissítése"
 msgid "AUR package update"
 msgstr "AUR csomag frissítése"
 
-msgid "Could not run shelly check-updates. Check the CLI output and try again."
-msgstr ""
-"Nem sikerült futtatni a shelly check-updates parancsot. Ellenőrizze a CLI "
-"kimenetet, és próbálja újra."
-
 msgid "Update this package"
 msgstr "Frissítse ezt a csomagot"
-
-msgid "of"
-msgstr "közülük"
 
 msgid "updates included"
 msgstr "frissítéseket tartalmaz"
@@ -1522,9 +1721,6 @@ msgstr "Csomagadatbázisok frissítése"
 msgid "Database lock removed successfully"
 msgstr "Az adatbázis zárolása sikeresen eltávolítva"
 
-msgid "Failed to remove database lock"
-msgstr "Nem sikerült eltávolítani az adatbázis zárolását"
-
 msgid "Fixing permissions"
 msgstr "Engedélyek javítása"
 
@@ -1536,14 +1732,6 @@ msgstr "Csomaggyorsítótár tisztítása"
 
 msgid "Welcome"
 msgstr "Üdvözöljük"
-
-msgid ""
-"The Arch User Repository is community-maintained. Packages are not "
-"officially vetted — only enable if you trust what you install."
-msgstr ""
-"Az Arch User Repository közösségileg karbantartott. A csomagok nincsenek "
-"hivatalosan ellenőrizve - csak akkor engedélyezze, ha megbízik abban, amit "
-"telepít."
 
 msgid "Enable Recommended?"
 msgstr "Engedélyezi az ajánlottakat?"
@@ -1558,8 +1746,17 @@ msgstr ""
 msgid "Installing Flatpak and AppImage support"
 msgstr "Flatpak és AppImage támogatás telepítése"
 
+msgid "Main menu"
+msgstr ""
+
 msgid "Settings"
 msgstr "Beállítások"
+
+msgid "Expand sidebar"
+msgstr ""
+
+msgid "Collapse sidebar"
+msgstr ""
 
 msgid "Package"
 msgstr "Csomag"

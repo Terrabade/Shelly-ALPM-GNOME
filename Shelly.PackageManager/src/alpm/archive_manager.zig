@@ -1,6 +1,8 @@
 const std = @import("std");
 const HttpClient = @import("ShellyHttp");
-const bindings = @import("bindings.zig");
+const bindings = struct {
+    pub const libalpm = @import("types.zig");
+};
 const cache_manager = @import("cache_manager.zig");
 const alpm_manager = @import("manager.zig");
 const shared_downloader = @import("../shared/downloader.zig");
@@ -102,7 +104,7 @@ pub const PreparedPackage = struct {
 };
 
 pub const Options = struct {
-    cache_directory_fallback: []const u8 = "/var/cache/pacman/pkg",
+    cache_directory_fallback: []const u8 = @import("paths").cache,
     temporary_directory: []const u8 = "/tmp",
     arch_linux_base_url: []const u8 = arch_linux_archive,
     cachyos_base_url: []const u8 = cachyos_archive,
@@ -434,7 +436,7 @@ pub const ArchiveManager = struct {
         defer if (has_operation) {
             if (!successful) operation_storage.reportError(
                 if (operation_storage.isCancelled()) error.Cancelled else error.ArchiveListingDownloadFailed,
-                if (operation_storage.isCancelled()) "Archive listing download cancelled" else "Archive listing download failed",
+                if (operation_storage.isCancelled()) "Operation cancelled." else "Could not retrieve the archived-version list for the requested package.",
                 "download",
                 null,
                 false,
@@ -857,7 +859,7 @@ test "prepare_candidate retains local cache files" {
     _ = try std.Io.Dir.cwd().statFile(testing.io, candidates[0].location, .{});
 
     var transaction_manager: alpm_manager.Manager = undefined;
-    transaction_manager.handle = null;
+    transaction_manager.engine = null;
     try testing.expectError(
         error.NoHandle,
         manager.install_candidate(&transaction_manager, &candidates[0], .{}),
@@ -868,7 +870,7 @@ test "archive installation API delegates through the ALPM manager" {
     var archive = ArchiveManager.init(testing.allocator, testing.io, .{});
     defer archive.deinit();
     var manager: alpm_manager.Manager = undefined;
-    manager.handle = null;
+    manager.engine = null;
     manager.allocator = testing.allocator;
     try testing.expectError(error.NoHandle, archive.find_candidates(&manager, "demo", null));
     _ = ArchiveManager.download_candidate;

@@ -5,6 +5,8 @@ const glib = bindings.glib;
 const gobject = bindings.gobject;
 const support = @import("support.zig");
 const c_string = @import("../helpers/c_string.zig");
+const a11y = @import("../helpers/a11y.zig");
+const translations = @import("../helpers/translations.zig");
 const ShellyWindow = @import("../shelly_window.zig").ShellyWindow;
 const ShellyCli = @import("../services/shelly_cli.zig").ShellyCli;
 const IconResolver = @import("../services/icon_resolver.zig").IconResolver;
@@ -119,7 +121,7 @@ pub const RecommendPage = extern struct {
         const alloc = arena_ptr.allocator();
 
         const p = page.priv();
-        if (!p.resolver.loaded) {
+        if (runtime.shellyIconsEnabled() and !p.resolver.loaded) {
             p.resolver.load(runtime.io, runtime.environ_map) catch {};
         }
 
@@ -269,16 +271,18 @@ pub const RecommendPage = extern struct {
         gtk.Widget.setMarginEnd(content.as(gtk.Widget), 10);
         gtk.Widget.setHexpand(content.as(gtk.Widget), 1);
 
-        const image = gtk.Image.new();
-        if (p.resolver.resolve(pkg.Name)) |path| {
-            gtk.Image.setFromFile(image, path);
-        } else {
-            gtk.Image.setFromIconName(image, "package-x-generic");
+        if (runtime.shellyIconsEnabled()) {
+            const image = gtk.Image.new();
+            if (p.resolver.resolve(pkg.Name)) |path| {
+                gtk.Image.setFromFile(image, path);
+            } else {
+                gtk.Image.setFromIconName(image, "package-x-generic");
+            }
+            gtk.Image.setPixelSize(image, 48);
+            gtk.Widget.setValign(image.as(gtk.Widget), .center);
+            gtk.Widget.addCssClass(image.as(gtk.Widget), "icon-dropshadow");
+            gtk.Box.append(content, image.as(gtk.Widget));
         }
-        gtk.Image.setPixelSize(image, 48);
-        gtk.Widget.setValign(image.as(gtk.Widget), .center);
-        gtk.Widget.addCssClass(image.as(gtk.Widget), "icon-dropshadow");
-        gtk.Box.append(content, image.as(gtk.Widget));
 
         const text_box = gtk.Box.new(.vertical, 0);
         gtk.Widget.setHalign(text_box.as(gtk.Widget), .start);
@@ -305,6 +309,7 @@ pub const RecommendPage = extern struct {
         gtk.Widget.setVisible(installed_check.as(gtk.Widget), @intFromBool(pkg.Installed));
         gtk.Widget.setValign(installed_check.as(gtk.Widget), .center);
         gtk.Widget.setTooltipText(installed_check.as(gtk.Widget), "Package is already installed");
+        a11y.setName(installed_check.as(gtk.Widget), translations._("Package is already installed"));
         gtk.Box.append(title_box, installed_check.as(gtk.Widget));
 
         gtk.Box.append(text_box, title_box.as(gtk.Widget));

@@ -3,6 +3,42 @@
 This document tracks manual testing procedures for Shelly components that require human verification beyond automated
 tests.
 
+## Tray refresh after CLI updates (#1591)
+
+- [ ] With pending updates visible in the tray, run `shelly upgrade` in a terminal. After completion, verify the tray rechecks and updates its icon and package submenus without restarting it.
+- [ ] Repeat for individual `upgrade standard`, `upgrade aur`, `upgrade flatpak`, and `update` commands. Packages still awaiting updates should remain listed.
+- [ ] Run an update through `sudo` or the configured privilege elevator; verify the original user's tray refreshes.
+- [ ] Complete a CLI update while the tray is already checking. Verify it checks again after the in-progress check finishes.
+- [ ] Run a combined upgrade where one backend fails after another succeeds; verify the tray reflects the remaining updates and the command still returns failure.
+- [ ] Repeat with the tray stopped or the session bus unavailable; verify no notification errors appear and the CLI retains its normal exit status.
+
+## Terminal PKGBUILD review (#1385)
+
+- [ ] With a configuration missing `CollapsePkgbuildDiff`, verify `shelly config get CollapsePkgbuildDiff` returns `True`.
+- [ ] Review an AUR update with a long PKGBUILD: each change has three unchanged context lines on either side, nearby sections merge, and omitted sections show their line counts.
+- [ ] Run `shelly config set CollapsePkgbuildDiff false`, then repeat the review and verify the full file appears. Restore `true` and verify the collapsed view returns.
+- [ ] Review a package without a previous PKGBUILD and verify the entire new file appears.
+- [ ] Confirm security warnings and related source files remain visible, and declining approval still cancels the operation.
+- [ ] Repeat with color disabled and redirected output; omission markers and changes remain readable.
+- [ ] Verify GUI PKGBUILD reviews still receive the complete diff regardless of this setting.
+
+## AppImage checks during combined upgrades
+
+- [ ] Verify `shelly config get DisableAppImageUpdateCheck` returns `False` for a configuration without the new key.
+- [ ] Set `DisableAppImageUpdateCheck` to `true` and run `shelly upgrade all`: the preview omits AppImages, and execution performs no AppImage update check or upgrade.
+- [ ] Repeat with bare `shelly`, `shelly -U`, and `shelly upgrade standard --all`, including privilege elevation.
+- [ ] Verify `shelly upgrade appimage` and `shelly list-updates appimage` still check AppImages explicitly.
+- [ ] Restore `false` and verify combined upgrades include AppImages again; `--no-appimage` still skips them for one run.
+
+## Flatpak checks during combined upgrades
+
+- [ ] Verify `shelly config get DisableFlatpakUpdateCheck` returns `False` for a configuration without the new key.
+- [ ] Set `DisableFlatpakUpdateCheck` to `true` and run `shelly upgrade all`: the preview omits Flatpak, and execution performs no Flatpak update check or upgrade.
+- [ ] Repeat with bare `shelly`, `shelly -U`, and `shelly upgrade standard --all`, including privilege elevation.
+- [ ] Enable both `DisableFlatpakUpdateCheck` and `DisableAppImageUpdateCheck`; verify combined upgrades skip both backends.
+- [ ] Verify `shelly upgrade flatpak` and `shelly list-updates flatpak` still check Flatpak explicitly.
+- [ ] Restore `false` and verify combined upgrades include Flatpak again when the backend is installed; `--no-flatpak` still skips it for one run.
+
 ## UI Testing (Shelly-UI)
 
 ### Installation & Startup
@@ -12,6 +48,25 @@ tests.
 - [ ] Window opens at appropriate size and position
 - [ ] Application responds to window resize operations
 - [ ] Application can be minimized/maximized/closed properly
+
+### AppImage Environment Variables (#1719)
+
+- [ ] Open an installed AppImage and enter `WEBKIT_DISABLE_DMABUF_RENDERER=1` in Environment Variables, then select Save Environment.
+- [ ] Launch from the desktop menu and `shelly run appimage <name>`; confirm the variable reaches the application.
+- [ ] Restart Shelly, sync one/all AppImages, update, and replace the AppImage with a newer filename; confirm the setting survives.
+- [ ] Add/edit/remove multiple lines, including an empty value (`KEY=`); verify duplicate or invalid keys prevent saving.
+- [ ] Navigate away with unsaved changes and return; confirm the draft remains. Back prompts to discard it.
+- [ ] Verify a failed save keeps the draft and the previously saved launcher/settings.
+- [ ] Remove the variable's line and save; confirm the normal inherited/bundled environment is restored.
+- [ ] On an NVIDIA system affected by #1719, verify YARC launches successfully with the workaround.
+
+CLI equivalents (use the exact installed name):
+
+```sh
+shelly config appimage YARC --set-env WEBKIT_DISABLE_DMABUF_RENDERER=1
+shelly config appimage YARC --unset-env WEBKIT_DISABLE_DMABUF_RENDERER
+shelly config appimage YARC --clear-env
+```
 
 ### Package Search & Display
 
@@ -26,6 +81,15 @@ tests.
 
 - [ ] Installing a package shows progress correctly
 - [ ] Installation completes successfully
+
+### Error Messages
+
+- [ ] In a disposable package database, trigger a database lock failure. CLI, GTK, and TUI show the configured `db.lck` path and the matching, quoted removal command. The message says to remove the file only when no package manager is running.
+- [ ] Trigger missing dependencies and file conflicts in a disposable environment. The explanation names the affected packages or paths and provides a next step; technical details follow it.
+- [ ] Fail an AUR build step. The message includes the package name and failed stage, and build output remains available.
+- [ ] Deny a GTK authorization request. The failure explains that permission was not granted.
+- [ ] Verify GTK retains the specific failure in its final status and TUI displays the full explanation, including multiline lock instructions.
+- [ ] Verify recoverable cleanup failures appear as warnings and cancellation does not claim that an unexpected error occurred.
 
 ### Dynamic AUR Sources
 
@@ -116,6 +180,59 @@ tests.
 - [ ] Invalid input is rejected with clear feedback
 - [ ] Application doesn't crash on unexpected errors
 
+### Screen reader navigation (#2001)
+
+Structure can be checked without a reader running: `python3 scripts/check-a11y.py` reads the
+AT-SPI tree of a UI instance started in a throwaway `HOME`. It cannot run in CI, where
+`GTK_A11Y=none` switches the bridge off. What only a reader can tell you is whether the
+structure is presented usefully, so run these with Orca on top of that.
+
+Start Orca logging its own output, and reproduce first-run state the same way the script
+does — `XDG_CONFIG_HOME` wins over `HOME`, so all three must point at the sandbox or the
+real configuration is read and the wizard never appears:
+
+```sh
+rm -rf /tmp/a11yhome && mkdir -p /tmp/a11yhome
+orca --replace --debug --debug-file /tmp/orca.log &
+env HOME=/tmp/a11yhome XDG_CONFIG_HOME=/tmp/a11yhome/config XDG_DATA_HOME=/tmp/a11yhome/data \
+  setsid Shelly.Ui.Gtk/zig-out/bin/Shelly_Ui_Gtk &
+grep 'SPEECH OUTPUT:' /tmp/orca.log
+```
+
+Keys go to whatever window has focus, so use `wtype -k Tab` (a bare `wtype Tab` types the
+literal word). Click the window first: one launched from a terminal keeps the keyboard in the
+terminal, and then nothing at all is spoken and every key lands in your shell. This takes over
+the session for the duration.
+
+- [ ] **First-run wizard.** Each page change puts focus on a control of the new page and speaks
+      it, for example `AUR Arch User Repository community packages, check box not checked` after
+      `Next`. Silence here is the original bug report. Entering the window speaks the lockout
+      itself: `Shelly`, `Welcome to Shelly v3`, `dialog`, then its description and the `Next`
+      button. The page's own group name (`Select Your Sources`) is in the tree for browse mode but
+      is not spoken on entry with Orca's defaults, so do not expect to hear it.
+- [ ] **Modal lockout.** A blocking screen is announced as a dialog, and closing it puts focus
+      on the navigation button for the page in view rather than on a widget that has left the tree.
+      Check it in both nav modes: only the rail or the top bar is visible at a time, and focus
+      cannot land in the hidden one.
+- [ ] **Sidebar.** Every entry names its page (`Package`, `AUR`, `Update`), including while the
+      rail is collapsed, and the chevron says `Expand sidebar` or `Collapse sidebar` to match
+      where it will take you. Repeat with navigation set to the top bar, where the same seven
+      entries carry the same names and the chevron is absent.
+- [ ] **Settings.** Tab reaches each switch with its row's text, and its state with the
+      `INS`/`DEL` prefix (`INS S switch on`). Nine switches are on the General page, two under
+      Look and Feel, four under Advanced, and one more in the wizard.
+- [ ] **Selection cells.** Tab into the package table and confirm the check box for a row says
+      that row's package name, not `check box` — cells are reused, so a stale name is a regression.
+- [ ] **Column headers.** Reaching the selection column's header speaks `Select`, not silence.
+- [ ] **Searching.** Type a filter that matches nothing: `No matching packages found` is spoken
+      while focus stays in the entry. The flatpak list behaves the same way.
+- [ ] **A transaction.** Row progress and status changes arrive as speech even though nothing
+      takes focus, and a bar's value reads as a percentage rather than a raw number.
+- [ ] **Decorative icons** add nothing to the tree, while flagged rows (`Flagged out of date`,
+      `Installed`, `Verified`) name the meaning the colour carries.
+- [ ] Nothing repeats: entering a page should not announce the same text twice in a row.
+- [ ] Keyboard traversal is undamaged; browse mode follows focus.
+
 ## CLI Testing (Shelly-CLI)
 
 ### Basic Commands
@@ -137,6 +254,31 @@ tests.
 - [ ] `shelly remove <package>` removes successfully
 - [ ] `shelly update` updates all packages
 - [ ] `shelly info <package>` shows package details
+
+### Removal Confirmation (#1845)
+
+Use disposable packages in a VM/container with an unused dependency and an
+unused optional dependency; keep another optional dependency required by a
+separate installed package.
+
+- [ ] `shelly -Rso <package>` lists the complete removal set, versions, and
+  total removed size before `Proceed with package removal? (Y/n)`.
+- [ ] The unused dependencies appear; the dependency still required elsewhere
+  stays installed and does not appear in the removal plan.
+- [ ] `n`, Ctrl-D/EOF, and Ctrl-C cancel without removing packages or associated
+  configuration. A subsequent transaction can acquire the database lock.
+- [ ] Enter and `y` remove the displayed packages.
+- [ ] `shelly remove standard --opt-deps <package>` behaves identically.
+- [ ] `-n`/`--no-confirm` displays the plan and removes packages without prompting.
+- [ ] AUR removal confirms before removal and cache cleanup; declining preserves
+  both. GTK removal shows the plan and honors accept/cancel.
+- [ ] `purify` and automatic build-dependency cleanup retain their existing
+  approval flow without a second removal prompt.
+
+Automated coverage: `(cd Shelly.PackageManager && zig build alpm-removal-test)`
+and `(cd Shelly.Cli.Zig && zig build test)`. Run the focused removal target as
+root in the disposable environment to exercise DB-only commits; those cases
+are skipped when unprivileged.
 
 ### Repository Operations
 
@@ -166,12 +308,22 @@ tests.
 ### Sandboxed AUR Builds (Landlock)
 Requires a kernel with Landlock enabled (check `cat /sys/kernel/security/lsm`).
 - [ ] `shelly build --makesrcinfo --reviewed PKGBUILD > .SRCINFO` matches
-  `makepkg --printsrcinfo`, including split-package and architecture-specific
-  fields
+  `makepkg --printsrcinfo` for PKGBUILDs without `pkgver()`, including
+  split-package and architecture-specific fields
 - [ ] `--makesrcinfo` writes progress/review output to stderr and only SRCINFO
   to stdout
-- [ ] `--makesrcinfo` does not run `pkgver()`, `verify()`, `prepare()`,
-  `build()`, `check()`, or `package()`, and does not create package artifacts
+- [ ] With `pkgver()`, `--makesrcinfo` acquires and validates sources, runs
+  `verify()` (unless `--noverify`), `prepare()`, and `pkgver()`, updates the
+  selected PKGBUILD, and emits the refreshed version and split metadata
+- [ ] Changed versions reset `pkgrel` to `1`; unchanged versions preserve it;
+  invalid versions and unwritable PKGBUILDs fail without emitting SRCINFO
+- [ ] Without `pkgver()`, `--makesrcinfo` does not acquire sources or run
+  lifecycle functions
+- [ ] `--makesrcinfo` never runs `build()`, `check()`, or package functions,
+  creates no package artifacts, and preserves existing `src/` and `pkg/` trees
+- [ ] `--makesrcinfo` honors configured source/build destinations, cleans up
+  temporary work directories on success and failure, and reports missing
+  preparation tools or failed source verification on stderr
 - [ ] A split PKGBUILD that conditionally appends an enabled member to
   `pkgname` builds that member when no `--package` selection is supplied
 - [ ] `shelly build --package <dynamic-member> PKGBUILD` builds only that
@@ -190,6 +342,35 @@ Requires a kernel with Landlock enabled (check `cat /sys/kernel/security/lsm`).
 - [ ] A build that needs extra user paths succeeds after adding them to
   `[sandbox] extra_read` / `extra_write`
 - [ ] A failing sandboxed step leaves a `[sandbox]` hint line in its build log
+
+### Build Installation (`shelly build --install`)
+
+These install into the system package database; use a disposable package or
+machine.
+
+- [ ] `shelly build -s -l PKGBUILD` (or `shelly -Asl PKGBUILD`) synchronizes
+  build dependencies, builds, and then installs the packages, mirroring
+  `makepkg -si`
+- [ ] A split PKGBUILD whose members depend on each other installs every member
+  in one transaction, both through `shelly build --install` and through
+  `shelly install standard <archive>...`
+- [ ] `shelly build --install PKGBUILD` requests administrator credentials
+  before the build, builds unprivileged as the invoking user, and installs
+  from the elevated coordinator after the build
+- [ ] `shelly build -i --install PKGBUILD` installs the exported artifacts from
+  the root coordinator; the guest never attempts a host install
+- [ ] `shelly build -si PKGBUILD` is rejected as an unrecognized argument
+  (short options do not cluster); `-s -i` means sync plus isolated and `-s -l`
+  means sync plus install
+- [ ] `--install` with `--json`, `--ui-mode`, `--review-only`, or `--makesrcinfo`
+  exits `2` with "Cannot combine --install with ..." before building
+- [ ] In `shelly build -s --install`, a runtime dependency of the built package
+  that dependency synchronization installed survives the post-build cleanup;
+  the cleanup reports "Could not remove build dependencies" instead of
+  removing it
+- [ ] A forced install failure (for example a deliberate conflict) shows the
+  build output plus the install failure, exits non-zero, and does not report
+  "Could not build the requested package"
 
 ### Keyring Management
 
@@ -271,6 +452,23 @@ package first); for bash and zsh use a clean shell, and regenerate
 - [ ] Root/sudo operations work correctly
 - [ ] Permission errors are handled gracefully
 - [ ] User is prompted for elevation when needed
+- [ ] `zig build --build-file Shelly.Cli.Zig/build.zig isolated-build-test`
+  passes under umasks `0022`, `0007`, `0027`, and `0077`, preserving reviewed
+  file modes, guest traversal permissions, readable configuration, and the
+  private host operation boundary
+- [ ] From an authenticated normal-user sudo session,
+  `Shelly.Cli.Zig/scripts/test-isolated-build.sh` passes all four coordinator
+  umasks through real nspawn, checks UID/GID 1000 and guest configuration,
+  exports artifacts to the invoking user, and removes operation roots;
+  exit `77` means skipped, not passed
+- [ ] Build the pinned endcord PKGBUILD with `--isolated` using the rebuilt
+  CLI under coordinator umasks `0022` and `0077`; validate the exported
+  archives without installing them and record the recipe revision/source hash
+- [ ] `Shelly.Cli.Zig/scripts/test-elevation-cancellation.sh` passes without
+  privileges for both SIGINT and SIGTERM
+- [ ] From a normal user session with a working elevator,
+  `Shelly.Cli.Zig/scripts/test-isolated-cancellation.sh` exits successfully and
+  leaves neither nspawn descendants nor an isolated operation directory
 
 ### File System
 
@@ -351,3 +549,45 @@ Document any known issues that are being tracked:
 1.
 2.
 3.
+
+## Native build PATH (issue #1931)
+
+- [ ] Run a minimal reviewed PKGBUILD that launches an intentionally missing
+  executable using Rust `Command::spawn`. With an inaccessible temporary
+  directory appended to the invoking shell's PATH, confirm the build sees only
+  the configured build PATH and the lookup returns `NotFound`, not
+  `PermissionDenied`. Restore the temporary directory's permissions afterward.
+- [ ] Repeat through a GUI AUR operation launched with pkexec and through CLI
+  dependency synchronization. Capture the non-root build PATH; it must not
+  contain the elevated coordinator's private directories.
+- [ ] Put a custom tool in an absolute directory named in `[build] extra_path`.
+  Confirm metadata review, `--makesrcinfo`, lifecycle functions, and native
+  packaging helpers can use it, with configured tools preceding system tools.
+- [ ] Check system/user overrides and `extra_path = []`. A configured missing,
+  non-directory, or inaccessible entry must report its path before PKGBUILD
+  execution. Confirm Perl tools and ccache/distcc precedence remain correct.
+- [ ] With Landlock enabled, confirm PATH additions alone do not grant access
+  outside the sandbox allow-list; add explicit sandbox grants and retry.
+- [ ] In an isolated build, confirm extra directories are interpreted inside
+  the guest; host-only directories must produce a clear error, without mounts.
+- [ ] Rebuild `scx-scheds-git` through the GUI on the affected system and verify
+  the intentionally missing formatter no longer causes errno 13.
+
+## Explicit build environment
+
+- [ ] Configure `[build] env = { JAVA_HOME = "/opt/test-java" }` and use a
+  reviewed PKGBUILD that reads it in metadata, prepare/build/check/package.
+  Confirm consistent values through direct builds, `--makesrcinfo`, CLI AUR
+  installs, and a GUI AUR operation. Confirm the elevated coordinator's
+  environment and command line contain no configured assignments.
+- [ ] Check `[build.env]` syntax, user replacement of the system table, omitted
+  user configuration, and `env = {}`. Empty strings must remain set and empty.
+  Values containing spaces, Unicode, `$HOME`, `~`, and `$(...)` must stay literal.
+- [ ] Override `LANG` / `LC_ALL` explicitly, then remove those assignments and
+  verify inherited locale settings and the elevated UTF-8 fallback still work.
+- [ ] Configure a reserved variable such as `PATH`, `CFLAGS`, or `BASH_ENV`, an
+  invalid name, or a non-string value. Confirm failure before PKGBUILD execution,
+  with the variable name in the diagnostic and its value absent.
+- [ ] Repeat with Landlock enabled and with `shelly build --isolated`. Confirm
+  configured values reach build steps, paths refer to the guest in isolated
+  mode, and assignments grant no filesystem access or host mounts.

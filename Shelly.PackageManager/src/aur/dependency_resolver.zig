@@ -30,8 +30,8 @@ pub const ProvidedPackage = struct {
 
 pub const Backend = struct {
     context: ?*anyopaque,
-    is_installed: *const fn (context: ?*anyopaque, dependency: [:0]const u8) bool,
-    find_repo_satisfier: *const fn (context: ?*anyopaque, dependency: [:0]const u8) ?[]const u8,
+    is_installed: *const fn (context: ?*anyopaque, dependency: [:0]const u8) anyerror!bool,
+    find_repo_satisfier: *const fn (context: ?*anyopaque, dependency: [:0]const u8) anyerror!?[]const u8,
 };
 
 pub const Resolution = struct {
@@ -54,6 +54,20 @@ pub fn resolve(
     backend: Backend,
 ) !Resolution {
     return resolveWithProvided(allocator, info, no_check, backend, &.{});
+}
+
+/// Build preparation follows global PKGBUILD dependencies, not the runtime
+/// requirements of its outputs. Future outputs cannot satisfy build inputs.
+/// Installation planning continues to use resolve/resolveWithProvided.
+pub fn resolveBuild(
+    allocator: std.mem.Allocator,
+    info: *const pkgbuild.Pkgbuild,
+    no_check: bool,
+    backend: Backend,
+) !Resolution {
+    var build_info = info.*;
+    build_info.parsed_depends = info.parsed_global_depends;
+    return resolve(allocator, &build_info, no_check, backend);
 }
 
 pub fn resolveWithProvided(
@@ -98,8 +112,8 @@ fn resolveGroup(
         if (try dependencySatisfiedByProvided(allocator, dependency, provided_packages)) continue;
         const dependency_string = try formatDependencyZ(allocator, dependency);
         defer allocator.free(dependency_string);
-        if (backend.is_installed(backend.context, dependency_string)) continue;
-        if (backend.find_repo_satisfier(backend.context, dependency_string)) |name| {
+        if (try backend.is_installed(backend.context, dependency_string)) continue;
+        if (try backend.find_repo_satisfier(backend.context, dependency_string)) |name| {
             if (findRepoDependency(repo.items, name)) |index| {
                 repo.items[index].role = strongerRole(repo.items[index].role, role);
             } else try repo.append(allocator, .{
@@ -204,8 +218,8 @@ pub fn collectBuildOnlyDependencies(
         if (is_runtime) continue;
         const dependency_string = try formatDependencyZ(allocator, dependency);
         defer allocator.free(dependency_string);
-        if (backend.is_installed(backend.context, dependency_string)) continue;
-        const name = backend.find_repo_satisfier(backend.context, dependency_string) orelse dependency.name;
+        if (try backend.is_installed(backend.context, dependency_string)) continue;
+        const name = (try backend.find_repo_satisfier(backend.context, dependency_string)) orelse dependency.name;
         if (!containsString(build_only.items, name)) try build_only.append(allocator, try allocator.dupe(u8, name));
     };
     return build_only.toOwnedSlice(allocator);
@@ -305,10 +319,10 @@ test "optional dependency decorations and descriptions mirror the C# parser" {
 
 test "dependency resolution partitions installed repo and AUR dependencies" {
     const Context = struct {
-        fn installed(_: ?*anyopaque, dependency: [:0]const u8) bool {
+        fn installed(_: ?*anyopaque, dependency: [:0]const u8) anyerror!bool {
             return std.mem.eql(u8, dependency, "glibc");
         }
-        fn repo(_: ?*anyopaque, dependency: [:0]const u8) ?[]const u8 {
+        fn repo(_: ?*anyopaque, dependency: [:0]const u8) anyerror!?[]const u8 {
             if (std.mem.eql(u8, dependency, "cmake>=3")) return "cmake";
             return null;
         }
@@ -349,10 +363,10 @@ test "dependency resolution partitions installed repo and AUR dependencies" {
 
 test "dependency resolution excludes version-compatible outputs from the same PKGBUILD" {
     const Context = struct {
-        fn installed(_: ?*anyopaque, _: [:0]const u8) bool {
+        fn installed(_: ?*anyopaque, _: [:0]const u8) anyerror!bool {
             return false;
         }
-        fn repo(_: ?*anyopaque, _: [:0]const u8) ?[]const u8 {
+        fn repo(_: ?*anyopaque, _: [:0]const u8) anyerror!?[]const u8 {
             return null;
         }
     };

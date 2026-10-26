@@ -8,6 +8,7 @@ const gdk = bindings.gdk;
 const c_string = @import("../helpers/c_string.zig");
 const translations = @import("../helpers/translations.zig");
 const support = @import("support.zig");
+const features = @import("../services/build_features.zig");
 const ShellyCli = @import("../services/shelly_cli.zig").ShellyCli;
 const AurPackage = @import("../models/aur_package.zig").AurPackage;
 const SizeConverter = @import("../helpers/size_converts.zig").SizeConverter;
@@ -21,6 +22,8 @@ pub const PackageDetail = extern struct {
     pub const Parent = gtk.Box;
     const resource_path = "/com/shellyorg/shelly/ui/aur_package_detail.ui";
 
+    const default_link_base = "https://aur.archlinux.org/packages/";
+
     const Private = struct {
         content_box: *gtk.Box,
         preview_button: *gtk.Button,
@@ -31,6 +34,8 @@ pub const PackageDetail = extern struct {
         base_installed: bool,
         pending_name: [256]u8,
         pending_len: usize,
+        link_base: [128]u8,
+        link_base_len: usize,
 
         arena: ?*std.heap.ArenaAllocator,
         var offset: c_int = 0;
@@ -60,6 +65,9 @@ pub const PackageDetail = extern struct {
 
         p.pending_len = 0;
 
+        @memcpy(p.link_base[0..default_link_base.len], default_link_base);
+        p.link_base_len = default_link_base.len;
+
         const group = gio.SimpleActionGroup.new();
 
         gtk.Widget.insertActionGroup(self.as(gtk.Widget), "detail", group.as(gio.ActionGroup));
@@ -68,6 +76,13 @@ pub const PackageDetail = extern struct {
 
     pub fn new() *Self {
         return gobject.ext.newInstance(Self, .{});
+    }
+
+    pub fn setLinkBase(self: *Self, base: []const u8) void {
+        const p = self.priv();
+        const len = @min(base.len, p.link_base.len);
+        @memcpy(p.link_base[0..len], base[0..len]);
+        p.link_base_len = len;
     }
 
     pub fn showPackage(self: *Self, package: *const AurPackage) void {
@@ -96,37 +111,42 @@ pub const PackageDetail = extern struct {
         gtk.Label.setLabel(p.name_label, c_string.cstr(&buf, package.Name));
         p.name_label.setSelectable(1);
         gtk.Label.setLabel(p.description_label, if (package.Description) |desc| c_string.cstr(&buf, desc) else "");
+        p.description_label.setSelectable(1);
 
-        clear_box(p.spec_box);
-        clear_box(p.sections_box);
-        add_spec_row(p.spec_box, translations._("Version"), package.Version);
-        add_spec_row(p.spec_box, translations._("Votes"), votes_text(&buf, package.NumVotes));
-        add_spec_row(p.spec_box, translations._("Popularity"), popularity_text(&buf, package.Popularity));
+        clearBox(p.spec_box);
+        clearBox(p.sections_box);
+        addSpecRow(p.spec_box, translations._("Version"), package.Version);
+        addSpecRow(p.spec_box, translations._("Votes"), votesText(&buf, package.NumVotes));
+        addSpecRow(p.spec_box, translations._("Popularity"), popularityText(&buf, package.Popularity));
 
-        add_spec_row(p.spec_box, translations._("Maintainer"), if (package.Maintainer) |maintainer| c_string.cstr(&buf, maintainer) else "");
-        add_spec_row(p.spec_box, translations._("Last Modified"), c_string.cstr(&buf, formatIsoDateTime(&time_buf, package.LastModified) catch ""));
-        add_spec_row(p.spec_box, translations._("First Submitted"), c_string.cstr(&buf, formatIsoDateTime(&time_buf, package.FirstSubmitted) catch ""));
+        addSpecRow(p.spec_box, translations._("Maintainer"), if (package.Maintainer) |maintainer| c_string.cstr(&buf, maintainer) else "");
+        if (package.LastModified != 0) {
+            addSpecRow(p.spec_box, translations._("Last Modified"), c_string.cstr(&buf, formatIsoDateTime(&time_buf, package.LastModified) catch ""));
+        }
+        if (package.FirstSubmitted != 0) {
+            addSpecRow(p.spec_box, translations._("First Submitted"), c_string.cstr(&buf, formatIsoDateTime(&time_buf, package.FirstSubmitted) catch ""));
+        }
 
-        add_url_spec_row(p.spec_box, translations._("URL"), if (package.Url) |u| c_string.cstr(&buf, u) else "");
+        addUrlSpecRow(p.spec_box, translations._("URL"), if (package.Url) |u| c_string.cstr(&buf, u) else "");
 
         const allocator = (p.arena orelse return).allocator();
 
-        const combined = std.mem.concat(allocator, u8, &.{ "https://aur.archlinux.org/packages/", package.Name }) catch "";
-        add_url_spec_row(p.spec_box, translations._("AUR"), c_string.cstr(&buf, combined));
+        const combined = std.mem.concat(allocator, u8, &.{ p.link_base[0..p.link_base_len], package.Name }) catch "";
+        addUrlSpecRow(p.spec_box, features.aur_source_name, c_string.cstr(&buf, combined));
 
         const alloc = (p.arena orelse return).allocator();
-        add_spec_list(p.spec_box, alloc, translations._("Licenses"), if (package.License) |license| license else &.{});
+        addSpecList(p.spec_box, alloc, translations._("Licenses"), if (package.License) |license| license else &.{});
 
-        add_list_section(p.sections_box, self, translations._("Depends"), if (package.Depends) |deps| deps else &.{});
-        add_list_section(p.sections_box, self, translations._("Optional Depends"), if (package.OptDepends) |optDeps| optDeps else &.{});
-        add_list_section(p.sections_box, self, translations._("Make Depends"), if (package.MakeDepends) |make| make else &.{});
+        addListSection(p.sections_box, self, translations._("Depends"), if (package.Depends) |deps| deps else &.{});
+        addListSection(p.sections_box, self, translations._("Optional Depends"), if (package.OptDepends) |optDeps| optDeps else &.{});
+        addListSection(p.sections_box, self, translations._("Make Depends"), if (package.MakeDepends) |make| make else &.{});
     }
 
-    fn votes_text(buf: []u8, votes: u32) [:0]const u8 {
+    fn votesText(buf: []u8, votes: u32) [:0]const u8 {
         return std.fmt.bufPrintZ(buf, "{d}", .{votes}) catch "";
     }
 
-    fn popularity_text(buf: []u8, popularity: f64) [:0]const u8 {
+    fn popularityText(buf: []u8, popularity: f64) [:0]const u8 {
         return std.fmt.bufPrintZ(buf, "{d:.2}", .{popularity}) catch "";
     }
 
@@ -150,7 +170,7 @@ pub const PackageDetail = extern struct {
         );
     }
 
-    fn add_spec_row(box: *gtk.Box, label: []const u8, value: [:0]const u8) void {
+    fn addSpecRow(box: *gtk.Box, label: []const u8, value: [:0]const u8) void {
         var lbuf: [64]u8 = undefined;
         const row = gtk.Box.new(.horizontal, 8);
         gtk.Widget.setMarginTop(row.as(gtk.Widget), 10);
@@ -166,12 +186,13 @@ pub const PackageDetail = extern struct {
         gtk.Widget.setHexpand(val.as(gtk.Widget), 1);
         gtk.Label.setXalign(val, 1);
         gtk.Label.setEllipsize(val, .end);
+        gtk.Label.setSelectable(val, 1);
         gtk.Widget.addCssClass(val.as(gtk.Widget), "spec-value");
         gtk.Box.append(row, val.as(gtk.Widget));
         gtk.Box.append(box, row.as(gtk.Widget));
     }
 
-    fn add_url_spec_row(box: *gtk.Box, label: []const u8, value: [:0]const u8) void {
+    fn addUrlSpecRow(box: *gtk.Box, label: []const u8, value: [:0]const u8) void {
         var lbuf: [64]u8 = undefined;
         const row = gtk.Box.new(.horizontal, 8);
         gtk.Widget.setMarginTop(row.as(gtk.Widget), 10);
@@ -191,13 +212,14 @@ pub const PackageDetail = extern struct {
         gtk.Widget.setHexpand(val.as(gtk.Widget), 1);
         gtk.Label.setXalign(val, 1);
         gtk.Label.setEllipsize(val, .end);
+        gtk.Label.setSelectable(val, 1);
 
         gtk.Box.append(row, val.as(gtk.Widget));
 
         gtk.Box.append(box, row.as(gtk.Widget));
     }
 
-    fn add_spec_list(box: *gtk.Box, allocator: std.mem.Allocator, label: []const u8, items: []const [:0]const u8) void {
+    fn addSpecList(box: *gtk.Box, allocator: std.mem.Allocator, label: []const u8, items: []const [:0]const u8) void {
         if (items.len == 0) return;
         var joined: std.ArrayListUnmanaged(u8) = .empty;
         defer joined.deinit(allocator);
@@ -207,10 +229,10 @@ pub const PackageDetail = extern struct {
         }
         joined.append(allocator, 0) catch return;
         const value: [:0]const u8 = joined.items[0 .. joined.items.len - 1 :0];
-        add_spec_row_raw(box, label, value);
+        addSpecRowRaw(box, label, value);
     }
 
-    fn add_spec_row_raw(box: *gtk.Box, label: []const u8, value: [:0]const u8) void {
+    fn addSpecRowRaw(box: *gtk.Box, label: []const u8, value: [:0]const u8) void {
         var lbuf: [64]u8 = undefined;
         const row = gtk.Box.new(.horizontal, 8);
         gtk.Widget.setMarginTop(row.as(gtk.Widget), 10);
@@ -228,12 +250,13 @@ pub const PackageDetail = extern struct {
         gtk.Label.setXalign(val, 1);
         gtk.Label.setWrap(val, 1);
         gtk.Label.setJustify(val, .right);
+        gtk.Label.setSelectable(val, 1);
         gtk.Widget.addCssClass(val.as(gtk.Widget), "spec-value");
         gtk.Box.append(row, val.as(gtk.Widget));
         gtk.Box.append(box, row.as(gtk.Widget));
     }
 
-    fn add_list_section(box: *gtk.Box, page: *PackageDetail, title: []const u8, items: []const [:0]const u8) void {
+    fn addListSection(box: *gtk.Box, page: *PackageDetail, title: []const u8, items: []const [:0]const u8) void {
         if (items.len == 0) return;
 
         var buf: [64]u8 = undefined;
@@ -246,7 +269,7 @@ pub const PackageDetail = extern struct {
         gtk.Widget.setMarginStart(list.as(gtk.Widget), 8);
 
         for (items) |item| {
-            const dep_name = strip_version(item);
+            const dep_name = stripVersion(item);
 
             const navigable = std.mem.indexOf(u8, dep_name, ".so") == null and dep_name.len > 0;
 
@@ -260,10 +283,11 @@ pub const PackageDetail = extern struct {
                 gtk.Widget.setHalign(lbl.as(gtk.Widget), .start);
                 gtk.Label.setXalign(lbl, 0);
                 gtk.Label.setEllipsize(lbl, .end);
+                gtk.Label.setSelectable(lbl, 1);
                 gtk.Widget.addCssClass(lbl.as(gtk.Widget), "spec-value");
                 gtk.Button.setChild(row_btn, lbl.as(gtk.Widget));
                 const name_owned = std.heap.c_allocator.dupeZ(u8, dep_name) catch continue;
-                gobject.Object.setDataFull(row_btn.as(gobject.Object), "dep-name", name_owned.ptr, &free_dep_name);
+                gobject.Object.setDataFull(row_btn.as(gobject.Object), "dep-name", name_owned.ptr, &freeDepName);
                 gobject.Object.setData(row_btn.as(gobject.Object), "page", page);
                 gtk.Box.append(list, row_btn.as(gtk.Widget));
             } else {
@@ -271,6 +295,7 @@ pub const PackageDetail = extern struct {
                 gtk.Widget.setHalign(lbl.as(gtk.Widget), .start);
                 gtk.Label.setXalign(lbl, 0);
                 gtk.Label.setEllipsize(lbl, .end);
+                gtk.Label.setSelectable(lbl, 1);
                 gtk.Widget.addCssClass(lbl.as(gtk.Widget), "spec-value");
                 gtk.Widget.addCssClass(lbl.as(gtk.Widget), "dim-label");
                 gtk.Widget.addCssClass(lbl.as(gtk.Widget), "dep-row-static");
@@ -293,12 +318,12 @@ pub const PackageDetail = extern struct {
         gtk.Box.append(box, expander.as(gtk.Widget));
     }
 
-    fn free_dep_name(ptr: ?*anyopaque) callconv(.c) void {
+    fn freeDepName(ptr: ?*anyopaque) callconv(.c) void {
         const p: [*:0]u8 = @ptrCast(ptr orelse return);
         std.heap.c_allocator.free(std.mem.span(p));
     }
 
-    fn strip_version(item: []const u8) []const u8 {
+    fn stripVersion(item: []const u8) []const u8 {
         const desc_end = std.mem.indexOfScalar(u8, item, ':') orelse item.len;
         var name = std.mem.trim(u8, item[0..desc_end], " ");
 
@@ -312,13 +337,13 @@ pub const PackageDetail = extern struct {
         return std.mem.trim(u8, name[0..cut], " ");
     }
 
-    fn clear_box(box: *gtk.Box) void {
+    fn clearBox(box: *gtk.Box) void {
         while (gtk.Widget.getFirstChild(box.as(gtk.Widget))) |child| {
             gtk.Box.remove(box, child);
         }
     }
 
-    fn on_preview_package_build(self: *Self) callconv(.c) void {
+    fn onPreviewPackageBuild(self: *Self) callconv(.c) void {
         const dialog = PkgbuildReviewDialog.new();
         if (support.getWindow(ShellyWindow, self)) |win| {
             gtk.Window.setTransientFor(dialog.as(gtk.Window), win.as(gtk.Window));
@@ -358,7 +383,7 @@ pub const PackageDetail = extern struct {
             inline for (template_children) |c| {
                 support.bindChild(class, Private.offset, c[0], c[1]);
             }
-            gtk.Widget.Class.bindTemplateCallbackFull(wc, "preview_package_build", @ptrCast(&on_preview_package_build));
+            gtk.Widget.Class.bindTemplateCallbackFull(wc, "preview_package_build", @ptrCast(&onPreviewPackageBuild));
             gobject.Object.virtual_methods.finalize.implement(class, &finalize);
         }
     };

@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const test_support = @import("test_support.zig");
 const output = @import("../output/config.zig");
 const colors = @import("../output/colors.zig");
@@ -42,7 +43,7 @@ pub fn dispatch(
     const user_receive = optionEnabled(invocation, "--user");
     if (!user_receive and !invocation.globals.ui_mode and !elevation.isRoot()) {
         const elevated_exit = elevation.relaunchIfNeeded(context, invocation.arguments) catch |err| {
-            try context.stderr.print("Unable to elevate keyring operation: {t}\n", .{err});
+            try context.stderr.print("Could not obtain administrator privileges for keyring operation. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
             return 1;
         };
         if (elevated_exit) |exit_code| return exit_code;
@@ -70,8 +71,8 @@ fn executeWithRunner(
     const result = runAction(context, invocation, action, runner) catch |err| {
         const message = try std.fmt.allocPrint(
             context.allocator,
-            "Failed to run keyring command: {t}",
-            .{err},
+            "Could not start the keyring command for the requested operation. {0s}\n\nTechnical details: {1s}",
+            .{ diagnostics.cause(err), @errorName(err) },
         );
         defer context.allocator.free(message);
         try writeFailure(context, invocation, message, failureMessage(action));
@@ -86,7 +87,7 @@ fn executeWithRunner(
     }
 
     if (result.failed_key) |key| {
-        const message = try std.fmt.allocPrint(context.allocator, "Failed to sign key: {s}", .{key});
+        const message = try std.fmt.allocPrint(context.allocator, "Could not sign {0f} in the selected keyring.", .{diagnostics.safe(key)});
         defer context.allocator.free(message);
         if (!invocation.globals.ui_mode) try output.writeFailure(context, message);
     }
@@ -102,14 +103,14 @@ fn runAction(
     runner: anytype,
 ) anyerror!RunOutcome {
     switch (action) {
-        .init => return .{ .exit_code = try runner.call(context, &.{ "pacman-key", "--init" }) },
-        .list => return .{ .exit_code = try runner.call(context, &.{ "pacman-key", "--list-keys" }) },
-        .refresh => return .{ .exit_code = try runner.call(context, &.{ "pacman-key", "--refresh-keys" }) },
+        .init => return .{ .exit_code = try runner.call(context, &.{ "shelly-key", "--init" }) },
+        .list => return .{ .exit_code = try runner.call(context, &.{ "shelly-key", "--list-keys" }) },
+        .refresh => return .{ .exit_code = try runner.call(context, &.{ "shelly-key", "--refresh-keys" }) },
         .lsign => {
             for (invocation.positionals) |key| {
                 const exit_code = try runner.call(
                     context,
-                    &.{ "pacman-key", "--lsign-key", key },
+                    &.{ "shelly-key", "--lsign-key", key },
                 );
                 if (exit_code != 0) return .{ .exit_code = exit_code, .failed_key = key };
             }
@@ -118,7 +119,7 @@ fn runAction(
         .populate => {
             const arguments = try context.allocator.alloc([]const u8, invocation.positionals.len + 2);
             defer context.allocator.free(arguments);
-            arguments[0] = "pacman-key";
+            arguments[0] = "shelly-key";
             arguments[1] = "--populate";
             @memcpy(arguments[2..], invocation.positionals);
             return .{ .exit_code = try runner.call(context, arguments) };
@@ -129,25 +130,25 @@ fn runAction(
             const arguments = try context.allocator.alloc(
                 []const u8,
                 invocation.positionals.len +
-                    @as(usize, if (user_receive) 4 else 2) +
+                    @as(usize, if (user_receive) 3 else 2) +
                     @as(usize, if (keyserver == null) 0 else 2),
             );
             defer context.allocator.free(arguments);
-            const key_offset: usize = if (user_receive) 4 else 2;
+            var next: usize = 0;
+            arguments[next] = "shelly-key";
+            next += 1;
             if (user_receive) {
-                arguments[0] = "gpg";
-                arguments[1] = "--batch";
-                arguments[2] = "--no-tty";
-                arguments[3] = "--recv-keys";
-            } else {
-                arguments[0] = "pacman-key";
-                arguments[1] = "--recv-keys";
+                arguments[next] = "--user";
+                next += 1;
             }
-            @memcpy(arguments[key_offset .. invocation.positionals.len + key_offset], invocation.positionals);
             if (keyserver) |server| {
-                arguments[invocation.positionals.len + key_offset] = "--keyserver";
-                arguments[invocation.positionals.len + key_offset + 1] = server;
+                arguments[next] = "--keyserver";
+                arguments[next + 1] = server;
+                next += 2;
             }
+            arguments[next] = "--recv-keys";
+            next += 1;
+            @memcpy(arguments[next..], invocation.positionals);
             return .{ .exit_code = try runner.call(context, arguments) };
         },
     }
@@ -157,9 +158,12 @@ fn runKeyringCommand(
     context: *runtime.RuntimeContext,
     arguments: []const []const u8,
 ) !u8 {
+    var arena = std.heap.ArenaAllocator.init(context.allocator);
+    defer arena.deinit();
+    const key_arguments = try context.keyArguments(arena.allocator(), arguments);
     try flush(context);
     var child = try std.process.spawn(context.io, .{
-        .argv = arguments,
+        .argv = key_arguments,
         .stdin = .inherit,
         .stdout = .inherit,
         .stderr = .inherit,
@@ -220,7 +224,7 @@ fn openingMessage(
     user_keyring: bool,
 ) ![]const u8 {
     return switch (action) {
-        .init => allocator.dupe(u8, "Initializing pacman keyring..."),
+        .init => allocator.dupe(u8, "Initializing the package-signing keyring..."),
         .list => allocator.dupe(u8, "Listing keys in keyring..."),
         .refresh => allocator.dupe(u8, "Refreshing keys from keyserver..."),
         .lsign => joinedMessage(allocator, "Locally signing keys: ", values),
@@ -259,12 +263,12 @@ fn successMessage(action: Action) []const u8 {
 
 fn failureMessage(action: Action) []const u8 {
     return switch (action) {
-        .init => "Failed to initialize keyring.",
-        .list => "Failed to list keys.",
-        .refresh => "Failed to refresh keys.",
-        .lsign => "Failed to sign keys.",
-        .populate => "Failed to populate keyring.",
-        .recv => "Failed to receive keys.",
+        .init => "Could not initialize the keyring.",
+        .list => "Could not list keys in the keyring.",
+        .refresh => "Could not refresh keys in the keyring.",
+        .lsign => "Could not sign the selected keys in the selected keyring.",
+        .populate => "Could not populate the keyring from the selected source.",
+        .recv => "Could not receive the selected keys from the configured keyserver.",
     };
 }
 
@@ -336,14 +340,14 @@ test "keyring maps every action to structured backend arguments" {
     const manifest = try spec.Manifest.load(arena.allocator());
 
     const expected_calls = [_][]const []const u8{
-        &.{ "pacman-key", "--init" },
-        &.{ "pacman-key", "--list-keys" },
-        &.{ "pacman-key", "--refresh-keys" },
-        &.{ "pacman-key", "--lsign-key", "AAAA" },
-        &.{ "pacman-key", "--lsign-key", "BBBB" },
-        &.{ "pacman-key", "--populate", "archlinux", "cachyos" },
-        &.{ "pacman-key", "--recv-keys", "CCCC", "DDDD", "--keyserver", "hkps://keys.example" },
-        &.{ "gpg", "--batch", "--no-tty", "--recv-keys", "EEEE", "--keyserver", "hkps://keys.example" },
+        &.{ "shelly-key", "--init" },
+        &.{ "shelly-key", "--list-keys" },
+        &.{ "shelly-key", "--refresh-keys" },
+        &.{ "shelly-key", "--lsign-key", "AAAA" },
+        &.{ "shelly-key", "--lsign-key", "BBBB" },
+        &.{ "shelly-key", "--populate", "archlinux", "cachyos" },
+        &.{ "shelly-key", "--keyserver", "hkps://keys.example", "--recv-keys", "CCCC", "DDDD" },
+        &.{ "shelly-key", "--user", "--keyserver", "hkps://keys.example", "--recv-keys", "EEEE" },
     };
     const Capture = struct {
         expected: []const []const []const u8,
@@ -415,7 +419,7 @@ test "keyring local signing stops at the first failed key" {
 
     try std.testing.expectEqual(@as(u8, 9), try executeWithRunner(&tc.context, &outcome.dispatch, &counter));
     try std.testing.expectEqual(@as(usize, 2), counter.calls);
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Failed to sign key: BBBB") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Could not sign BBBB") != null);
 }
 
 test "keyring UI mode emits transaction lifecycle frames" {
