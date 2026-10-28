@@ -4,10 +4,12 @@ const arrays = @import("../pkgbuild/parser/arrays.zig");
 const fields = @import("../pkgbuild/parser/fields.zig");
 const function_body = @import("../pkgbuild/parser/function_body.zig");
 const variables = @import("../pkgbuild/parser/variables.zig");
+const dependencies = @import("../pkgbuild/parser/dependencies.zig");
 
 const PkgbuildParser = pkgbuild_parser.PkgbuildParser;
 
 pub const GenerateOptions = struct {
+    dynamic_functions: ?*const std.StringHashMap([]const u8) = null,
     package_carch: []const u8 = "x86_64",
     dynamic_overrides: ?*const std.StringHashMap([]const u8) = null,
     dynamic_unsets: ?*const std.StringHashMap(void) = null,
@@ -19,17 +21,17 @@ const global_single_fields = [_][]const u8{
     "pkgdesc", "pkgver", "pkgrel", "epoch", "url", "install", "changelog",
 };
 const global_array_fields = [_][]const u8{
-    "arch",       "groups",     "license",  "checkdepends", "makedepends",
-    "depends",    "optdepends", "provides", "conflicts",    "replaces",
-    "noextract",  "options",    "backup",   "source",       "validpgpkeys",
-    "cksums",     "md5sums",    "sha1sums", "sha224sums",   "sha256sums",
-    "sha384sums", "sha512sums", "b2sums",
+    "arch",       "groups",     "license",  "checkdepends",   "makedepends",
+    "depends",    "optdepends", "provides", "conflicts",      "replaces",
+    "noextract",  "options",    "backup",   "source",         "validpgpkeys",
+    "cksums",     "md5sums",    "sha1sums", "sha224sums",     "sha256sums",
+    "sha384sums", "sha512sums", "b2sums",   "shelly_migrate",
 };
 const package_single_fields = [_][]const u8{ "pkgdesc", "url", "install", "changelog" };
 const package_array_fields = [_][]const u8{
-    "arch",       "groups",   "license",   "checkdepends", "depends",
-    "optdepends", "provides", "conflicts", "replaces",     "options",
-    "backup",
+    "arch",       "groups",         "license",   "checkdepends", "depends",
+    "optdepends", "provides",       "conflicts", "replaces",     "options",
+    "backup",     "shelly_migrate",
 };
 const architecture_array_fields = [_][]const u8{
     "source",     "provides",    "conflicts",    "depends",    "replaces",
@@ -139,10 +141,12 @@ pub fn writePkgbuild(
             );
             if (std.mem.eql(u8, name, "arch")) {
                 package_architectures = values;
-                try writeAttributes(writer, name, values);
+                try writePackageAttributes(writer, name, values);
             } else {
                 defer variables.freeStringSlice(allocator, values);
-                try writeAttributes(writer, name, values);
+                if (std.mem.eql(u8, name, "shelly_migrate"))
+                    try @import("Shelly_Rlpm").Migration.validateDeclarations(allocator, values);
+                try writePackageAttributes(writer, name, values);
             }
         }
         const effective_architectures = package_architectures orelse global_architectures;
@@ -168,6 +172,7 @@ fn parserFor(
         .io = io,
         .selected_package_name = selected_package_name,
         .package_carch = options.package_carch,
+        .dynamic_functions = options.dynamic_functions,
         .dynamic_overrides = options.dynamic_overrides,
         .dynamic_unsets = options.dynamic_unsets,
         .dynamic_array_overrides = options.dynamic_array_overrides,
@@ -184,6 +189,8 @@ fn writeGlobalArray(
 ) !void {
     const values = try fields.resolve_array_field(parser, content, vars, name);
     defer variables.freeStringSlice(parser.allocator, values);
+    if (std.mem.eql(u8, name, "shelly_migrate"))
+        try @import("Shelly_Rlpm").Migration.validateDeclarations(parser.allocator, values);
     try writeAttributes(writer, name, values);
 }
 
@@ -209,7 +216,10 @@ fn writeArchitectureArrays(
             else
                 try fields.resolve_array_field(parser, content, vars, name);
             defer variables.freeStringSlice(parser.allocator, values);
-            try writeAttributes(writer, name, values);
+            if (package_scoped)
+                try writePackageAttributes(writer, name, values)
+            else
+                try writeAttributes(writer, name, values);
         }
     }
 }
@@ -225,6 +235,16 @@ fn hasArrayAssignment(body: ?[]const u8, name: []const u8) bool {
     return arrays.find_next_scoped_array_start(body orelse return false, name, 0) != null;
 }
 
+// An absent package field inherits its global value. Keep an explicit empty
+// assignment so split packages can clear inherited arrays such as depends.
+fn writePackageAttributes(writer: *std.Io.Writer, name: []const u8, values: []const []const u8) !void {
+    if (values.len == 0) {
+        try writer.print("\t{s} = \n", .{name});
+        return;
+    }
+    try writeAttributes(writer, name, values);
+}
+
 fn writeAttributes(writer: *std.Io.Writer, name: []const u8, values: []const []const u8) !void {
     for (values) |value| try writeAttribute(writer, name, value);
 }
@@ -233,6 +253,10 @@ fn writeAttribute(writer: *std.Io.Writer, name: []const u8, raw_value: []const u
     const value = std.mem.trim(u8, raw_value, " \t\r\n\x0b\x0c");
     if (value.len == 0) return;
     try writer.print("\t{s} = ", .{name});
+    if (std.mem.eql(u8, name, "shelly_migrate")) {
+        try writer.print("{s}\n", .{value});
+        return;
+    }
     var whitespace = false;
     for (value) |byte| {
         if (std.ascii.isWhitespace(byte)) {
@@ -265,6 +289,200 @@ pub const Info = struct {
         return false;
     }
 };
+
+/// Returns the full version of an actual package member from freshly generated
+/// SRCINFO. Missing metadata must not cause --needed to skip a target.
+pub fn packageVersion(allocator: std.mem.Allocator, content: []const u8, name: []const u8) !?[:0]u8 {
+    var pkgver: ?[]const u8 = null;
+    var pkgrel: ?[]const u8 = null;
+    var epoch: ?[]const u8 = null;
+    var in_package = false;
+    var found = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        const equal = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..equal], " \t");
+        const value = std.mem.trim(u8, line[equal + 1 ..], " \t");
+        if (std.mem.eql(u8, key, "pkgname")) {
+            in_package = true;
+            found = found or std.mem.eql(u8, name, value);
+        }
+        if (in_package or value.len == 0) continue;
+        if (std.mem.eql(u8, key, "pkgver")) pkgver = value;
+        if (std.mem.eql(u8, key, "pkgrel")) pkgrel = value;
+        if (std.mem.eql(u8, key, "epoch")) epoch = value;
+    }
+    if (!found) return null;
+    const version_value = pkgver orelse return null;
+    const release = pkgrel orelse return null;
+    if (epoch) |value| return try std.fmt.allocPrintSentinel(allocator, "{s}:{s}-{s}", .{ value, version_value, release }, 0);
+    return try std.fmt.allocPrintSentinel(allocator, "{s}-{s}", .{ version_value, release }, 0);
+}
+
+test "AUR needed reads full versions only for actual package members" {
+    const allocator = std.testing.allocator;
+    const content = "pkgbase = suite\n\tpkgver = 2.3\n\tpkgrel = 4\n\tepoch = 1\npkgname = suite-cli\npkgname = suite-docs\n";
+    for ([_][]const u8{ "suite-cli", "suite-docs" }) |name| {
+        const value = (try packageVersion(allocator, content, name)).?;
+        defer allocator.free(value);
+        try std.testing.expectEqualStrings("1:2.3-4", value);
+    }
+    try std.testing.expectEqual(null, try packageVersion(allocator, content, "suite"));
+    try std.testing.expectEqual(null, try packageVersion(allocator, content, "missing"));
+    try std.testing.expectEqual(null, try packageVersion(allocator, "pkgver = 1\npkgname = demo\n", "demo"));
+    const value = (try packageVersion(allocator, "pkgver = 1\npkgrel = 2\npkgname = demo\n", "demo")).?;
+    defer allocator.free(value);
+    try std.testing.expectEqualStrings("1-2", value);
+}
+
+/// Dependency fields selected from evaluated SRCINFO. This is deliberately
+/// separate from the statically parsed PKGBUILD so dependency planning does
+/// not mutate the content and review state later used by the builder.
+pub const DependencyMetadata = struct {
+    depends: [][]const u8,
+    make_depends: [][]const u8,
+    check_depends: [][]const u8,
+    opt_depends: [][]const u8,
+    parsed_depends: []pkgbuild_parser.parsed_dep,
+    parsed_make_depends: []pkgbuild_parser.parsed_dep,
+    parsed_check_depends: []pkgbuild_parser.parsed_dep,
+
+    pub fn deinit(self: *DependencyMetadata, allocator: std.mem.Allocator) void {
+        freeValues(allocator, self.depends);
+        freeValues(allocator, self.make_depends);
+        freeValues(allocator, self.check_depends);
+        freeValues(allocator, self.opt_depends);
+        freeParsedDependencies(allocator, self.parsed_depends);
+        freeParsedDependencies(allocator, self.parsed_make_depends);
+        freeParsedDependencies(allocator, self.parsed_check_depends);
+        self.* = undefined;
+    }
+};
+
+const DependencyField = enum { runtime, build, check, optional };
+
+/// Parses the effective global and selected-package dependency declarations
+/// for the active architecture from makepkg-compatible SRCINFO output.
+pub fn parseDependencyMetadata(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    content: []const u8,
+    selected_package_names: []const []const u8,
+    carch: []const u8,
+) !DependencyMetadata {
+    var runtime: std.ArrayList([]const u8) = .empty;
+    errdefer freeValueList(allocator, &runtime);
+    var build: std.ArrayList([]const u8) = .empty;
+    errdefer freeValueList(allocator, &build);
+    var check: std.ArrayList([]const u8) = .empty;
+    errdefer freeValueList(allocator, &check);
+    var optional: std.ArrayList([]const u8) = .empty;
+    errdefer freeValueList(allocator, &optional);
+
+    var in_package_scope = false;
+    var selected_scope = false;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const equal = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..equal], " \t");
+        const value = std.mem.trim(u8, line[equal + 1 ..], " \t");
+        if (std.mem.eql(u8, key, "pkgname")) {
+            in_package_scope = true;
+            selected_scope = containsString(selected_package_names, value);
+            continue;
+        }
+        if (value.len == 0 or (in_package_scope and !selected_scope)) continue;
+        switch (dependencyField(key, carch) orelse continue) {
+            .runtime => try appendOwnedValue(allocator, &runtime, value),
+            .build => try appendOwnedValue(allocator, &build, value),
+            .check => try appendOwnedValue(allocator, &check, value),
+            .optional => try appendOwnedValue(allocator, &optional, value),
+        }
+    }
+
+    const runtime_values = try runtime.toOwnedSlice(allocator);
+    errdefer freeValues(allocator, runtime_values);
+    const build_values = try build.toOwnedSlice(allocator);
+    errdefer freeValues(allocator, build_values);
+    const check_values = try check.toOwnedSlice(allocator);
+    errdefer freeValues(allocator, check_values);
+    const optional_values = try optional.toOwnedSlice(allocator);
+    errdefer freeValues(allocator, optional_values);
+
+    const parser = PkgbuildParser{ .allocator = allocator, .io = io };
+    const parsed_runtime = try dependencies.parse_dependencies(parser, runtime_values);
+    errdefer freeParsedDependencies(allocator, parsed_runtime);
+    const parsed_build = try dependencies.parse_dependencies(parser, build_values);
+    errdefer freeParsedDependencies(allocator, parsed_build);
+    const parsed_check = try dependencies.parse_dependencies(parser, check_values);
+    errdefer freeParsedDependencies(allocator, parsed_check);
+    return .{
+        .depends = runtime_values,
+        .make_depends = build_values,
+        .check_depends = check_values,
+        .opt_depends = optional_values,
+        .parsed_depends = parsed_runtime,
+        .parsed_make_depends = parsed_build,
+        .parsed_check_depends = parsed_check,
+    };
+}
+
+fn dependencyField(
+    key: []const u8,
+    carch: []const u8,
+) ?DependencyField {
+    inline for (.{
+        .{ "depends", DependencyField.runtime },
+        .{ "makedepends", DependencyField.build },
+        .{ "checkdepends", DependencyField.check },
+        .{ "optdepends", DependencyField.optional },
+    }) |entry| {
+        if (std.mem.eql(u8, key, entry[0])) return entry[1];
+        if (key.len == entry[0].len + carch.len + 1 and
+            std.mem.startsWith(u8, key, entry[0]) and
+            key[entry[0].len] == '_' and
+            std.mem.eql(u8, key[entry[0].len + 1 ..], carch)) return entry[1];
+    }
+    return null;
+}
+
+fn appendOwnedValue(
+    allocator: std.mem.Allocator,
+    values: *std.ArrayList([]const u8),
+    value: []const u8,
+) !void {
+    const owned = try allocator.dupe(u8, value);
+    values.append(allocator, owned) catch |err| {
+        allocator.free(owned);
+        return err;
+    };
+}
+
+fn containsString(values: []const []const u8, expected: []const u8) bool {
+    for (values) |value| if (std.mem.eql(u8, value, expected)) return true;
+    return false;
+}
+
+fn freeValueList(allocator: std.mem.Allocator, values: *std.ArrayList([]const u8)) void {
+    for (values.items) |value| allocator.free(value);
+    values.deinit(allocator);
+}
+
+fn freeValues(allocator: std.mem.Allocator, values: [][]const u8) void {
+    for (values) |value| allocator.free(value);
+    allocator.free(values);
+}
+
+fn freeParsedDependencies(
+    allocator: std.mem.Allocator,
+    parsed: []pkgbuild_parser.parsed_dep,
+) void {
+    for (parsed) |dependency| dependency.deinit(allocator);
+    allocator.free(parsed);
+}
 
 pub fn parse(allocator: std.mem.Allocator, content: []const u8) !Info {
     var package_base: ?[]u8 = null;
@@ -327,6 +545,32 @@ test ".SRCINFO parser resolves split package members" {
     try std.testing.expectEqual(@as(usize, 2), info.package_names.len);
 }
 
+test ".SRCINFO dependency parser merges global selected and architecture scopes" {
+    const allocator = std.testing.allocator;
+    var metadata = try parseDependencyMetadata(allocator, std.testing.io,
+        \\pkgbase = demo-suite
+        \\    depends = global-runtime
+        \\    makedepends = cmake
+        \\    makedepends_x86_64 = architecture-tool
+        \\    makedepends_aarch64 = wrong-architecture
+        \\pkgname = demo-cli
+        \\    depends = cli-runtime>=2
+        \\    optdepends = cli-docs: documentation
+        \\pkgname = demo-ui
+        \\    depends = ui-runtime
+    , &.{"demo-cli"}, "x86_64");
+    defer metadata.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), metadata.depends.len);
+    try std.testing.expectEqualStrings("global-runtime", metadata.depends[0]);
+    try std.testing.expectEqualStrings("cli-runtime", metadata.parsed_depends[1].name);
+    try std.testing.expectEqualStrings(">=", metadata.parsed_depends[1].operator);
+    try std.testing.expectEqual(@as(usize, 2), metadata.make_depends.len);
+    try std.testing.expectEqualStrings("architecture-tool", metadata.make_depends[1]);
+    try std.testing.expectEqual(@as(usize, 1), metadata.opt_depends.len);
+    try std.testing.expectEqualStrings("cli-docs: documentation", metadata.opt_depends[0]);
+}
+
 test ".SRCINFO writer preserves global package and architecture scopes" {
     const content =
         \\pkgbase=demo-suite
@@ -386,4 +630,79 @@ test ".SRCINFO writer preserves global package and architecture scopes" {
             "\tdepends = demo=1.2.3-2\n",
         output.writer.buffered(),
     );
+}
+
+test ".SRCINFO writer preserves explicit empty split package overrides" {
+    const content =
+        \\pkgbase=gtksourceview5
+        \\pkgname=(gtksourceview5 gtksourceview5-docs)
+        \\pkgver=5.20.0
+        \\pkgrel=2
+        \\arch=(x86_64)
+        \\depends=(glibc gtk4)
+        \\depends_x86_64=(arch-runtime)
+        \\provides=(editor-api)
+        \\provides_x86_64=(arch-api)
+        \\conflicts=(old-editor)
+        \\conflicts_x86_64=(old-arch-editor)
+        \\package_gtksourceview5() {
+        \\  provides=('libgtksourceview-5.so=0-64')
+        \\}
+        \\package_gtksourceview5-docs() {
+        \\  depends=()
+        \\  depends_x86_64=()
+        \\  provides=()
+        \\  provides_x86_64=()
+        \\  conflicts=()
+        \\  conflicts_x86_64=()
+        \\}
+    ;
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writePkgbuild(std.testing.allocator, std.testing.io, &output.writer, content, .{});
+    try std.testing.expectEqualStrings(
+        "pkgbase = gtksourceview5\n" ++
+            "\tpkgver = 5.20.0\n" ++
+            "\tpkgrel = 2\n" ++
+            "\tarch = x86_64\n" ++
+            "\tdepends = glibc\n" ++
+            "\tdepends = gtk4\n" ++
+            "\tprovides = editor-api\n" ++
+            "\tconflicts = old-editor\n" ++
+            "\tprovides_x86_64 = arch-api\n" ++
+            "\tconflicts_x86_64 = old-arch-editor\n" ++
+            "\tdepends_x86_64 = arch-runtime\n" ++
+            "\npkgname = gtksourceview5\n" ++
+            "\tprovides = libgtksourceview-5.so=0-64\n" ++
+            "\npkgname = gtksourceview5-docs\n" ++
+            "\tdepends = \n" ++
+            "\tprovides = \n" ++
+            "\tconflicts = \n" ++
+            "\tprovides_x86_64 = \n" ++
+            "\tconflicts_x86_64 = \n" ++
+            "\tdepends_x86_64 = \n",
+        output.writer.buffered(),
+    );
+}
+
+test "migration SRCINFO preserves JSON paths and split overrides" {
+    const content =
+        \\pkgname=(demo extra)
+        \\pkgver=1
+        \\pkgrel=1
+        \\arch=(any)
+        \\shelly_migrate=('{"path":"etc/global","from":"unowned"}')
+        \\package_demo() {
+        \\  shelly_migrate=('{"path":"etc/local  config","from":"unowned","optional":true}')
+        \\}
+        \\package_extra() {
+        \\  shelly_migrate=()
+        \\}
+    ;
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try writePkgbuild(std.testing.allocator, std.testing.io, &output.writer, content, .{});
+    try std.testing.expect(std.mem.indexOf(u8, output.written(), "shelly_migrate = {\"path\":\"etc/local  config\",\"from\":\"unowned\",\"optional\":true}\n") != null);
+    const extra = std.mem.indexOf(u8, output.written(), "pkgname = extra").?;
+    try std.testing.expect(std.mem.indexOf(u8, output.written()[extra..], "shelly_migrate = \n") != null);
 }

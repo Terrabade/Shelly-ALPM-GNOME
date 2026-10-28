@@ -26,6 +26,7 @@
                 <property name="margin-bottom">12</property>
                 <child>
                   <object class="GtkImage" id="status_icon">
+                    <property name="accessible-role">presentation</property>
                     <property name="visible">false</property>
                     <property name="pixel-size">24</property>
                     <property name="valign">center</property>
@@ -37,6 +38,10 @@
                     <property name="halign">start</property>
                     <property name="hexpand">true</property>
                     <property name="xalign">0</property>
+                    <property name="accessible-role">heading</property>
+                    <accessibility>
+                      <property name="level">1</property>
+                    </accessibility>
                     <style><class name="detail-title"/></style>
                   </object>
                 </child>
@@ -75,7 +80,9 @@
                 <property name="halign">start</property>
                 <property name="hexpand">true</property>
                 <property name="xalign">0</property>
-                <property name="ellipsize">end</property>
+                <property name="wrap">true</property>
+                <property name="wrap-mode">word-char</property>
+                <property name="selectable">true</property>
                 <property name="margin-start">16</property>
                 <property name="margin-end">16</property>
                 <property name="margin-bottom">12</property>

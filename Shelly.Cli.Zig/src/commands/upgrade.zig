@@ -1,5 +1,6 @@
 const std = @import("std");
-const Zigalpm = @import("Zigalpm");
+const diagnostics = @import("diagnostics");
+const PackageManager = @import("PackageManager");
 const test_support = @import("test_support.zig");
 const config_manager = @import("../config/manager.zig");
 const config_model = @import("../config/model.zig");
@@ -23,6 +24,9 @@ const appimage_command_path = "shelly upgrade appimage";
 const aur_command_path = "shelly upgrade aur";
 const flatpak_command_path = "shelly upgrade flatpak";
 const auto_confirm_cache_clean_option = "--auto-confirm-cache-clean";
+const disable_cache_clean_option = "--disable-cache-clean";
+const disable_appimage_update_check_option = "--disable-appimage-update-check";
+const disable_flatpak_update_check_option = "--disable-flatpak-update-check";
 
 const UpgradeError = error{
     BackendFailed,
@@ -35,7 +39,7 @@ const Backend = enum {
     flatpak,
     appimage,
 
-    fn operationBackend(self: Backend) Zigalpm.OperationBackend {
+    fn operationBackend(self: Backend) PackageManager.OperationBackend {
         return switch (self) {
             .standard => .alpm,
             .aur => .aur,
@@ -58,7 +62,7 @@ const Real = struct {
     fn run(
         _: Real,
         context: *runtime.RuntimeContext,
-        operation_context: *Zigalpm.OperationContext,
+        operation_context: *PackageManager.OperationContext,
         backend: Backend,
         invocation: *const parser.Invocation,
     ) !void {
@@ -80,7 +84,7 @@ pub fn dispatch(
     const running_as_root = elevation.isRoot();
     if (shouldPrepareAllPreview(invocation, running_as_root)) {
         const preview = prepareAllUpgradePreview(context, invocation) catch |err| {
-            try context.stderr.print("Unable to prepare combined upgrade plan: {t}\n", .{err});
+            try context.stderr.print("Could not prepare the upgrade plan across the selected package sources. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
             return 1;
         };
         if (!preview.proceed or !preview.has_updates) return 0;
@@ -89,7 +93,7 @@ pub fn dispatch(
     if (!invocation.globals.ui_mode and requiresElevation(invocation)) {
         if (shouldPrepareStandardPreview(invocation, running_as_root)) {
             const preview = prepareStandardUpgradePreview(context, invocation) catch |err| {
-                try context.stderr.print("Unable to prepare upgrade plan: {t}\n", .{err});
+                try context.stderr.print("Could not prepare the package upgrade plan. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
                 return 1;
             };
             if (!preview.proceed or !preview.has_updates) return 0;
@@ -97,7 +101,7 @@ pub fn dispatch(
         const elevated_arguments = try elevatedUpgradeArguments(context, invocation);
         defer context.allocator.free(elevated_arguments);
         const elevated_exit = elevation.relaunchIfNeeded(context, elevated_arguments) catch |err| {
-            try context.stderr.print("Unable to elevate upgrade: {t}\n", .{err});
+            try context.stderr.print("Could not obtain administrator privileges for the system upgrade. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
             return 1;
         };
         if (elevated_exit) |exit_code| return exit_code;
@@ -131,7 +135,7 @@ const RealPlanCollector = struct {
 /// checked before the step ever gets announced.
 const RealFlatpakProbe = struct {
     fn installed(_: RealFlatpakProbe) bool {
-        return Zigalpm.flatpak.backendStatus() != .unavailable;
+        return PackageManager.flatpak.backendStatus() != .unavailable;
     }
 };
 
@@ -203,7 +207,7 @@ fn prepareAllUpgradePlanWith(
 
     const proceed = try confirmPreparedUpgrade(context, "Proceed with all upgrades?");
     if (!proceed) {
-        try context.stdout.writeAll("Upgrade cancelled.\n");
+        try context.stdout.writeAll("Operation cancelled.\n");
         try context.stdout.flush();
     }
     return .{ .has_updates = true, .proceed = proceed };
@@ -220,8 +224,12 @@ fn buildAllUpgradePlan(
 
     try context.stdout.writeAll("Building upgrade plan...\n");
     try context.stdout.flush();
+    const skip_appimage = disableAppImageUpdateCheck(context, invocation);
+    const skip_flatpak = disableFlatpakUpdateCheck(context, invocation);
     for (all_backends) |backend| {
         if (!backendEnabled(invocation, backend)) continue;
+        if (backend == .appimage and skip_appimage) continue;
+        if (backend == .flatpak and skip_flatpak) continue;
         // Flatpak is optional. When the backend is not installed there is
         // nothing to plan, so the step stays unmentioned instead of printing
         // a collecting line that can never produce a result.
@@ -232,15 +240,12 @@ fn buildAllUpgradePlan(
         var result = collector.collect(context, backend, invocation) catch |err| {
             if (isUnavailableFlatpak(backend, err)) continue;
             if (backend == .flatpak) {
-                if (Zigalpm.flatpak.errors.unavailableMessage(err)) |message| {
+                if (PackageManager.flatpak.errors.unavailableMessage(err)) |message| {
                     try output.writeWarning(context, message);
                     continue;
                 }
             }
-            try context.stdout.print("Error collecting {s} upgrades: {t}\n", .{
-                backend.displayName(),
-                err,
-            });
+            try context.stdout.print("Could not check for {0f} upgrades. {1s}\n\nTechnical details: {2s}\n", .{ diagnostics.safe(backend.displayName()), diagnostics.cause(err), @errorName(err) });
             try context.stdout.flush();
             continue;
         };
@@ -381,20 +386,20 @@ fn prepareStandardUpgradePreview(
     try context.stdout.writeAll("Preparing standard upgrade plan...\n");
     try context.stdout.flush();
 
-    const database_path = try xdg.shellyCache(context, &.{"db"});
+    const database_path = try xdg.previewDatabase(context);
     defer context.allocator.free(database_path);
     try std.Io.Dir.cwd().createDirPath(context.io, database_path);
 
-    const manager = try Zigalpm.AlpmManager.init(
+    const manager = try PackageManager.Manager.init(
         context.allocator,
         context.environ,
-        .{ .use_root = false, .temp_root_path = database_path },
+        .{ .config_path = context.config_path, .use_root = false, .temp_root_path = database_path },
     );
     defer manager.deinit();
     try manager.sync_for_update_check(false);
 
     const updates = try manager.get_updates_available();
-    defer Zigalpm.alpm.OwnedPackageWithUpdate.deinitSlice(context.allocator, updates);
+    defer PackageManager.Manager.OwnedPackageWithUpdate.deinitSlice(context.allocator, updates);
     if (updates.len == 0) {
         try context.stdout.writeAll("Standard Packages are up to date!\n");
         try context.stdout.flush();
@@ -406,7 +411,7 @@ fn prepareStandardUpgradePreview(
 
     const proceed = try confirmPreparedUpgrade(context, "Proceed with upgrade?");
     if (!proceed) {
-        try context.stdout.writeAll("Upgrade cancelled.\n");
+        try context.stdout.writeAll("Operation cancelled.\n");
         try context.stdout.flush();
     }
     return .{ .has_updates = true, .proceed = proceed };
@@ -414,7 +419,7 @@ fn prepareStandardUpgradePreview(
 
 fn renderStandardUpgradePreview(
     context: *runtime.RuntimeContext,
-    updates: []const Zigalpm.alpm.OwnedPackageWithUpdate,
+    updates: []const PackageManager.Manager.OwnedPackageWithUpdate,
 ) !void {
     var storage = std.heap.ArenaAllocator.init(context.allocator);
     defer storage.deinit();
@@ -476,13 +481,18 @@ fn executeWithRunner(
     invocation: *const parser.Invocation,
     runner: anytype,
 ) anyerror!u8 {
+    // Defer the tray check until all selected backends have released their locks.
+    // Some backends may have succeeded even when the combined upgrade fails.
+    defer if (!invocation.globals.ui_mode) {
+        context.tray_refresh_requested = true;
+    };
     const Selected = struct {
         inner: @TypeOf(runner),
 
         pub fn run(
             self: @This(),
             run_context: *runtime.RuntimeContext,
-            operation_context: *Zigalpm.OperationContext,
+            operation_context: *PackageManager.OperationContext,
             run_invocation: *const parser.Invocation,
         ) anyerror!void {
             try runSelected(self.inner, run_context, operation_context, run_invocation);
@@ -521,7 +531,7 @@ fn executeUi(
         .opening = openingMessage(invocation),
         .success_message = successMessage(invocation),
         .failure_message = failureMessage(invocation),
-        .failure_label = "Upgrade failed",
+        .failure_label = "The upgrade did not complete successfully. Failed steps: see the individual operation results.",
         .report_flatpak_unavailable = true,
     }, runner);
 }
@@ -529,7 +539,7 @@ fn executeUi(
 fn runSelected(
     runner: anytype,
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
 ) anyerror!void {
     if (!upgradesAll(invocation)) {
@@ -543,12 +553,16 @@ fn runSelected(
     }
 
     var failed = false;
+    const skip_appimage = disableAppImageUpdateCheck(context, invocation);
+    const skip_flatpak = disableFlatpakUpdateCheck(context, invocation);
     for (all_backends) |backend| {
         if (!backendEnabled(invocation, backend)) continue;
+        if (backend == .appimage and skip_appimage) continue;
+        if (backend == .flatpak and skip_flatpak) continue;
         runner.run(context, operation_context, backend, invocation) catch |err| {
             if (isUnavailableFlatpak(backend, err)) continue;
             if (backend == .flatpak) {
-                if (Zigalpm.flatpak.errors.unavailableMessage(err)) |message| {
+                if (PackageManager.flatpak.errors.unavailableMessage(err)) |message| {
                     reportBackendSkipped(operation_context, message);
                     continue;
                 }
@@ -564,12 +578,12 @@ const all_backends = [_]Backend{ .standard, .aur, .flatpak, .appimage };
 
 fn isUnavailableFlatpak(backend: Backend, err: anyerror) bool {
     return backend == .flatpak and
-        err == Zigalpm.flatpak.errors.Error.FlatpakBackendUnavailable;
+        err == PackageManager.flatpak.errors.Error.FlatpakBackendUnavailable;
 }
 
 fn runStandard(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
     if (!invocation.globals.ui_mode) {
@@ -582,14 +596,14 @@ fn runStandard(
             _ = news.showUnread(context) catch {};
         }
     }
-    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
+    const manager = try PackageManager.Manager.init(context.allocator, context.environ, .{ .config_path = context.config_path, .use_root = true, .operation_context = operation_context });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
 
     try manager.sync(true);
     const updates = try manager.get_updates_available();
-    defer Zigalpm.alpm.OwnedPackageWithUpdate.deinitSlice(context.allocator, updates);
+    defer PackageManager.Manager.OwnedPackageWithUpdate.deinitSlice(context.allocator, updates);
     if (updates.len == 0) {
         emitStatus(operation_context, .standard, .success, "Standard Packages are up to date!");
         return;
@@ -633,8 +647,20 @@ fn runStandard(
             .{ failure.service, failure.message },
         );
     }
+    var cleaner = PackageManager.CacheManager.init(context.allocator, context.io, .{ .cache_directory = manager.config.cache_directory, .manager = manager });
+    try runCacheClean(context, operation_context, invocation, &cleaner);
+}
+
+fn runCacheClean(
+    context: *runtime.RuntimeContext,
+    operation_context: *PackageManager.OperationContext,
+    invocation: *const parser.Invocation,
+    cleaner: *PackageManager.CacheManager,
+) !void {
+    if (disableCacheClean(context, invocation)) return;
+
     var cache_operation = operation_context.begin(.{ .backend = .alpm, .kind = .cleanup });
-    var cache_completion: Zigalpm.OperationCompletionStatus = .failed;
+    var cache_completion: PackageManager.OperationCompletionStatus = .failed;
     defer cache_operation.finish(cache_completion);
     const clean_up = try confirmCacheClean(
         context.allocator,
@@ -642,9 +668,9 @@ fn runStandard(
         autoConfirmCacheClean(context, invocation),
     );
     if (clean_up) {
-        var cleaner = Zigalpm.CacheManager.init(context.allocator, context.io, .{ .cache_directory = manager.config.cache_directory, .handle = manager.handle });
         cleaner.setOperationContext(operation_context);
-        const plan = try cleaner.plan_cache_cleanup(.{ .keep = 3, .dry_run = false });
+        var plan = try cleaner.plan_cache_cleanup(.{ .keep = 3, .dry_run = false });
+        defer plan.deinit(context.allocator);
         _ = try cleaner.execute_cache_removal_plan(&plan);
     }
     cache_completion = .success;
@@ -652,7 +678,7 @@ fn runStandard(
 
 fn runAur(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
     // The Zig CLI always renders non-UI operations through the shared single
@@ -664,7 +690,8 @@ fn runAur(
     defer context.allocator.free(executable);
     const build_command = std.mem.trimEnd(u8, executable, " (deleted)");
     const aur_base = try aur_url.resolveFor(context, invocation);
-    const manager = try Zigalpm.AurManager.init(context.allocator, context.environ, .{
+    const manager = try PackageManager.AurManager.init(context.allocator, context.environ, .{
+        .config_path = context.config_path,
         .aur_git_base_url = aur_base,
         .root = true,
         .check = checkOverride(invocation),
@@ -676,7 +703,7 @@ fn runAur(
     defer manager.setOperationContext(null);
 
     const updates = try manager.getPackagesNeedingUpdate(!optionEnabled(invocation, "--no-devel"));
-    defer Zigalpm.aur.models.Update.deinitSlice(context.allocator, updates);
+    defer PackageManager.aur.models.Update.deinitSlice(context.allocator, updates);
     if (updates.len == 0) {
         emitStatus(operation_context, .aur, .success, "All AUR packages are up to date.");
         return;
@@ -720,50 +747,50 @@ fn signOverride(invocation: *const parser.Invocation) ?bool {
 
 fn rebaseEolFlatpaks(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     manager: anytype,
 ) !void {
     const statuses = manager.list_eol_flatpak() catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => return,
     };
-    defer Zigalpm.flatpak.EolStatus.deinitSlice(context.allocator, statuses);
+    defer PackageManager.flatpak.EolStatus.deinitSlice(context.allocator, statuses);
 
     for (statuses) |status| {
         const marker = status.eol_rebase orelse {
             if (status.eol) |reason| {
-                const warning = try Zigalpm.flatpak.eol.eolOnlyWarning(
+                const warning = try PackageManager.flatpak.eol.eolOnlyWarning(
                     context.allocator,
                     status.id,
                     status.branch,
                     reason,
                 );
                 defer context.allocator.free(warning);
-                Zigalpm.flatpak.eol.emitStatus(operation_context, .update, .warning, status.id, warning);
+                PackageManager.flatpak.eol.emitStatus(operation_context, .update, .warning, status.id, warning);
             }
             continue;
         };
 
-        const target = Zigalpm.flatpak.eol.parseRebaseTarget(marker, status.branch) orelse {
-            const warning = try Zigalpm.flatpak.eol.eolOnlyWarning(
+        const target = PackageManager.flatpak.eol.parseRebaseTarget(marker, status.branch) orelse {
+            const warning = try PackageManager.flatpak.eol.eolOnlyWarning(
                 context.allocator,
                 status.id,
                 status.branch,
                 status.eol,
             );
             defer context.allocator.free(warning);
-            Zigalpm.flatpak.eol.emitStatus(operation_context, .update, .warning, status.id, warning);
+            PackageManager.flatpak.eol.emitStatus(operation_context, .update, .warning, status.id, warning);
             continue;
         };
 
         const new_ref = if (target.reference) |reference|
             try context.allocator.dupe(u8, reference)
         else
-            try Zigalpm.flatpak.eol.buildRef(
+            try PackageManager.flatpak.eol.buildRef(
                 context.allocator,
                 .app,
                 target.id,
-                if (Zigalpm.flatpak.eol.parseRef(status.reference)) |parsed| parsed.arch else "x86_64",
+                if (PackageManager.flatpak.eol.parseRef(status.reference)) |parsed| parsed.arch else "x86_64",
                 target.branch,
             );
         defer context.allocator.free(new_ref);
@@ -779,40 +806,40 @@ fn rebaseEolFlatpaks(
             else => {
                 const warning = try std.fmt.allocPrint(
                     context.allocator,
-                    "Failed to rebase {s}: continuing with the upgrade pass.",
-                    .{status.id},
+                    "Could not replace end-of-life Flatpak {0f} with {1f}. {2s} Continuing with the remaining upgrades.\n\nTechnical details: {3s}",
+                    .{ diagnostics.safe(status.id), diagnostics.safe(target.id), diagnostics.cause(err), @errorName(err) },
                 );
                 defer context.allocator.free(warning);
-                Zigalpm.flatpak.eol.emitStatus(operation_context, .update, .warning, status.id, warning);
+                PackageManager.flatpak.eol.emitStatus(operation_context, .update, .warning, status.id, warning);
                 continue;
             },
         };
         if (!rebase_ok) {
             const warning = try std.fmt.allocPrint(
                 context.allocator,
-                "Failed to rebase {s}: continuing with the upgrade pass.",
-                .{status.id},
+                "Could not replace end-of-life Flatpak {0f} with {1f}. Continuing with the remaining upgrades.",
+                .{ diagnostics.safe(status.id), diagnostics.safe(target.id) },
             );
             defer context.allocator.free(warning);
-            Zigalpm.flatpak.eol.emitStatus(operation_context, .update, .warning, status.id, warning);
+            PackageManager.flatpak.eol.emitStatus(operation_context, .update, .warning, status.id, warning);
             continue;
         }
 
-        const message = try Zigalpm.flatpak.eol.rebasedMessage(
+        const message = try PackageManager.flatpak.eol.rebasedMessage(
             context.allocator,
             status.id,
             target.id,
         );
         defer context.allocator.free(message);
-        Zigalpm.flatpak.eol.emitStatus(operation_context, .update, .success, status.id, message);
+        PackageManager.flatpak.eol.emitStatus(operation_context, .update, .success, status.id, message);
     }
 }
 
 fn runFlatpak(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
 ) !void {
-    var manager = Zigalpm.FlatpakManager{ .allocator = context.allocator, .io = context.io };
+    var manager = PackageManager.FlatpakManager{ .allocator = context.allocator, .io = context.io };
     defer manager.deinit();
     try manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null) catch {};
@@ -822,17 +849,17 @@ fn runFlatpak(
 
 fn runFlatpakStep(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
     // Relaunch the Flatpak step as the invoking (non-root) user in every
     // combined upgrade, including --ui-mode runs elevated through pkexec:
     // only that user's process can see the user-level Flatpak installation.
     if (upgradesAll(invocation)) {
-        switch (Zigalpm.flatpak.backendStatus()) {
+        switch (PackageManager.flatpak.backendStatus()) {
             .available => {},
-            .unavailable => return Zigalpm.flatpak.errors.Error.FlatpakBackendUnavailable,
-            .incompatible => return Zigalpm.flatpak.errors.Error.FlatpakBackendIncompatible,
+            .unavailable => return PackageManager.flatpak.errors.Error.FlatpakBackendUnavailable,
+            .incompatible => return PackageManager.flatpak.errors.Error.FlatpakBackendIncompatible,
         }
 
         const arguments = try flatpakRelaunchArguments(context.allocator, invocation.globals);
@@ -866,7 +893,7 @@ fn flatpakRelaunchArguments(
 
 fn runAppImage(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     invocation: *const parser.Invocation,
 ) !void {
     if (elevation.isRoot()) {
@@ -888,7 +915,7 @@ fn runAppImage(
         context.allocator,
         &.{ try xdg.configHome(context), "shelly", "appimage-metadata-v2.db" },
     );
-    var manager = Zigalpm.appimage.UpdateManager{
+    var manager = PackageManager.appimage.UpdateManager{
         .allocator = context.allocator,
         .io = context.io,
         .environ = context.environ,
@@ -939,15 +966,13 @@ fn appimageUpgradeArgs(
 
 fn reportBackendFailure(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     backend: Backend,
     err: anyerror,
 ) !void {
-    const message = try std.fmt.allocPrint(
-        context.allocator,
-        "{s} upgrade step failed: {t}",
-        .{ backend.displayName(), err },
-    );
+    const action = try std.fmt.allocPrint(context.allocator, "the {s} upgrade", .{backend.displayName()});
+    defer context.allocator.free(action);
+    const message = try PackageManager.user_errors.format(context.allocator, err, .{ .operation = action });
     defer context.allocator.free(message);
     var operation = operation_context.begin(.{
         .backend = backend.operationBackend(),
@@ -959,7 +984,7 @@ fn reportBackendFailure(
 }
 
 fn reportBackendSkipped(
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     reason: []const u8,
 ) void {
     var operation = operation_context.begin(.{
@@ -972,9 +997,9 @@ fn reportBackendSkipped(
 }
 
 fn emitStatus(
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     backend: Backend,
-    level: Zigalpm.OperationStatusLevel,
+    level: PackageManager.OperationStatusLevel,
     message: []const u8,
 ) void {
     var operation = operation_context.begin(.{
@@ -988,9 +1013,9 @@ fn emitStatus(
 
 fn emitFormattedStatus(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     backend: Backend,
-    level: Zigalpm.OperationStatusLevel,
+    level: PackageManager.OperationStatusLevel,
     comptime format: []const u8,
     arguments: anytype,
 ) !void {
@@ -1070,12 +1095,12 @@ fn successMessage(invocation: *const parser.Invocation) []const u8 {
 
 fn failureMessage(invocation: *const parser.Invocation) []const u8 {
     if (upgradesAll(invocation))
-        return "One or more upgrade steps failed.";
+        return "The upgrade did not complete successfully. Failed steps: see the individual operation results.";
     return switch (backendForPath(invocation.command.path) orelse unreachable) {
-        .standard => "System upgrade failed.",
-        .aur => "AUR upgrade failed.",
-        .flatpak => "Flatpak upgrade failed.",
-        .appimage => "AppImage upgrade failed.",
+        .standard => "Could not complete the standard-package upgrade.",
+        .aur => "Could not complete the AUR upgrade.",
+        .flatpak => "Could not complete the Flatpak upgrade.",
+        .appimage => "Could not complete the AppImage upgrade.",
     };
 }
 
@@ -1110,6 +1135,36 @@ fn autoConfirmCacheClean(
     return configuredAutoConfirmCacheClean(&configuration, invocation);
 }
 
+fn disableCacheClean(
+    context: *runtime.RuntimeContext,
+    invocation: *const parser.Invocation,
+) bool {
+    if (!upgradesAll(invocation)) return false;
+    if (optionEnabled(invocation, disable_cache_clean_option)) return true;
+    const configuration = config_manager.Manager.init(context).read() catch return false;
+    return boolValue(&configuration, "DisableCacheClean") orelse false;
+}
+
+fn disableAppImageUpdateCheck(
+    context: *runtime.RuntimeContext,
+    invocation: *const parser.Invocation,
+) bool {
+    if (!upgradesAll(invocation)) return false;
+    if (optionEnabled(invocation, disable_appimage_update_check_option)) return true;
+    const configuration = config_manager.Manager.init(context).read() catch return false;
+    return boolValue(&configuration, "DisableAppImageUpdateCheck") orelse false;
+}
+
+fn disableFlatpakUpdateCheck(
+    context: *runtime.RuntimeContext,
+    invocation: *const parser.Invocation,
+) bool {
+    if (!upgradesAll(invocation)) return false;
+    if (optionEnabled(invocation, disable_flatpak_update_check_option)) return true;
+    const configuration = config_manager.Manager.init(context).read() catch return false;
+    return boolValue(&configuration, "DisableFlatpakUpdateCheck") orelse false;
+}
+
 fn elevatedUpgradeArguments(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
@@ -1121,25 +1176,45 @@ fn elevatedUpgradeArguments(
     else
         invocation.arguments;
     defer if (carries_aur) context.allocator.free(aur_arguments);
-    return upgradeArgumentsWithCacheCleanPolicy(
+    const arguments = try upgradeArgumentsWithCacheCleanPolicy(
         context.allocator,
         aur_arguments,
         autoConfirmCacheClean(context, invocation),
+        disableCacheClean(context, invocation),
     );
+    // Carry the user's preferences even if elevation resolves a different config.
+    const carry_appimage = disableAppImageUpdateCheck(context, invocation) and
+        !optionEnabled(invocation, disable_appimage_update_check_option) and
+        !optionEnabled(invocation, "--no-appimage");
+    const carry_flatpak = disableFlatpakUpdateCheck(context, invocation) and
+        !optionEnabled(invocation, disable_flatpak_update_check_option) and
+        !optionEnabled(invocation, "--no-flatpak");
+    const extra_count = @as(usize, @intFromBool(carry_appimage)) + @as(usize, @intFromBool(carry_flatpak));
+    if (extra_count > 0) {
+        defer context.allocator.free(arguments);
+        const result = try context.allocator.alloc([]const u8, arguments.len + extra_count);
+        @memcpy(result[0..arguments.len], arguments);
+        if (carry_appimage) result[arguments.len] = disable_appimage_update_check_option;
+        if (carry_flatpak) result[result.len - 1] = disable_flatpak_update_check_option;
+        return result;
+    }
+    return arguments;
 }
 
 fn upgradeArgumentsWithCacheCleanPolicy(
     allocator: std.mem.Allocator,
     arguments: []const []const u8,
     auto_confirm: bool,
+    disabled: bool,
 ) ![]const []const u8 {
+    const policy_option = if (disabled) disable_cache_clean_option else auto_confirm_cache_clean_option;
     const already_present = for (arguments) |argument| {
-        if (std.mem.eql(u8, argument, auto_confirm_cache_clean_option)) break true;
+        if (std.mem.eql(u8, argument, policy_option)) break true;
     } else false;
-    const extra_count: usize = if (auto_confirm and !already_present) 1 else 0;
+    const extra_count: usize = if ((disabled or auto_confirm) and !already_present) 1 else 0;
     const result = try allocator.alloc([]const u8, arguments.len + extra_count);
     @memcpy(result[0..arguments.len], arguments);
-    if (extra_count == 1) result[arguments.len] = auto_confirm_cache_clean_option;
+    if (extra_count == 1) result[arguments.len] = policy_option;
     return result;
 }
 
@@ -1153,7 +1228,7 @@ fn configuredAutoConfirmCacheClean(
 
 fn confirmCacheClean(
     allocator: std.mem.Allocator,
-    cache_operation: *const Zigalpm.Operation,
+    cache_operation: *const PackageManager.Operation,
     auto_confirm: bool,
 ) !bool {
     if (auto_confirm) return true;
@@ -1256,6 +1331,243 @@ test "aggregate upgrade carries cache clean policy across elevation" {
     try std.testing.expect(autoConfirmCacheClean(&elevated_tc.context, &elevated.dispatch));
 }
 
+test "optional backend update check preferences skip combined planning and execution and survive elevation" {
+    const shortcodes = @import("../cli/shortcodes.zig");
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var path_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_length = try temporary.dir.realPath(std.testing.io, &path_buffer);
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    var environment = std.process.Environ.Map.init(tc.arena.allocator());
+    try environment.put("XDG_CONFIG_HOME", path_buffer[0..path_length]);
+    tc.context.environment = &environment;
+    const manager = config_manager.Manager.init(&tc.context);
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    var operations = PackageManager.OperationContext.init(tc.arena.allocator(), std.testing.io);
+    defer operations.deinit();
+    const Capture = struct {
+        collected: std.ArrayList(Backend) = .empty,
+        ran: std.ArrayList(Backend) = .empty,
+        probe_calls: usize = 0,
+
+        fn installed(self: *@This()) bool {
+            self.probe_calls += 1;
+            return true;
+        }
+
+        fn collect(self: *@This(), context: *runtime.RuntimeContext, backend: Backend, _: *const parser.Invocation) !list_updates.Result {
+            try self.collected.append(context.allocator, backend);
+            return switch (backend) {
+                .standard => .{ .standard = .{ .items = &.{} } },
+                .aur => .{ .aur = .{ .items = &.{} } },
+                .flatpak => .{ .flatpak = .{ .items = &.{} } },
+                .appimage => .{ .appimage = .{ .items = &.{} } },
+            };
+        }
+
+        fn run(self: *@This(), context: *runtime.RuntimeContext, _: *PackageManager.OperationContext, backend: Backend, _: *const parser.Invocation) !void {
+            try self.ran.append(context.allocator, backend);
+        }
+    };
+    const aliases = [_][]const []const u8{
+        &.{},
+        &.{ "upgrade", "all" },
+        &.{ "upgrade", "standard", "--all" },
+        &.{ "upgrade", "standard", "-a" },
+        &.{ "upgrade", "all", "--ui-mode" },
+        &.{"-U"},
+        &.{"-Ux"},
+        &.{"-Usa"},
+    };
+    for (aliases) |arguments| {
+        const translated = try shortcodes.translate(tc.arena.allocator(), &manifest, arguments);
+        const outcome = try parser.parse(tc.arena.allocator(), &manifest, translated.arguments().?);
+        try std.testing.expect(outcome == .dispatch);
+        for ([_]struct { appimage: bool, flatpak: bool, expected: []const Backend }{
+            .{ .appimage = false, .flatpak = false, .expected = &all_backends },
+            .{ .appimage = true, .flatpak = false, .expected = &.{ .standard, .aur, .flatpak } },
+            .{ .appimage = false, .flatpak = true, .expected = &.{ .standard, .aur, .appimage } },
+            .{ .appimage = true, .flatpak = true, .expected = &.{ .standard, .aur } },
+        }) |disabled| {
+            try std.testing.expect(try manager.update("DisableAppImageUpdateCheck", if (disabled.appimage) "true" else "false"));
+            try std.testing.expect(try manager.update("DisableFlatpakUpdateCheck", if (disabled.flatpak) "true" else "false"));
+            var capture: Capture = .{};
+            const output_start = tc.stdout.writer.buffered().len;
+            var plan = try buildAllUpgradePlan(&tc.context, &outcome.dispatch, &capture, &capture);
+            defer plan.deinit(tc.context.allocator);
+            try runSelected(&capture, &tc.context, &operations, &outcome.dispatch);
+            try std.testing.expectEqualSlices(Backend, disabled.expected, capture.collected.items);
+            try std.testing.expectEqualSlices(Backend, disabled.expected, capture.ran.items);
+            try std.testing.expectEqual(!disabled.appimage, plan.find(.appimage) != null);
+            try std.testing.expectEqual(!disabled.flatpak, plan.find(.flatpak) != null);
+            try std.testing.expectEqual(@as(usize, if (disabled.flatpak) 0 else 1), capture.probe_calls);
+            if (disabled.appimage) try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered()[output_start..], "AppImage") == null);
+            if (disabled.flatpak) try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered()[output_start..], "Flatpak") == null);
+
+            const elevated_arguments = try elevatedUpgradeArguments(&tc.context, &outcome.dispatch);
+            defer tc.context.allocator.free(elevated_arguments);
+            const elevated = try parser.parse(tc.arena.allocator(), &manifest, elevated_arguments);
+            try std.testing.expect(elevated == .dispatch);
+            try std.testing.expectEqual(disabled.appimage, optionEnabled(&elevated.dispatch, disable_appimage_update_check_option));
+            try std.testing.expectEqual(disabled.flatpak, optionEnabled(&elevated.dispatch, disable_flatpak_update_check_option));
+            try manager.reset();
+            capture = .{};
+            try runSelected(&capture, &tc.context, &operations, &elevated.dispatch);
+            try std.testing.expectEqualSlices(Backend, disabled.expected, capture.ran.items);
+            const repeated = try elevatedUpgradeArguments(&tc.context, &elevated.dispatch);
+            defer tc.context.allocator.free(repeated);
+            try std.testing.expectEqual(elevated_arguments.len, repeated.len);
+        }
+    }
+
+    try std.testing.expect(try manager.update("DisableAppImageUpdateCheck", "true"));
+    try std.testing.expect(try manager.update("DisableFlatpakUpdateCheck", "true"));
+    for ([_]Backend{ .appimage, .flatpak }) |backend| {
+        const standalone = try parser.parse(tc.arena.allocator(), &manifest, &.{ "upgrade", @tagName(backend) });
+        try std.testing.expect(standalone == .dispatch);
+        var capture: Capture = .{};
+        try runSelected(&capture, &tc.context, &operations, &standalone.dispatch);
+        try std.testing.expectEqualSlices(Backend, &.{backend}, capture.ran.items);
+    }
+
+    try manager.reset();
+    for ([_]struct { flag: []const u8, expected: []const Backend }{
+        .{ .flag = "--no-appimage", .expected = &.{ .standard, .aur, .flatpak } },
+        .{ .flag = "--no-flatpak", .expected = &.{ .standard, .aur, .appimage } },
+    }) |case| {
+        const explicit_skip = try parser.parse(tc.arena.allocator(), &manifest, &.{ "upgrade", "all", case.flag });
+        try std.testing.expect(explicit_skip == .dispatch);
+        var capture: Capture = .{};
+        var plan = try buildAllUpgradePlan(&tc.context, &explicit_skip.dispatch, &capture, &capture);
+        defer plan.deinit(tc.context.allocator);
+        try runSelected(&capture, &tc.context, &operations, &explicit_skip.dispatch);
+        try std.testing.expectEqualSlices(Backend, case.expected, capture.collected.items);
+        try std.testing.expectEqualSlices(Backend, case.expected, capture.ran.items);
+    }
+}
+
+test "disabled cache cleaning is limited to aggregate upgrades and survives elevation" {
+    const shortcodes = @import("../cli/shortcodes.zig");
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var absolute_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const absolute_length = try temporary.dir.realPath(std.testing.io, &absolute_buffer);
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    var environment = std.process.Environ.Map.init(tc.arena.allocator());
+    try environment.put("XDG_CONFIG_HOME", absolute_buffer[0..absolute_length]);
+    tc.context.environment = &environment;
+    const manager = config_manager.Manager.init(&tc.context);
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+
+    const aliases = [_][]const []const u8{
+        &.{},
+        &.{ "upgrade", "all" },
+        &.{ "upgrade", "standard", "--all" },
+        &.{ "upgrade", "standard", "-a" },
+        &.{"-U"},
+        &.{"-Ux"},
+        &.{"-Usa"},
+    };
+    for (aliases) |arguments| {
+        const translated = try shortcodes.translate(tc.arena.allocator(), &manifest, arguments);
+        const original = try parser.parse(tc.arena.allocator(), &manifest, translated.arguments().?);
+        try std.testing.expect(original == .dispatch);
+        try std.testing.expect(try manager.update("DisableCacheClean", "false"));
+        try std.testing.expect(!disableCacheClean(&tc.context, &original.dispatch));
+        try std.testing.expect(try manager.update("DisableCacheClean", "true"));
+        try std.testing.expect(try manager.update("AutoConfirmCacheClean", "true"));
+        try std.testing.expect(disableCacheClean(&tc.context, &original.dispatch));
+        const elevated_arguments = try elevatedUpgradeArguments(&tc.context, &original.dispatch);
+        defer tc.context.allocator.free(elevated_arguments);
+        const elevated = try parser.parse(tc.arena.allocator(), &manifest, elevated_arguments);
+        try std.testing.expect(elevated == .dispatch);
+        try std.testing.expect(optionEnabled(&elevated.dispatch, disable_cache_clean_option));
+        try std.testing.expect(!optionEnabled(&elevated.dispatch, auto_confirm_cache_clean_option));
+
+        // The elevated process need not have access to the invoking user's config.
+        try manager.reset();
+        try std.testing.expect(disableCacheClean(&tc.context, &elevated.dispatch));
+        const repeated = try elevatedUpgradeArguments(&tc.context, &elevated.dispatch);
+        defer tc.context.allocator.free(repeated);
+        try std.testing.expectEqual(elevated_arguments.len, repeated.len);
+    }
+
+    try std.testing.expect(try manager.update("DisableCacheClean", "true"));
+    const standalone = try parser.parse(tc.arena.allocator(), &manifest, &.{ "upgrade", "standard", disable_cache_clean_option });
+    try std.testing.expect(standalone == .dispatch);
+    try std.testing.expect(!disableCacheClean(&tc.context, &standalone.dispatch));
+    const manual = try parser.parse(tc.arena.allocator(), &manifest, &.{ "purify", "standard", "--cache" });
+    try std.testing.expect(manual == .dispatch);
+    try std.testing.expect(!disableCacheClean(&tc.context, &manual.dispatch));
+}
+
+test "disabled cleanup emits no operations or questions and preserves cached versions" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var absolute_buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const absolute_length = try temporary.dir.realPath(std.testing.io, &absolute_buffer);
+    const cache_directory = absolute_buffer[0..absolute_length];
+    const fixtures = [_][]const u8{
+        "example-1.0-1-any.pkg.tar.zst",
+        "example-2.0-1-any.pkg.tar.zst",
+        "example-3.0-1-any.pkg.tar.zst",
+        "example-4.0-1-any.pkg.tar.zst",
+    };
+    for (fixtures) |name|
+        try temporary.dir.writeFile(std.testing.io, .{ .sub_path = name, .data = "cached package" });
+
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    var environment = std.process.Environ.Map.init(tc.arena.allocator());
+    try environment.put("XDG_CONFIG_HOME", cache_directory);
+    tc.context.environment = &environment;
+    const manager = config_manager.Manager.init(&tc.context);
+    try std.testing.expect(try manager.update("DisableCacheClean", "true"));
+    try std.testing.expect(try manager.update("AutoConfirmCacheClean", "true"));
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const invocation = try parser.parse(tc.arena.allocator(), &manifest, &.{ "upgrade", "all", "--no-confirm", auto_confirm_cache_clean_option });
+    try std.testing.expect(invocation == .dispatch);
+    var operation_context = PackageManager.OperationContext.init(tc.arena.allocator(), std.testing.io);
+    defer operation_context.deinit();
+    const Capture = struct {
+        events: usize = 0,
+        questions: usize = 0,
+
+        fn receive(data: ?*anyopaque, _: PackageManager.OperationEvent) void {
+            const self: *@This() = @ptrCast(@alignCast(data.?));
+            self.events += 1;
+        }
+
+        fn answer(data: ?*anyopaque, _: PackageManager.OperationQuestion) PackageManager.OperationQuestionResponse {
+            const self: *@This() = @ptrCast(@alignCast(data.?));
+            self.questions += 1;
+            return .accepted;
+        }
+    };
+    var capture: Capture = .{};
+    _ = try operation_context.subscribe(.{ .function = Capture.receive, .data = &capture });
+    operation_context.setQuestionHandler(.{ .function = Capture.answer, .data = &capture });
+    var cleaner = PackageManager.CacheManager.init(tc.arena.allocator(), std.testing.io, .{ .cache_directory = cache_directory });
+    try runCacheClean(&tc.context, &operation_context, &invocation.dispatch, &cleaner);
+    try std.testing.expectEqual(@as(usize, 0), capture.events);
+    try std.testing.expectEqual(@as(usize, 0), capture.questions);
+    for (fixtures) |name| {
+        const contents = try temporary.dir.readFileAlloc(std.testing.io, name, tc.arena.allocator(), .limited(1024));
+        try std.testing.expectEqualStrings("cached package", contents);
+    }
+
+    // Re-enabling cleanup restores the existing three-version retention policy.
+    try std.testing.expect(try manager.update("DisableCacheClean", "false"));
+    try runCacheClean(&tc.context, &operation_context, &invocation.dispatch, &cleaner);
+    try std.testing.expect(capture.events > 0);
+    try std.testing.expectError(error.FileNotFound, temporary.dir.readFileAlloc(std.testing.io, fixtures[0], tc.arena.allocator(), .limited(1024)));
+}
+
 test "upgrade carries AUR URL override across elevation" {
     var tc: test_support.TestContext = .{};
     tc.init();
@@ -1277,11 +1589,12 @@ test "upgrade carries AUR URL override across elevation" {
     );
 }
 
-test "disabled cache clean policy does not alter elevated arguments" {
+test "default cache clean policy does not alter elevated arguments" {
     const original = [_][]const u8{ "upgrade", "all" };
     const elevated = try upgradeArgumentsWithCacheCleanPolicy(
         std.testing.allocator,
         &original,
+        false,
         false,
     );
     defer std.testing.allocator.free(elevated);
@@ -1301,6 +1614,7 @@ test "bare aggregate upgrade carries cache clean policy across elevation" {
         arena.allocator(),
         original.dispatch.arguments,
         true,
+        false,
     );
     const elevated = try parser.parse(arena.allocator(), &manifest, elevated_arguments);
     try std.testing.expect(elevated == .dispatch);
@@ -1314,17 +1628,17 @@ test "bare aggregate upgrade carries cache clean policy across elevation" {
 test "cache clean auto-confirm bypasses only the cache question" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var operation_context = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    var operation_context = PackageManager.OperationContext.init(arena.allocator(), std.testing.io);
     defer operation_context.deinit();
 
     const Responder = struct {
         calls: usize = 0,
-        response: Zigalpm.OperationQuestionResponse = .declined,
+        response: PackageManager.OperationQuestionResponse = .declined,
 
         fn answer(
             data: ?*anyopaque,
-            question: Zigalpm.OperationQuestion,
-        ) Zigalpm.OperationQuestionResponse {
+            question: PackageManager.OperationQuestion,
+        ) PackageManager.OperationQuestionResponse {
             const self: *@This() = @ptrCast(@alignCast(data.?));
             std.testing.expect(question.kind == .confirmation) catch unreachable;
             std.testing.expect(question.purpose == .cache_clean_extra_entries) catch unreachable;
@@ -1500,7 +1814,7 @@ test "combined upgrade plan defaults to approval, supports decline, and no-confi
     try std.testing.expect(defaulted_preview.has_updates);
     try std.testing.expect(defaulted_preview.proceed);
     try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Proceed with all upgrades? (Y/n)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Upgrade cancelled.") == null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Operation cancelled.") == null);
 
     tc.stdout.writer.end = 0;
     var decline_stdin = std.Io.Reader.fixed("n\n");
@@ -1512,7 +1826,7 @@ test "combined upgrade plan defaults to approval, supports decline, and no-confi
     );
     try std.testing.expect(declined_preview.has_updates);
     try std.testing.expect(!declined_preview.proceed);
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Upgrade cancelled.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Operation cancelled.") != null);
 
     tc.stdout.writer.end = 0;
     tc.context.stdin = null;
@@ -1649,6 +1963,36 @@ test "upgrade preview size formatting preserves negative net changes" {
     try std.testing.expectEqualStrings("-1.00 MiB", formatted);
 }
 
+test "Auto upgrade preview renders scaled totals and negative net changes" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    var updates = [_]list_updates.StandardUpdate{.{
+        .name = "demo",
+        .current_version = "1.0",
+        .new_version = "1.1",
+        .download_size = 192243668,
+        .size_difference = -23430335,
+        .description = "fixture",
+        .url = "https://example.invalid",
+        .repository = "extra",
+        .installed_size = 0,
+        .depends = &.{},
+        .optional_depends = &.{},
+        .licenses = &.{},
+        .provides = &.{},
+        .conflicts = &.{},
+        .groups = &.{},
+    }};
+    try renderPlannedStandardUpdates(&tc.context, fmt.parseSizeDisplay("Auto"), &updates);
+    const rendered = tc.stdout.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Total Download Size: 183.34 MiB\nNet Upgrade Size: -22.34 MiB") != null);
+    updates[0].download_size = 1073741824;
+    updates[0].size_difference = -1024;
+    try renderPlannedStandardUpdates(&tc.context, fmt.parseSizeDisplay("Auto"), &updates);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Total Download Size: 1.00 GiB\nNet Upgrade Size: -1.00 KiB") != null);
+}
+
 test "upgrade routes every action-first type through the combined handler" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1680,7 +2024,7 @@ test "upgrade routes every action-first type through the combined handler" {
             fn run(
                 self: *@This(),
                 _: *runtime.RuntimeContext,
-                operation_context: *Zigalpm.OperationContext,
+                operation_context: *PackageManager.OperationContext,
                 backend: Backend,
                 _: *const parser.Invocation,
             ) !void {
@@ -1697,6 +2041,7 @@ test "upgrade routes every action-first type through the combined handler" {
         var observed: Observed = .{};
 
         try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&context, &outcome.dispatch, &observed));
+        try std.testing.expect(context.tray_refresh_requested);
         try std.testing.expectEqual(expected.backend, observed.backend.?);
         try std.testing.expect(std.mem.indexOf(
             u8,
@@ -1726,7 +2071,7 @@ test "standard all modifier routes every backend through the combined coordinato
         .stdout = &stdout.writer,
         .stderr = &stderr.writer,
     };
-    var operation_context = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    var operation_context = PackageManager.OperationContext.init(arena.allocator(), std.testing.io);
     defer operation_context.deinit();
     const Calls = struct {
         backends: std.ArrayList(Backend) = .empty,
@@ -1734,7 +2079,7 @@ test "standard all modifier routes every backend through the combined coordinato
         fn run(
             self: *@This(),
             _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
+            _: *PackageManager.OperationContext,
             backend: Backend,
             _: *const parser.Invocation,
         ) !void {
@@ -1769,7 +2114,7 @@ test "upgrade all honors every exclusion" {
         fn run(
             self: *@This(),
             _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
+            _: *PackageManager.OperationContext,
             backend: Backend,
             _: *const parser.Invocation,
         ) !void {
@@ -1781,6 +2126,147 @@ test "upgrade all honors every exclusion" {
 
     try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, &calls));
     try std.testing.expectEqualSlices(Backend, &.{.aur}, calls.backends.items);
+}
+
+test "upgrade all keeps success after an AUR repository miss and preserves installation failures" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const root = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    try temporary.dir.createDirPath(io, "db");
+    try temporary.dir.createDirPath(io, "root");
+    try temporary.dir.createDirPath(io, "packages");
+    const config = try std.fmt.allocPrint(allocator, "[options]\nArchitecture = auto\nSigLevel = Never\nRootDir = {s}/root\nDBPath = {s}/db\nCacheDir = {s}/packages\n", .{ root, root, root });
+    defer allocator.free(config);
+    try temporary.dir.writeFile(io, .{ .sub_path = "pacman.conf", .data = config });
+    const config_path = try std.fs.path.join(allocator, &.{ root, "pacman.conf" });
+    defer allocator.free(config_path);
+    const manager = try PackageManager.Manager.init(allocator, std.testing.environ, .{ .config_path = config_path });
+    defer manager.deinit();
+
+    const Runner = struct {
+        manager: *PackageManager.Manager,
+        fail_install: bool,
+        reached_install: bool = false,
+
+        fn run(
+            self: *@This(),
+            _: *runtime.RuntimeContext,
+            operation_context: *PackageManager.OperationContext,
+            backend: Backend,
+            _: *const parser.Invocation,
+        ) !void {
+            if (backend != .aur) return;
+            self.manager.setOperationContext(operation_context);
+            defer self.manager.setOperationContext(null);
+            // Exercise the real ALPM query and the AUR caller's expected fallback.
+            const repository_match = self.manager.find_remote_satisfier_for_dependency("shelly-git=3.1.4-1") catch |err| switch (err) {
+                error.PkgNotFound => null,
+                else => return err,
+            };
+            try std.testing.expect(repository_match == null);
+
+            // Simulate the later installation outcome without installing packages.
+            self.reached_install = true;
+            var operation = operation_context.begin(.{ .backend = .aur, .kind = .install, .subject = "shelly-git" });
+            if (self.fail_install) {
+                operation.reportError(error.SyntheticInstallFailure, "AUR installation failed", "install", null, false);
+                operation.finish(.failed);
+            } else operation.finish(.success);
+        }
+    };
+
+    for ([_]bool{ false, true }) |fail_install| {
+        var tc: test_support.TestContext = .{};
+        tc.init();
+        defer tc.deinit();
+        const manifest = try spec.Manifest.load(tc.arena.allocator());
+        const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "upgrade", "all", "--no-confirm" });
+        try std.testing.expect(outcome == .dispatch);
+        var runner: Runner = .{ .manager = manager, .fail_install = fail_install };
+        try std.testing.expectEqual(@as(u8, if (fail_install) 1 else 0), try executeWithRunner(&tc.context, &outcome.dispatch, &runner));
+        try std.testing.expect(runner.reached_install);
+        const rendered = tc.stdout.writer.buffered();
+        try std.testing.expect(std.mem.indexOf(u8, rendered, "Could not complete the package search") == null);
+        try std.testing.expectEqual(!fail_install, std.mem.indexOf(u8, rendered, ":: All upgrades complete.") != null);
+        try std.testing.expectEqual(fail_install, std.mem.indexOf(u8, rendered, "The upgrade did not complete successfully") != null);
+        try std.testing.expectEqual(fail_install, std.mem.indexOf(u8, rendered, "AUR installation failed") != null);
+    }
+}
+
+test "upgrade optional AUR HTTP failures warn in UI and terminal without masking required failures" {
+    const Case = enum { optional, required_lookup, required_install };
+    for ([_]bool{ false, true }) |ui_mode| {
+        for ([_]Case{ .optional, .required_lookup, .required_install }) |case| {
+            var tc: test_support.TestContext = .{};
+            tc.init();
+            defer tc.deinit();
+            const manifest = try spec.Manifest.load(tc.arena.allocator());
+            const arguments: []const []const u8 = if (ui_mode)
+                &.{ "upgrade", "all", "--ui-mode", "--no-confirm" }
+            else
+                &.{ "upgrade", "all", "--no-confirm" };
+            const outcome = try parser.parse(tc.arena.allocator(), &manifest, arguments);
+            try std.testing.expect(outcome == .dispatch);
+            const Runner = struct {
+                case: Case,
+                later_backends: usize = 0,
+                fn run(self: *@This(), context: *runtime.RuntimeContext, operations: *PackageManager.OperationContext, backend: Backend, _: *const parser.Invocation) !void {
+                    if (backend == .flatpak or backend == .appimage) self.later_backends += 1;
+                    if (backend != .aur) return;
+                    var parent = operations.begin(.{ .backend = .aur, .kind = .update, .subject = "editor-bin" });
+                    defer parent.finish(.success);
+                    {
+                        var dependency = parent.child(.{ .backend = .aur, .kind = .install, .subject = "optional-tool" });
+                        defer dependency.finish(.failed);
+                        var recovery: PackageManager.operation.RecoverableErrors = .{
+                            .message = "Could not install optional dependency 'optional-tool' for 'editor-bin'. Retry it separately.",
+                        };
+                        if (self.case != .required_lookup) dependency.recoverable_errors = &recovery;
+                        var client = try PackageManager.aur.rpc.Client.init(context.allocator, context.io, PackageManager.aur.rpc.default_rpc_url);
+                        defer client.deinit();
+                        client.setParentOperation(&dependency);
+                        var service = PackageManager.aur.rpc.TestService{ .failure = error.Timeout };
+                        service.install(&client);
+                        try std.testing.expectError(error.AurRpcLookupFailed, client.findProviders("optional-tool"));
+                        dependency.reportError(error.AurRpcLookupFailed, "Provider lookup failed", "aur", null, false);
+                    }
+                    if (self.case == .required_install)
+                        parent.reportError(error.BuildFailed, "Required package installation failed", "aur", null, false);
+                }
+            };
+            var runner: Runner = .{ .case = case };
+            const expected_code: u8 = if (case == .optional) 0 else 1;
+            try std.testing.expectEqual(expected_code, try executeWithRunner(&tc.context, &outcome.dispatch, &runner));
+            try std.testing.expectEqual(@as(usize, 2), runner.later_backends);
+            var decoded: std.Io.Writer.Allocating = .init(tc.arena.allocator());
+            defer decoded.deinit();
+            if (ui_mode) {
+                var lines = std.mem.splitScalar(u8, tc.stdout.writer.buffered(), '\n');
+                while (lines.next()) |line| {
+                    if (!std.mem.startsWith(u8, line, "[JSON]") or !std.mem.endsWith(u8, line, "[/JSON]")) continue;
+                    const encoded = line[6 .. line.len - 7];
+                    const buffer = try tc.arena.allocator().alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(encoded));
+                    try std.base64.standard.Decoder.decode(buffer, encoded);
+                    try decoded.writer.writeAll(buffer);
+                }
+            } else try decoded.writer.writeAll(tc.stdout.writer.buffered());
+            const rendered = decoded.writer.buffered();
+            if (case != .required_lookup) {
+                try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, rendered, "Could not install optional dependency"));
+                try std.testing.expect(std.mem.indexOf(u8, rendered, "optional-tool") != null);
+                try std.testing.expect(std.mem.indexOf(u8, rendered, "editor-bin") != null);
+            }
+            if (ui_mode) {
+                try std.testing.expect(std.mem.indexOf(u8, rendered, if (expected_code == 0) "TransactionDone" else "TransactionFailed") != null);
+                if (expected_code == 0) try std.testing.expect(std.mem.indexOf(u8, rendered, "TransactionFailed") == null);
+            } else {
+                try std.testing.expect(std.mem.indexOf(u8, rendered, if (expected_code == 0) "All upgrades complete." else "The upgrade did not complete successfully") != null);
+            }
+        }
+    }
 }
 
 test "upgrade all continues after a failed backend and returns failure" {
@@ -1796,11 +2282,12 @@ test "upgrade all continues after a failed backend and returns failure" {
 
         fn run(
             self: *@This(),
-            _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
+            context: *runtime.RuntimeContext,
+            _: *PackageManager.OperationContext,
             backend: Backend,
             _: *const parser.Invocation,
         ) !void {
+            try std.testing.expect(!context.tray_refresh_requested);
             try self.backends.append(std.testing.allocator, backend);
             if (backend == .aur) return error.SyntheticAurFailure;
         }
@@ -1809,12 +2296,13 @@ test "upgrade all continues after a failed backend and returns failure" {
     defer calls.backends.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&tc.context, &outcome.dispatch, &calls));
+    try std.testing.expect(tc.context.tray_refresh_requested);
     try std.testing.expectEqualSlices(Backend, &all_backends, calls.backends.items);
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "AUR upgrade step failed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Could not complete the AUR upgrade") != null);
     try std.testing.expect(std.mem.indexOf(
         u8,
         tc.stdout.writer.buffered(),
-        ":: One or more upgrade steps failed.",
+        ":: The upgrade did not complete successfully.",
     ) != null);
 }
 
@@ -1836,7 +2324,7 @@ test "upgrade all silently skips an unavailable Flatpak backend" {
         fn run(
             self: *@This(),
             _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
+            _: *PackageManager.OperationContext,
             backend: Backend,
             _: *const parser.Invocation,
         ) !void {
@@ -1881,7 +2369,7 @@ test "upgrade all warns for an incompatible Flatpak backend" {
         fn run(
             _: @This(),
             _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
+            _: *PackageManager.OperationContext,
             backend: Backend,
             _: *const parser.Invocation,
         ) !void {
@@ -1897,7 +2385,7 @@ test "upgrade all warns for an incompatible Flatpak backend" {
     try std.testing.expect(std.mem.indexOf(
         u8,
         tc.stdout.writer.buffered(),
-        "Upgrade Shelly and shelly-flatpak-backend together",
+        "Upgrade shelly and shelly-flatpak-backend together",
     ) != null);
 }
 
@@ -1917,7 +2405,7 @@ test "upgrade all reports a broken Flatpak backend as a failure" {
         fn run(
             _: @This(),
             _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
+            _: *PackageManager.OperationContext,
             backend: Backend,
             _: *const parser.Invocation,
         ) !void {
@@ -1933,12 +2421,12 @@ test "upgrade all reports a broken Flatpak backend as a failure" {
     try std.testing.expect(std.mem.indexOf(
         u8,
         tc.stdout.writer.buffered(),
-        "Flatpak upgrade step failed: FlatpakBackendCreateFailed",
+        "Technical details: FlatpakBackendCreateFailed",
     ) != null);
     try std.testing.expect(std.mem.indexOf(
         u8,
         tc.stdout.writer.buffered(),
-        "One or more upgrade steps failed",
+        "The upgrade did not complete successfully",
     ) != null);
 }
 
@@ -1959,7 +2447,7 @@ test "upgrade UI mode emits backend percentage frames" {
         fn run(
             _: @This(),
             _: *runtime.RuntimeContext,
-            operation_context: *Zigalpm.OperationContext,
+            operation_context: *PackageManager.OperationContext,
             backend: Backend,
             _: *const parser.Invocation,
         ) !void {
@@ -1974,6 +2462,7 @@ test "upgrade UI mode emits backend percentage frames" {
     };
 
     try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, Progress{}));
+    try std.testing.expect(!tc.context.tray_refresh_requested);
     const rendered = tc.stdout.writer.buffered();
     try std.testing.expectEqual(@as(usize, 3), std.mem.count(u8, rendered, "[JSON]"));
     try std.testing.expect(std.mem.indexOf(u8, rendered, "[/JSON]") != null);
@@ -1993,7 +2482,7 @@ test "no-devel modifier reaches the AUR backend selection on aur and all upgrade
         fn run(
             self: *@This(),
             _: *runtime.RuntimeContext,
-            _: *Zigalpm.OperationContext,
+            _: *PackageManager.OperationContext,
             backend: Backend,
             invocation: *const parser.Invocation,
         ) !void {
@@ -2088,7 +2577,7 @@ test "appimage relaunch forwards output modifiers to the nested invocation" {
 
 const EolUpgradeTestManager = struct {
     allocator: std.mem.Allocator,
-    statuses: []const Zigalpm.flatpak.EolStatus = &.{},
+    statuses: []const PackageManager.flatpak.EolStatus = &.{},
     list_error: bool = false,
     rebase_result: bool = true,
     rebase_error: bool = false,
@@ -2106,9 +2595,9 @@ const EolUpgradeTestManager = struct {
         self.rebase_previous_ids.deinit(self.allocator);
     }
 
-    pub fn list_eol_flatpak(self: @This()) ![]Zigalpm.flatpak.EolStatus {
+    pub fn list_eol_flatpak(self: @This()) ![]PackageManager.flatpak.EolStatus {
         if (self.list_error) return error.TestListFailure;
-        const result = try self.allocator.alloc(Zigalpm.flatpak.EolStatus, self.statuses.len);
+        const result = try self.allocator.alloc(PackageManager.flatpak.EolStatus, self.statuses.len);
         for (self.statuses, result) |source, *dest| {
             dest.* = try cloneEolStatus(self.allocator, source);
         }
@@ -2120,7 +2609,7 @@ const EolUpgradeTestManager = struct {
         old_ref: []const u8,
         new_ref: []const u8,
         _: []const u8,
-        _: Zigalpm.flatpak.Scope,
+        _: PackageManager.flatpak.Scope,
         previous_ids: []const []const u8,
     ) !bool {
         self.rebase_called += 1;
@@ -2134,7 +2623,7 @@ const EolUpgradeTestManager = struct {
     }
 };
 
-fn cloneEolStatus(allocator: std.mem.Allocator, source: Zigalpm.flatpak.EolStatus) !Zigalpm.flatpak.EolStatus {
+fn cloneEolStatus(allocator: std.mem.Allocator, source: PackageManager.flatpak.EolStatus) !PackageManager.flatpak.EolStatus {
     return .{
         .reference = try allocator.dupe(u8, source.reference),
         .id = try allocator.dupe(u8, source.id),
@@ -2151,7 +2640,7 @@ fn makeEolStatus(
     branch: []const u8,
     eol: ?[]const u8,
     eol_rebase: ?[]const u8,
-) Zigalpm.flatpak.EolStatus {
+) PackageManager.flatpak.EolStatus {
     return .{
         .reference = @constCast("app/dev.bragefuglseth.Keypunch/x86_64/stable"),
         .id = @constCast(id),
@@ -2174,10 +2663,10 @@ test "Flatpak upgrade rebases all EOL refs with replacements automatically" {
         .stdout = &stdout.writer,
         .stderr = &stderr.writer,
     };
-    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    var operations = PackageManager.OperationContext.init(arena.allocator(), std.testing.io);
     defer operations.deinit();
 
-    const statuses = [_]Zigalpm.flatpak.EolStatus{
+    const statuses = [_]PackageManager.flatpak.EolStatus{
         makeEolStatus("dev.bragefuglseth.Keypunch", "stable", null, "no.bragefuglseth.Keypunch"),
         makeEolStatus("org.example.Dead", "stable", "No longer maintained", null),
     };
@@ -2212,10 +2701,10 @@ test "Flatpak upgrade warns and continues when a rebase fails" {
         .stdout = &stdout.writer,
         .stderr = &stderr.writer,
     };
-    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    var operations = PackageManager.OperationContext.init(arena.allocator(), std.testing.io);
     defer operations.deinit();
 
-    const statuses = [_]Zigalpm.flatpak.EolStatus{
+    const statuses = [_]PackageManager.flatpak.EolStatus{
         makeEolStatus("dev.bragefuglseth.Keypunch", "stable", null, "no.bragefuglseth.Keypunch"),
         makeEolStatus("org.example.Other", "stable", null, "org.example.New"),
     };
@@ -2243,7 +2732,7 @@ test "Flatpak upgrade handles an empty EOL list gracefully" {
         .stdout = &stdout.writer,
         .stderr = &stderr.writer,
     };
-    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    var operations = PackageManager.OperationContext.init(arena.allocator(), std.testing.io);
     defer operations.deinit();
 
     var manager: EolUpgradeTestManager = .{
@@ -2267,7 +2756,7 @@ test "Flatpak upgrade treats list_eol failures as advisory" {
         .stdout = &stdout.writer,
         .stderr = &stderr.writer,
     };
-    var operations = Zigalpm.OperationContext.init(arena.allocator(), std.testing.io);
+    var operations = PackageManager.OperationContext.init(arena.allocator(), std.testing.io);
     defer operations.deinit();
 
     var manager: EolUpgradeTestManager = .{

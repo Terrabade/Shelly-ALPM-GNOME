@@ -13,6 +13,7 @@ const mark = @import("catalog/mark.zig");
 const news = @import("catalog/news.zig");
 const purify = @import("catalog/purify.zig");
 const remove = @import("catalog/remove.zig");
+const repo_db = @import("catalog/repo_db.zig");
 const repository = @import("catalog/repository.zig");
 const run = @import("catalog/run.zig");
 const search = @import("catalog/search.zig");
@@ -21,6 +22,7 @@ const update = @import("catalog/update.zig");
 const upgrade = @import("catalog/upgrade.zig");
 const utility = @import("catalog/utility.zig");
 const builder = @import("catalog/builder.zig");
+const resolve = @import("catalog/resolve.zig");
 
 pub const Action = core.Action;
 pub const Argument = core.Argument;
@@ -45,6 +47,7 @@ pub const root_options = [_]Option{
     core.globalFlag("--no-confirm", &.{"-n"}, "Use safe automatic answers instead of prompting"),
     core.globalFlag("--ui-mode", &.{"-U"}, "Emit framed output for the Shelly UI"),
     core.globalFlag("--json", &.{"-j"}, "Output structured JSON where the command supports it"),
+    core.globalStringOption("--config", &.{}, "Read native package configuration from this file"),
     core.globalStringOption(
         "--aur-url",
         &.{},
@@ -53,6 +56,18 @@ pub const root_options = [_]Option{
     hiddenGlobalFlag(
         "--auto-confirm-cache-clean",
         "Preserve the invoking user's cache-clean policy across elevation",
+    ),
+    hiddenGlobalFlag(
+        "--disable-cache-clean",
+        "Preserve disabled upgrade-all cache cleaning across elevation",
+    ),
+    hiddenGlobalFlag(
+        "--disable-appimage-update-check",
+        "Preserve disabled upgrade-all AppImage checks across elevation",
+    ),
+    hiddenGlobalFlag(
+        "--disable-flatpak-update-check",
+        "Preserve disabled upgrade-all Flatpak checks across elevation",
     ),
 };
 
@@ -97,7 +112,9 @@ pub const variants = search.variants ++
     config.variants ++
     keyring.variants ++
     run.variants ++
-    builder.variants;
+    builder.variants ++
+    resolve.variants ++
+    repo_db.variants;
 
 pub const shared_modifiers = [_]SharedModifier{
     .{
@@ -391,6 +408,29 @@ test "remove variants expose native help and modifier aliases" {
         }
     }
     try std.testing.expect(found_no_cascade);
+}
+
+test "build install modifier uses the free l alias and leaves isolated alone" {
+    const options = resolveOptions(comptime findVariant(.build, "build").?);
+    var found = false;
+    for (options) |option| {
+        if (!std.mem.eql(u8, option.name, "--install")) continue;
+        found = true;
+        try std.testing.expect(option.aliases.len == 1);
+        try std.testing.expect(option.matches("-l"));
+        try std.testing.expect(!option.matches("-i"));
+        try std.testing.expect(option.description.?.len > 0);
+    }
+    try std.testing.expect(found);
+
+    var isolated_found = false;
+    for (options) |option| {
+        if (!std.mem.eql(u8, option.name, "--isolated")) continue;
+        isolated_found = true;
+        try std.testing.expect(option.matches("-i"));
+        try std.testing.expect(!option.matches("-l"));
+    }
+    try std.testing.expect(isolated_found);
 }
 
 test "shared modifiers stay shared across their listed types" {

@@ -3,6 +3,10 @@
   <menu id="package_actions_menu">
     <section>
       <item>
+        <attribute name="label" translatable="yes">Install Optional Deps</attribute>
+        <attribute name="action">detail.installoptdeps</attribute>
+      </item>
+      <item>
         <attribute name="label" translatable="yes">Reinstall</attribute>
         <attribute name="action">detail.reinstall</attribute>
       </item>
@@ -63,6 +67,7 @@
                 <property name="margin-bottom">8</property>
                 <child>
                   <object class="GtkImage" id="icon">
+                    <property name="accessible-role">presentation</property>
                     <property name="pixel-size">64</property>
                     <property name="halign">start</property>
                   </object>

@@ -1,12 +1,18 @@
 const std = @import("std");
-const Zigalpm = @import("Zigalpm");
+const PackageManager = @import("PackageManager");
 const config_manager = @import("manager.zig");
 const config_model = @import("model.zig");
 const runtime = @import("../runtime/context.zig");
 
 pub const configuration_key = "DownloadAddressFamilyPolicy";
 
-const AddressFamilyPolicy = Zigalpm.shared.downloader.AddressFamilyPolicy;
+const AddressFamilyPolicy = PackageManager.shared.downloader.AddressFamilyPolicy;
+const default_parallel_download_count = PackageManager.shared.download_queue.default_limit;
+
+pub fn parallelCountFromConfig(config: *const config_model.Config) u8 {
+    const value = config.values.get("ParallelDownloadCount") orelse return default_parallel_download_count;
+    return config_model.parallelDownloadCount(value) orelse default_parallel_download_count;
+}
 
 pub fn fromConfig(config: *const config_model.Config) AddressFamilyPolicy {
     const value = config.values.get(configuration_key) orelse return .prefer_ipv4;
@@ -26,7 +32,13 @@ pub fn load(context: *runtime.RuntimeContext) AddressFamilyPolicy {
 /// created afterwards, including managers nested inside AUR operations,
 /// inherits this process-wide default.
 pub fn applyProcessDefault(context: *runtime.RuntimeContext) void {
-    Zigalpm.AlpmManager.setDefaultDownloadAddressFamilyPolicy(load(context));
+    const config = config_manager.Manager.init(context).read() catch {
+        PackageManager.Manager.setDefaultDownloadAddressFamilyPolicy(.prefer_ipv4);
+        PackageManager.Manager.setDefaultParallelDownloadCount(default_parallel_download_count);
+        return;
+    };
+    PackageManager.Manager.setDefaultDownloadAddressFamilyPolicy(fromConfig(&config));
+    PackageManager.Manager.setDefaultParallelDownloadCount(parallelCountFromConfig(&config));
 }
 
 fn parse(text: []const u8) AddressFamilyPolicy {
@@ -96,11 +108,35 @@ test "CLI startup applies the configured process default" {
     try std.testing.expect(try config.set(arena.allocator(), configuration_key, "PreferIPv6"));
     try config_manager.Manager.init(&context).save(&config);
 
-    const previous = Zigalpm.AlpmManager.defaultDownloadAddressFamilyPolicy();
-    defer Zigalpm.AlpmManager.setDefaultDownloadAddressFamilyPolicy(previous);
+    const previous = PackageManager.Manager.defaultDownloadAddressFamilyPolicy();
+    defer PackageManager.Manager.setDefaultDownloadAddressFamilyPolicy(previous);
+    const previous_count = PackageManager.Manager.defaultParallelDownloadCount();
+    defer PackageManager.Manager.setDefaultParallelDownloadCount(previous_count);
     applyProcessDefault(&context);
     try std.testing.expectEqual(
         AddressFamilyPolicy.happy_eyeballs,
-        Zigalpm.AlpmManager.defaultDownloadAddressFamilyPolicy(),
+        PackageManager.Manager.defaultDownloadAddressFamilyPolicy(),
     );
+    try std.testing.expectEqual(default_parallel_download_count, PackageManager.Manager.defaultParallelDownloadCount());
+    try std.testing.expect(try config.set(arena.allocator(), "ParallelDownloadCount", "1"));
+    try config_manager.Manager.init(&context).save(&config);
+    applyProcessDefault(&context);
+    try std.testing.expectEqual(@as(u8, 1), PackageManager.Manager.defaultParallelDownloadCount());
+}
+
+test "parallel download count uses configured limits and defaults safely" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var config = try config_model.Config.defaults(arena.allocator());
+    try std.testing.expectEqual(default_parallel_download_count, parallelCountFromConfig(&config));
+    for ([_]u8{ 1, 3, 100, 255 }) |count| {
+        try config.values.put(arena.allocator(), "ParallelDownloadCount", .{ .integer = count });
+        try std.testing.expectEqual(count, parallelCountFromConfig(&config));
+    }
+    for ([_]std.json.Value{ .{ .integer = 0 }, .{ .integer = -1 }, .{ .integer = 256 }, .{ .float = 1.5 }, .{ .string = "1" }, .null }) |value| {
+        try config.values.put(arena.allocator(), "ParallelDownloadCount", value);
+        try std.testing.expectEqual(default_parallel_download_count, parallelCountFromConfig(&config));
+    }
+    _ = config.values.swapRemove("ParallelDownloadCount");
+    try std.testing.expectEqual(default_parallel_download_count, parallelCountFromConfig(&config));
 }

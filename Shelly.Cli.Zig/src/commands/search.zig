@@ -1,5 +1,6 @@
 const std = @import("std");
-const Zigalpm = @import("Zigalpm");
+const diagnostics = @import("diagnostics");
+const PackageManager = @import("PackageManager");
 const test_support = @import("test_support.zig");
 const output = @import("../output/config.zig");
 const colors = @import("../output/colors.zig");
@@ -11,7 +12,6 @@ const runtime = @import("../runtime/context.zig");
 const spec = @import("../cli/spec.zig");
 const aur_url = @import("../config/aur_url.zig");
 
-const joined = format.joined;
 const nonNegative = format.nonNegative;
 const loadSizeDisplay = format.loadSizeDisplay;
 const formatSize = format.formatSize;
@@ -26,6 +26,7 @@ const flatpak_command_path = "shelly search flatpak";
 
 pub const StandardPackage = struct {
     name: []const u8,
+    package_base: []const u8 = "",
     version: []const u8,
     size: i64 = 0,
     description: []const u8 = "",
@@ -98,8 +99,10 @@ const FlatpakPackage = struct {
     verification_method: ?[]const u8 = null,
     download_size: u64 = 0,
     installed_size: u64 = 0,
-    permissions: []const []const u8 = &.{},
-    scope: Zigalpm.flatpak.Scope = .unknown,
+    /// Null when the remote reference could not be read, which is not the same
+    /// as an app that declares no permissions.
+    permissions: ?[]const []const u8 = null,
+    scope: PackageManager.flatpak.Scope = .unknown,
 };
 
 const StandardMode = enum { packages, repositories, groups, detail };
@@ -118,6 +121,7 @@ const StandardResult = struct {
 const PackageBuild = struct {
     name: []const u8,
     pkgbuild: ?[]const u8,
+    scan: ?PackageManager.AurManager.PreviewPkgbuildReview = null,
 };
 
 const AurResult = struct {
@@ -125,6 +129,7 @@ const AurResult = struct {
     standard_packages: []const StandardPackage = &.{},
     pkgbuilds: ?[]const PackageBuild = null,
     detail: ?AurPackage = null,
+    aur_base: []const u8 = "",
 };
 
 const FlatpakResult = struct {
@@ -166,6 +171,14 @@ fn executeWithRunner(
     runner: anytype,
 ) anyerror!u8 {
     if (std.mem.eql(u8, invocation.command.path, aur_command_path)) {
+        if (optionEnabled(invocation, "--scan-pkgbuild")) {
+            if (!optionEnabled(invocation, "--pkgbuild"))
+                return writeFailure(context, invocation, "--scan-pkgbuild requires --pkgbuild.");
+            const base = try PackageManager.aur.endpoints.normalizeBase(context.allocator, try aur_url.resolveFor(context, invocation));
+            defer context.allocator.free(base);
+            if (!std.mem.eql(u8, base, "https://atoll.seafoam-labs.org"))
+                return writeFailure(context, invocation, "PKGBUILD preview scanning requires the Atoll AUR mirror.");
+        }
         if (optionEnabled(invocation, "--detail")) {
             if (optionEnabled(invocation, "--pkgbuild"))
                 return writeFailure(context, invocation, "Cannot combine --detail with --pkgbuild.");
@@ -185,7 +198,7 @@ fn executeWithRunner(
                 const message = if (std.mem.trim(u8, query, " \t\r\n").len == 0)
                     "Query cannot be empty."
                 else
-                    "Error: Query must be at least 2 characters long";
+                    "Enter a search query containing at least two characters.";
                 return writeFailure(context, invocation, message);
             }
         }
@@ -205,16 +218,12 @@ fn executeWithRunner(
 
     const result = runner.search(context, invocation) catch |err| {
         const failure: anyerror = err;
-        if (Zigalpm.flatpak.errors.unavailableMessage(failure)) |message|
+        if (PackageManager.flatpak.errors.unavailableMessage(failure)) |message|
             return writeFailure(context, invocation, message);
         const message = switch (failure) {
-            error.NoPackageSpecified => "No package specified",
-            error.PackageNotFound => try std.fmt.allocPrint(
-                context.allocator,
-                "No package named {s} found",
-                .{if (invocation.positionals.len > 0) invocation.positionals[0] else ""},
-            ),
-            else => try std.fmt.allocPrint(context.allocator, "Search failed: {t}", .{failure}),
+            error.NoPackageSpecified => "Specify at least one package name. See the command help for usage.",
+            error.PackageNotFound => try PackageManager.user_errors.missingPackage(context.allocator, if (invocation.positionals.len > 0) invocation.positionals[0] else "the requested package"),
+            else => try PackageManager.user_errors.format(context.allocator, failure, .{ .operation = "the package search" }),
         };
         return writeFailure(context, invocation, message);
     };
@@ -251,33 +260,46 @@ fn runRealSearch(
     return error.UnsupportedSearchType;
 }
 
+const StandardSources = struct {
+    available: bool,
+    installed: bool,
+    detail: bool,
+};
+
+fn standardSources(invocation: *const parser.Invocation) StandardSources {
+    var available = optionEnabled(invocation, "--available");
+    var installed = optionEnabled(invocation, "--installed");
+    const detail = optionEnabled(invocation, "--detail");
+    if (!optionEnabled(invocation, "--repos") and !available and !installed and
+        !optionEnabled(invocation, "--local") and !detail)
+    {
+        installed = optionEnabled(invocation, "--explicit") or optionEnabled(invocation, "--depends");
+        available = !installed;
+    }
+    if (detail or optionEnabled(invocation, "--group")) available = true;
+    return .{ .available = available, .installed = installed, .detail = detail };
+}
+
 fn runStandard(
     context: *runtime.RuntimeContext,
     invocation: *const parser.Invocation,
 ) !StandardResult {
     const repositories = optionEnabled(invocation, "--repos");
-    var available = optionEnabled(invocation, "--available");
-    var installed = optionEnabled(invocation, "--installed");
+    const sources = standardSources(invocation);
+    const available = sources.available;
+    const installed = sources.installed;
     const local = optionEnabled(invocation, "--local");
-    var detail = optionEnabled(invocation, "--detail");
+    const detail = sources.detail;
     const group = optionEnabled(invocation, "--group");
     const show_hidden = optionEnabled(invocation, "--show-hidden");
     const query: ?[]const u8 = if (invocation.positionals.len == 0) null else invocation.positionals[0];
     const depends = optionEnabled(invocation, "--depends");
     const explicit = optionEnabled(invocation, "--explicit");
 
-    if (!repositories and !available and !installed and !local and !detail) {
-        installed = true;
-        available = true;
-        detail = query != null and std.mem.trim(u8, query.?, " \t\r\n").len != 0;
-    }
-    if (detail) available = true;
-    if (group) available = true;
-
-    const manager = try Zigalpm.AlpmManager.init(
+    const manager = try PackageManager.Manager.init(
         context.allocator,
         context.environ,
-        .{ .use_root = false },
+        .{ .config_path = context.config_path, .use_root = false },
     );
     defer manager.deinit();
     if (show_hidden and !manager.show_hidden_packages) _ = manager.toggle_hidden_packages();
@@ -292,7 +314,7 @@ fn runStandard(
     var packages: std.ArrayList(StandardPackage) = .empty;
     if (installed) {
         const values = try manager.get_installed_packages();
-        defer Zigalpm.alpm.OwnedPackage.deinitSlice(context.allocator, values);
+        defer PackageManager.Manager.OwnedPackage.deinitSlice(context.allocator, values);
         for (values) |value| {
             const name = value.name() orelse continue;
             if (!show_hidden and ignoredPackage(manager, name)) continue;
@@ -309,7 +331,7 @@ fn runStandard(
     }
     if (available) {
         const values = try manager.get_available_packages();
-        defer Zigalpm.alpm.OwnedPackage.deinitSlice(context.allocator, values);
+        defer PackageManager.Manager.OwnedPackage.deinitSlice(context.allocator, values);
         var seen = std.StringHashMap(void).init(context.allocator);
         defer seen.deinit();
         for (values) |value| {
@@ -372,10 +394,10 @@ fn runStandard(
 
     var local_packages: std.ArrayList(LocalPackage) = .empty;
     if (local) {
-        var local_manager = Zigalpm.LocalManager.init(context.allocator, context.io, .{});
+        var local_manager = PackageManager.LocalManager.init(context.allocator, context.io, .{});
         defer local_manager.deinit();
         const values = try local_manager.getInstalledBinaryPackages();
-        defer Zigalpm.local.Package.deinitSlice(context.allocator, values);
+        defer PackageManager.local.Package.deinitSlice(context.allocator, values);
         if (query) |wanted| {
             var scored: std.ArrayList(ScoredLocal) = .empty;
             defer scored.deinit(context.allocator);
@@ -436,7 +458,8 @@ fn runAur(
     invocation: *const parser.Invocation,
 ) !AurResult {
     const aur_base = try aur_url.resolveFor(context, invocation);
-    var manager = try Zigalpm.AurManager.init(context.allocator, context.environ, .{
+    var manager = try PackageManager.AurManager.init(context.allocator, context.environ, .{
+        .config_path = context.config_path,
         .aur_git_base_url = aur_base,
     });
     defer manager.deinit();
@@ -447,12 +470,24 @@ fn runAur(
         errdefer {
             for (builds[0..initialized]) |build| {
                 context.allocator.free(build.name);
-                if (build.pkgbuild) |pkgbuild| context.allocator.free(pkgbuild);
+                if (build.scan) |review| {
+                    var owned = review;
+                    owned.deinit(context.allocator);
+                } else if (build.pkgbuild) |pkgbuild| context.allocator.free(pkgbuild);
             }
             context.allocator.free(builds);
         }
         for (invocation.positionals, builds) |package, *build| {
             const name = try context.allocator.dupe(u8, package);
+            if (optionEnabled(invocation, "--scan-pkgbuild")) {
+                const review = manager.reviewCachedPkgbuild(package) catch |err| {
+                    context.allocator.free(name);
+                    return err;
+                };
+                build.* = .{ .name = name, .pkgbuild = review.content, .scan = review };
+                initialized += 1;
+                continue;
+            }
             const pkgbuild = manager.fetchPkgbuild(package) catch |err| {
                 context.allocator.free(name);
                 return err;
@@ -469,7 +504,7 @@ fn runAur(
     var standard_packages: std.ArrayList(StandardPackage) = .empty;
     if (optionEnabled(invocation, "--standard") and !detail) {
         const values = try manager.alpm.get_available_packages();
-        defer Zigalpm.alpm.OwnedPackage.deinitSlice(context.allocator, values);
+        defer PackageManager.Manager.OwnedPackage.deinitSlice(context.allocator, values);
         for (values) |value| {
             const name = value.name() orelse continue;
             if (try partialRatio(context.allocator, query, name) < 90) continue;
@@ -479,7 +514,7 @@ fn runAur(
     }
 
     const values = try manager.searchPackages(query);
-    defer Zigalpm.aur.models.Package.deinitSlice(context.allocator, values);
+    defer PackageManager.aur.models.Package.deinitSlice(context.allocator, values);
     const packages = try context.allocator.alloc(AurPackage, values.len);
     for (values, packages) |value, *destination|
         destination.* = try copyAurPackage(context.allocator, value);
@@ -495,6 +530,7 @@ fn runAur(
     return .{
         .packages = packages,
         .standard_packages = try standard_packages.toOwnedSlice(context.allocator),
+        .aur_base = try context.allocator.dupe(u8, aur_base),
     };
 }
 
@@ -505,9 +541,9 @@ fn runFlatpak(
     const query = invocation.positionals[0];
     const limit: usize = @intCast(optionInteger(invocation, "--limit", 21));
     const page: usize = @intCast(optionInteger(invocation, "--page", 1));
-    var manager = Zigalpm.flatpak.AppstreamManager.init(context.allocator, context.io);
+    var manager = PackageManager.flatpak.AppstreamManager.init(context.allocator, context.io);
     const catalogs = try manager.getAllRemoteCatalogs(null);
-    defer Zigalpm.flatpak.AppstreamCatalog.deinitSlice(context.allocator, catalogs);
+    defer PackageManager.flatpak.AppstreamCatalog.deinitSlice(context.allocator, catalogs);
 
     var matches: std.ArrayList(FlatpakPackage) = .empty;
     for (catalogs) |catalog| {
@@ -550,7 +586,7 @@ fn enrichFlatpakRemoteInfo(
     context: *runtime.RuntimeContext,
     packages: []FlatpakPackage,
 ) !void {
-    var manager = Zigalpm.FlatpakManager{ .allocator = context.allocator, .io = context.io };
+    var manager = PackageManager.FlatpakManager{ .allocator = context.allocator, .io = context.io };
     defer manager.deinit();
     for (packages) |*package| {
         if (package.scope == .unknown or package.remote.len == 0 or package.id.len == 0) continue;
@@ -710,8 +746,18 @@ fn renderAur(
     var index: usize = 0;
     while (index < result.packages.len and rows.items.len < display_count) : (index += 1) {
         const package = result.packages[index];
+        var name_cell: []const u8 = package.name;
+        if (std.mem.indexOf(u8, result.aur_base, "atoll") != null) {
+            const hyper_path = std.mem.concat(context.allocator, u8, &.{ "/package/", package.name, "/" }) catch continue;
+            defer context.allocator.free(hyper_path);
+            name_cell = hyperlink(context.allocator, result.aur_base, hyper_path, package.name, context);
+        } else if (std.mem.indexOf(u8, result.aur_base, "aur.archlinux") != null) {
+            const hyper_path = std.mem.concat(context.allocator, u8, &.{ "/packages/", package.name, "/" }) catch continue;
+            defer context.allocator.free(hyper_path);
+            name_cell = hyperlink(context.allocator, result.aur_base, hyper_path, package.name, context);
+        }
         try rows.append(context.allocator, try row(context.allocator, &.{
-            package.name,
+            name_cell,
             package.version,
             package.maintainer orelse "Unknown Maintainer",
             try formatDateTime(context.allocator, package.last_modified),
@@ -758,13 +804,63 @@ fn renderPkgbuilds(
 
     for (builds) |build| {
         const pkgbuild = build.pkgbuild orelse {
-            try colors.printLine(context, .err, "Failed to get PKGBUILD for: {s}", .{build.name});
+            try colors.printLine(context, .err, "Could not retrieve the PKGBUILD for {0f} from the configured AUR service.", .{diagnostics.safe(build.name)});
             continue;
         };
         try colors.printLine(context, .warning, "Package build for: {s}", .{build.name});
         try context.stdout.writeAll(pkgbuild);
         if (!std.mem.endsWith(u8, pkgbuild, "\n")) try context.stdout.writeByte('\n');
+        if (build.scan) |scan| try renderPkgbuildScan(context, &scan);
     }
+}
+
+fn renderPkgbuildScan(context: *runtime.RuntimeContext, scan: *const PackageManager.AurManager.PreviewPkgbuildReview) !void {
+    try context.stdout.writeByte('\n');
+    const findings = scan.review.findings;
+    if (findings.len == 0) {
+        try colors.printLine(context, .success, "Security scan completed: no findings.", .{});
+    } else {
+        try colors.printLine(context, .warning, "Security scan completed: {d} finding(s).", .{findings.len});
+        for (findings) |finding| {
+            const color: colors.Color = switch (finding.severity) {
+                .critical => .err,
+                .warning => .warning,
+                .info => .info,
+            };
+            try colors.printLine(context, color, "[{s}] {f} — {f}", .{
+                @tagName(finding.severity), diagnostics.safe(finding.tool), diagnostics.safe(finding.hook),
+            });
+            if (finding.message.len > 0)
+                try context.stdout.print("  {f}\n", .{diagnostics.safe(finding.message)});
+            if (finding.matched_line.len > 0)
+                try context.stdout.print("  Matched: {f}\n", .{diagnostics.safe(finding.matched_line)});
+        }
+    }
+    if (scan.review.related_files.len > 0) {
+        try colors.printLine(context, .heading, "Related files:", .{});
+        for (scan.review.related_files) |file|
+            try context.stdout.print("  {f}\n", .{diagnostics.safe(file.name)});
+    }
+}
+
+/// The grouped rows a surface should render for one hit, or null when tokens
+/// arrived but none of them could be read. An empty slice is a real answer: the
+/// app declares nothing.
+///
+/// The caller owns the result; free it with
+/// `PackageManager.flatpak.permissions.freeRows`.
+fn flatpakPermissionRows(
+    allocator: std.mem.Allocator,
+    entries: ?[]const []const u8,
+) !?[]const PackageManager.flatpak.permissions.Row {
+    const tokens = entries orelse return null;
+    var summary = try PackageManager.flatpak.permissions.classify(allocator, tokens);
+    errdefer summary.deinit(allocator);
+    if (summary.rows.len == 0 and summary.malformed > 0) {
+        summary.deinit(allocator);
+        return null;
+    }
+    return summary.rows;
 }
 
 fn renderFlatpak(
@@ -775,7 +871,7 @@ fn renderFlatpak(
     if (invocation.globals.ui_mode or invocation.globals.json) {
         var payload = std.Io.Writer.Allocating.init(context.allocator);
         defer payload.deinit();
-        try writeFlatpakResponseJson(&payload.writer, result);
+        try writeFlatpakResponseJson(context.allocator, &payload.writer, result);
         if (invocation.globals.ui_mode) {
             try output.writeFrame(context, payload.writer.buffered());
             const message = try std.fmt.allocPrint(
@@ -793,15 +889,24 @@ fn renderFlatpak(
 
     var rows: std.ArrayList([]const []const u8) = .empty;
     const size_display = try loadSizeDisplay(context);
-    for (result.packages) |package| try rows.append(context.allocator, try row(context.allocator, &.{
-        package.name,
-        package.id,
-        truncate(package.summary, 70),
-        package.remote,
-        try formatSize(context.allocator, size_display, package.download_size),
-        try formatSize(context.allocator, size_display, package.installed_size),
-        try joined(context.allocator, package.permissions),
-    }));
+    for (result.packages) |package| {
+        // Grouped wording rather than the raw token list: sixteen tokens that
+        // differ only by folder name read as noise.
+        const groups = try flatpakPermissionRows(context.allocator, package.permissions);
+        defer if (groups) |grouped| PackageManager.flatpak.permissions.freeRows(context.allocator, grouped);
+        try rows.append(context.allocator, try row(context.allocator, &.{
+            package.name,
+            package.id,
+            truncate(package.summary, 70),
+            package.remote,
+            try formatSize(context.allocator, size_display, package.download_size),
+            try formatSize(context.allocator, size_display, package.installed_size),
+            if (groups) |grouped|
+                try PackageManager.flatpak.permissions.describe(context.allocator, grouped)
+            else
+                "Unknown",
+        }));
+    }
     try table.write(
         context,
         &.{ "Name", "AppId", "Summary", "Remote", "Download Size", "Installed Size", "Permissions" },
@@ -866,6 +971,7 @@ fn writeStandardPackageJson(writer: *std.Io.Writer, package: StandardPackage) !v
 fn writeStandardPackageJsonWith(json: *std.json.Stringify, package: StandardPackage) !void {
     try json.beginObject();
     try field(json, "Name", package.name);
+    try field(json, "PackageBase", package.package_base);
     try field(json, "Version", package.version);
     try field(json, "Size", package.size);
     try field(json, "Description", package.description);
@@ -958,12 +1064,19 @@ fn writePkgbuildsJson(writer: *std.Io.Writer, builds: []const PackageBuild) !voi
         try json.beginObject();
         try field(&json, "Name", build.name);
         try field(&json, "PkgBuild", build.pkgbuild);
+        if (build.scan) |scan| {
+            try json.objectField("Scan");
+            try json.beginObject();
+            try field(&json, "findings", scan.review.findings);
+            try field(&json, "related_files", scan.review.related_files);
+            try json.endObject();
+        }
         try json.endObject();
     }
     try json.endArray();
 }
 
-fn writeFlatpakResponseJson(writer: *std.Io.Writer, result: FlatpakResult) !void {
+fn writeFlatpakResponseJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, result: FlatpakResult) !void {
     var json: std.json.Stringify = .{ .writer = writer };
     try json.beginObject();
     try json.objectField("hits");
@@ -986,6 +1099,12 @@ fn writeFlatpakResponseJson(writer: *std.Io.Writer, result: FlatpakResult) !void
         try field(&json, "download_size", package.download_size);
         try field(&json, "installed_size", package.installed_size);
         try field(&json, "permissions", package.permissions);
+        // The grouped rows a surface renders. `permissions` stays the raw
+        // record: it is what the machine-readable contract has always carried,
+        // and these rows are how it reads to a person.
+        const groups = try flatpakPermissionRows(allocator, package.permissions);
+        defer if (groups) |grouped| PackageManager.flatpak.permissions.freeRows(allocator, grouped);
+        try field(&json, "permission_rows", groups);
         try json.endObject();
     }
     try json.endArray();
@@ -1004,11 +1123,12 @@ fn field(json: *std.json.Stringify, name: []const u8, value: anytype) !void {
 
 fn copyStandardPackage(
     allocator: std.mem.Allocator,
-    package: Zigalpm.alpm.OwnedPackage,
+    package: PackageManager.Manager.OwnedPackage,
 ) !StandardPackage {
     const repository = package.repository() orelse "";
     return .{
         .name = try allocator.dupe(u8, package.name() orelse ""),
+        .package_base = try allocator.dupe(u8, package.base()),
         .version = try allocator.dupe(u8, package.version() orelse ""),
         .size = package.download_size(),
         .description = try allocator.dupe(u8, package.description() orelse ""),
@@ -1033,7 +1153,7 @@ fn copyStandardPackage(
 
 fn optionalDependencyInstalledStates(
     allocator: std.mem.Allocator,
-    manager: *Zigalpm.AlpmManager,
+    manager: *PackageManager.Manager,
     optional_dependencies: []const []const u8,
 ) ![]bool {
     const states = try allocator.alloc(bool, optional_dependencies.len);
@@ -1056,7 +1176,7 @@ fn optionalDependencyExpression(raw: []const u8) []const u8 {
     return std.mem.trim(u8, raw[0..description], " \t\r\n");
 }
 
-fn copyAurPackage(allocator: std.mem.Allocator, package: Zigalpm.aur.models.Package) !AurPackage {
+fn copyAurPackage(allocator: std.mem.Allocator, package: PackageManager.aur.models.Package) !AurPackage {
     return .{
         .id = package.id,
         .name = try allocator.dupe(u8, package.name),
@@ -1108,7 +1228,7 @@ fn copyStrings(allocator: std.mem.Allocator, values: anytype) ![]const []const u
     return result;
 }
 
-fn ignoredPackage(manager: *Zigalpm.AlpmManager, name: []const u8) bool {
+fn ignoredPackage(manager: *PackageManager.Manager, name: []const u8) bool {
     for (manager.config.ignore_package.items) |ignored| {
         if (std.mem.eql(u8, ignored, name)) return true;
     }
@@ -1257,6 +1377,69 @@ fn row(allocator: std.mem.Allocator, values: []const []const u8) ![]const []cons
     return allocator.dupe([]const u8, values);
 }
 
+fn hyperlink(
+    allocator: std.mem.Allocator,
+    aur_base: []const u8,
+    url_path: []const u8,
+    text: []const u8,
+    context: *runtime.RuntimeContext,
+) []const u8 {
+    if (!output.supportsAnsi(context)) return text;
+
+    const url = std.mem.concat(allocator, u8, &.{ aur_base, url_path }) catch return text;
+    defer allocator.free(url);
+
+    const parts = [_][]const u8{ "\x1b]8;;", url, "\x1b\\", text, "\x1b]8;;\x1b\\" };
+    return std.mem.concat(allocator, u8, &parts) catch text;
+}
+
+test "standard search defaults to available packages and preserves explicit modes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const manifest = try spec.Manifest.load(allocator);
+    const shortcodes = @import("../cli/shortcodes.zig");
+    const available: StandardSources = .{ .available = true, .installed = false, .detail = false };
+    const installed: StandardSources = .{ .available = false, .installed = true, .detail = false };
+    const detail: StandardSources = .{ .available = true, .installed = false, .detail = true };
+    const neither: StandardSources = .{ .available = false, .installed = false, .detail = false };
+    const cases = [_]struct { args: []const []const u8, expected: StandardSources }{
+        .{ .args = &.{ "search", "standard" }, .expected = available },
+        .{ .args = &.{"-Ss"}, .expected = available },
+        .{ .args = &.{ "search", "standard", "firefox" }, .expected = available },
+        .{ .args = &.{ "-Ss", "firefox" }, .expected = available },
+        .{ .args = &.{ "search", "standard", "fire" }, .expected = available },
+        .{ .args = &.{ "-Ss", "fire" }, .expected = available },
+        .{ .args = &.{ "search", "standard", "--available", "firefox" }, .expected = available },
+        .{ .args = &.{ "-Ssv", "firefox" }, .expected = available },
+        .{ .args = &.{ "-Ss", "fire", "--json", "--page", "2", "--limit", "5", "--show-hidden" }, .expected = available },
+        .{ .args = &.{ "-Ss", "fire", "--ui-mode" }, .expected = available },
+        .{ .args = &.{ "search", "standard", "--installed", "fire" }, .expected = installed },
+        .{ .args = &.{ "-Ssi", "fire" }, .expected = installed },
+        .{ .args = &.{ "-Ssiv", "fire" }, .expected = .{ .available = true, .installed = true, .detail = false } },
+        .{ .args = &.{ "search", "standard", "--local", "fire" }, .expected = neither },
+        .{ .args = &.{ "-Ssl", "fire" }, .expected = neither },
+        .{ .args = &.{"-Ssr"}, .expected = neither },
+        .{ .args = &.{"-Ssg"}, .expected = available },
+        .{ .args = &.{ "-Ssg", "base-devel" }, .expected = available },
+        .{ .args = &.{ "search", "standard", "--detail", "firefox" }, .expected = detail },
+        .{ .args = &.{ "search", "standard", "--info", "firefox" }, .expected = detail },
+        .{ .args = &.{ "-Ssd", "firefox" }, .expected = detail },
+        .{ .args = &.{ "-Ssid", "firefox" }, .expected = .{ .available = true, .installed = true, .detail = true } },
+        .{ .args = &.{ "search", "standard", "--explicit" }, .expected = installed },
+        .{ .args = &.{ "-Sse", "fire" }, .expected = installed },
+        .{ .args = &.{ "search", "standard", "--depends" }, .expected = installed },
+        .{ .args = &.{ "-SsD", "fire" }, .expected = installed },
+    };
+    for (cases) |case| {
+        const translation = try shortcodes.translate(allocator, &manifest, case.args);
+        const outcome = try parser.parse(allocator, &manifest, translation.arguments().?);
+        try std.testing.expect(outcome == .dispatch);
+        try std.testing.expectEqualStrings(standard_command_path, outcome.dispatch.command.path);
+        try std.testing.expectEqualDeep(case.expected, standardSources(&outcome.dispatch));
+    }
+}
+
 test "search routes all action-first types through one handler" {
     var tc: test_support.TestContext = .{};
     tc.init();
@@ -1295,15 +1478,17 @@ test "search routes all action-first types through one handler" {
     try std.testing.expectEqual(@as(usize, 3), capture.calls);
 }
 
-test "standard output preserves C# table columns and ranked result order" {
+test "default standard search renders package tables and JSON for both command forms" {
     var tc: test_support.TestContext = .{};
     tc.init();
     defer tc.deinit();
     const manifest = try spec.Manifest.load(tc.arena.allocator());
-    const outcome = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "standard", "--available", "discord" });
-
     const StandardFixture = struct {
-        fn search(_: @This(), _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
+        fn search(_: @This(), _: *runtime.RuntimeContext, invocation: *const parser.Invocation) !Result {
+            const sources = standardSources(invocation);
+            try std.testing.expect(sources.available);
+            try std.testing.expect(!sources.installed);
+            try std.testing.expect(!sources.detail);
             return .{ .standard = .{
                 .packages = &.{
                     .{ .name = "discord", .repository = "extra", .version = "1", .description = "Chat" },
@@ -1313,12 +1498,32 @@ test "standard output preserves C# table columns and ranked result order" {
             } };
         }
     };
-    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, StandardFixture{}));
-    const rendered = tc.stdout.writer.buffered();
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "│ Name") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Repository") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "discord").? < std.mem.indexOf(u8, rendered, "webcord").?);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Total: 2 packages") != null);
+    const shortcodes = @import("../cli/shortcodes.zig");
+    for ([_][]const []const u8{
+        &.{ "search", "standard", "discord" },
+        &.{ "-Ss", "discord" },
+        &.{ "search", "standard", "--available", "discord" },
+        &.{ "search", "standard", "discord", "--json" },
+        &.{ "-Ss", "discord", "--json" },
+    }) |args| {
+        tc.stdout.writer.end = 0;
+        const translation = try shortcodes.translate(tc.arena.allocator(), &manifest, args);
+        const outcome = try parser.parse(tc.arena.allocator(), &manifest, translation.arguments().?);
+        try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &outcome.dispatch, StandardFixture{}));
+        const rendered = tc.stdout.writer.buffered();
+        if (outcome.dispatch.globals.json) {
+            const parsed = try std.json.parseFromSlice(std.json.Value, tc.arena.allocator(), rendered, .{});
+            defer parsed.deinit();
+            try std.testing.expectEqual(@as(usize, 2), parsed.value.array.items.len);
+            try std.testing.expectEqualStrings("discord", parsed.value.array.items[0].object.get("Name").?.string);
+            try std.testing.expectEqualStrings("webcord", parsed.value.array.items[1].object.get("Name").?.string);
+        } else {
+            try std.testing.expect(std.mem.indexOf(u8, rendered, "│ Name") != null);
+            try std.testing.expect(std.mem.indexOf(u8, rendered, "Repository") != null);
+            try std.testing.expect(std.mem.indexOf(u8, rendered, "discord").? < std.mem.indexOf(u8, rendered, "webcord").?);
+            try std.testing.expect(std.mem.indexOf(u8, rendered, "Total: 2 packages") != null);
+        }
+    }
 }
 
 test "standard package detail serializes optional dependency installation state" {
@@ -1326,6 +1531,7 @@ test "standard package detail serializes optional dependency installation state"
     defer output_buffer.deinit();
     try writeStandardPackageJson(&output_buffer.writer, .{
         .name = "editor",
+        .package_base = "editor-suite",
         .version = "1.0",
         .optional_depends = &.{ "spellcheck: Spell checking", "plugins>=2: Plugin support" },
         .optional_depends_installed = &.{ true, false },
@@ -1333,6 +1539,7 @@ test "standard package detail serializes optional dependency installation state"
 
     const rendered = output_buffer.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"OptDependsInstalled\":[true,false]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"PackageBase\":\"editor-suite\"") != null);
     try std.testing.expectEqualStrings("plugins>=1:2", optionalDependencyExpression("plugins>=1:2: Plugin support"));
     try std.testing.expectEqualStrings("spellcheck", optionalDependencyExpression("spellcheck: Spell checking"));
 }
@@ -1368,7 +1575,7 @@ test "AUR standard merge and Flatpak paging are serialized without subprocesses"
                     .remote = "flathub",
                     .download_size = 1048576,
                     .installed_size = 2097152,
-                    .permissions = &.{ "shared=network", "sockets=wayland" },
+                    .permissions = &.{ "Context=shared:network", "Context=sockets:wayland" },
                 }},
                 .page = 2,
                 .limit = 1,
@@ -1382,15 +1589,59 @@ test "AUR standard merge and Flatpak paging are serialized without subprocesses"
     try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "org.example.Editor") != null);
     try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "\"download_size\":1048576") != null);
     try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "\"installed_size\":2097152") != null);
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "\"permissions\":[\"shared=network\",\"sockets=wayland\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "\"permissions\":[\"Context=shared:network\",\"Context=sockets:wayland\"]") != null);
+    // The raw record stays, and the grouped rows a surface renders ride with it.
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "\"permission_rows\":[{\"concern\":\"network\",\"tier\":\"medium\",\"state\":\"granted\",\"items\":[]}," ++
+        "{\"concern\":\"display\",\"tier\":\"medium\",\"state\":\"granted\",\"items\":[\"Wayland\"]}," ++
+        "{\"concern\":\"files_system\",\"tier\":\"low\",\"state\":\"absent\",\"items\":[]}," ++
+        "{\"concern\":\"devices\",\"tier\":\"low\",\"state\":\"absent\",\"items\":[]}]") != null);
 
     tc.stdout.writer.end = 0;
     const flatpak_plain = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "flatpak", "editor" });
     try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &flatpak_plain.dispatch, FlatpakFixture{}));
     try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Download Size") != null);
     try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Installed Size") != null);
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "shared=network") != null);
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "sockets=wayland") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Network access; Display server: Wayland; No access to system files; No device access") != null);
+    // The cell reads as concerns, not as the tokens the backend flattened.
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Context=shared:network") == null);
+}
+
+test "flatpak search reports unreadable permissions distinctly from no permissions" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+
+    const Fixture = struct {
+        fn search(_: @This(), _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
+            return .{ .flatpak = .{
+                .query = "editor",
+                .packages = &.{
+                    .{ .name = "Editor", .id = "org.example.Editor", .summary = "Edit", .remote = "flathub", .permissions = null },
+                    .{ .name = "Notes", .id = "org.example.Notes", .summary = "Write", .remote = "flathub", .permissions = &.{} },
+                },
+                .page = 1,
+                .limit = 10,
+                .total_pages = 1,
+                .total_hits = 2,
+            } };
+        }
+    };
+
+    const as_json = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "flatpak", "editor", "--json" });
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &as_json.dispatch, Fixture{}));
+    const rendered = tc.stdout.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"permissions\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"permissions\":[]") != null);
+    // The grouped rows carry the same three-way distinction, so a surface that
+    // renders rows cannot fall back to claiming nothing is requested.
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"permission_rows\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"permission_rows\":[]") != null);
+
+    tc.stdout.writer.end = 0;
+    const as_table = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "flatpak", "editor" });
+    try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &as_table.dispatch, Fixture{}));
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Unknown") != null);
 }
 
 test "interactive AUR search table stays within terminal width" {
@@ -1451,7 +1702,7 @@ test "AUR pkgbuild search displays fetched content and structured output" {
     var rendered = tc.stdout.writer.buffered();
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Package build for: yay") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "pkgname=yay\npkgver=12") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "Failed to get PKGBUILD for: missing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Could not retrieve the PKGBUILD for missing") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Total results") == null);
 
     tc.stdout.writer.end = 0;
@@ -1528,7 +1779,7 @@ test "search validates AUR query length and positive pagination before backend e
 
     const short_aur = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "aur", "x" });
     try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&tc.context, &short_aur.dispatch, ShouldNotRun{}));
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "at least 2 characters") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "at least two characters") != null);
     tc.stdout.writer.end = 0;
     const conflicting_aur = try parser.parse(
         tc.arena.allocator(),
@@ -1567,4 +1818,142 @@ test "package scoring matches the C# ranking tiers" {
     try std.testing.expectEqual(@as(u16, 200), packageScore("vesktop", "Discord client", "discord"));
     try std.testing.expectEqual(@as(u16, 150), packageScore("vesktop", "A custom discord client", "discord"));
     try std.testing.expectEqual(@as(u16, 100), packageScore("webcord", "A discordlike app", "discord"));
+}
+
+test "hyperlink builds correct OSC 8 links for atoll and aur" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var environment = std.process.Environ.Map.init(allocator);
+    var stdout = std.Io.Writer.Discarding.init(&.{});
+    var stderr = std.Io.Writer.Discarding.init(&.{});
+    var context: runtime.RuntimeContext = .{
+        .allocator = allocator,
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+        .stdin_is_tty = true,
+        .stdout_is_tty = true,
+        .environment = &environment,
+    };
+
+    const atoll = hyperlink(allocator, "https://atoll.seafoam-labs.org", "/package/vim/", "vim", &context);
+    try std.testing.expect(std.mem.indexOf(u8, atoll, "\x1b]8;;https://atoll.seafoam-labs.org/package/vim/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, atoll, "\x1b\\vim\x1b]8;;\x1b\\") != null);
+
+    const aur = hyperlink(allocator, "https://aur.archlinux.org", "/packages/vim/", "vim", &context);
+    try std.testing.expect(std.mem.indexOf(u8, aur, "\x1b]8;;https://aur.archlinux.org/packages/vim/") != null);
+    try std.testing.expect(std.mem.indexOf(u8, aur, "\x1b\\vim\x1b]8;;\x1b\\") != null);
+}
+
+test "AUR preview scan is restricted to pkgbuild requests using Atoll" {
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const ShouldNotRun = struct {
+        fn search(_: @This(), _: *runtime.RuntimeContext, _: *const parser.Invocation) !Result {
+            return error.ShouldNotRun;
+        }
+    };
+    for ([_][]const []const u8{
+        &.{ "search", "aur", "demo", "--scan-pkgbuild", "--aur-url", "https://atoll.seafoam-labs.org" },
+        &.{ "search", "aur", "demo", "--pkgbuild", "--scan-pkgbuild", "--aur-url", "https://aur.archlinux.org" },
+        &.{ "search", "aur", "demo", "--pkgbuild", "--scan-pkgbuild", "--aur-url", "https://example.invalid/atoll" },
+        &.{ "search", "aur", "demo", "--pkgbuild", "--scan-pkgbuild", "--aur-url", "https://atoll.seafoam-labs.org/other/" },
+        &.{ "search", "aur", "demo", "--pkgbuild", "--scan-pkgbuild", "--aur-url", "https://atoll.seafoam-labs.org.example.invalid/" },
+    }) |args| {
+        const invocation = try parser.parse(tc.arena.allocator(), &manifest, args);
+        tc.stdout.writer.end = 0;
+        try std.testing.expectEqual(@as(u8, 1), try executeWithRunner(&tc.context, &invocation.dispatch, ShouldNotRun{}));
+        const message = tc.stdout.writer.buffered();
+        try std.testing.expect(std.mem.indexOf(u8, message, "requires --pkgbuild") != null or std.mem.indexOf(u8, message, "requires the Atoll") != null);
+    }
+    const Fixture = struct {
+        fn search(_: @This(), _: *runtime.RuntimeContext, invocation: *const parser.Invocation) !Result {
+            try std.testing.expect(optionEnabled(invocation, "--scan-pkgbuild"));
+            return .{ .aur = .{ .pkgbuilds = &.{.{ .name = "demo", .pkgbuild = "pkgname=demo" }} } };
+        }
+    };
+    for ([_][]const u8{
+        "https://atoll.seafoam-labs.org",
+        "https://atoll.seafoam-labs.org/",
+        "https://atoll.seafoam-labs.org///",
+    }) |base| {
+        const allowed = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "aur", "demo", "--pkgbuild", "--scan-pkgbuild", "--aur-url", base });
+        try std.testing.expectEqual(@as(u8, 0), try executeWithRunner(&tc.context, &allowed.dispatch, Fixture{}));
+    }
+}
+
+test "AUR preview scan renders findings in JSON and plain text without changing ordinary fetches" {
+    var writer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer writer.deinit();
+    const Review = @FieldType(PackageManager.AurManager.PreviewPkgbuildReview, "review");
+    var findings = [_]std.meta.Child(@FieldType(Review, "findings")){.{
+        .tool = "curl",
+        .severity = .critical,
+        .hook = "post_install",
+        .matched_line = "curl example | bash",
+        .message = "Review command",
+    }};
+    var files = [_]std.meta.Child(@FieldType(Review, "related_files")){.{ .name = "demo.install", .content = "post_install() {}" }};
+    var scan: PackageManager.AurManager.PreviewPkgbuildReview = .{
+        .content = @constCast("pkgname=demo"),
+        .review = .{
+            .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
+            .validations = &.{},
+            .findings = &findings,
+            .related_files = &files,
+            .reviewed_file_names = &.{},
+            .reviewed_files = &.{},
+            .install_scripts = &.{},
+            .pkgbuild_digest = @splat(0),
+            .digest = @splat(0),
+        },
+    };
+    defer scan.review.arena.deinit();
+    try writePkgbuildsJson(&writer.writer, &.{
+        .{ .name = "plain", .pkgbuild = "pkgname=plain" },
+        .{ .name = "demo", .pkgbuild = scan.content, .scan = scan },
+    });
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, writer.written(), .{});
+    defer parsed.deinit();
+    const builds = parsed.value.array.items;
+    try std.testing.expect(!builds[0].object.contains("Scan"));
+    const result = builds[1].object.get("Scan").?.object;
+    const finding = result.get("findings").?.array.items[0].object;
+    try std.testing.expectEqualStrings("critical", finding.get("severity").?.string);
+    try std.testing.expectEqualStrings("post_install", finding.get("hook").?.string);
+    const file = result.get("related_files").?.array.items[0].object;
+    try std.testing.expectEqualStrings("demo.install", file.get("name").?.string);
+
+    var tc: test_support.TestContext = .{};
+    tc.init();
+    defer tc.deinit();
+    const manifest = try spec.Manifest.load(tc.arena.allocator());
+    const invocation = try parser.parse(tc.arena.allocator(), &manifest, &.{ "search", "aur", "demo", "--pkgbuild" });
+    try renderPkgbuilds(&tc.context, &invocation.dispatch, &.{.{ .name = "demo", .pkgbuild = scan.content, .scan = scan }});
+    var text = tc.stdout.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, text, "pkgname=demo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Security scan completed: 1 finding(s).") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "[critical] curl") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "post_install") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Review command") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Matched: curl example | bash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Related files:\n  demo.install") != null);
+
+    tc.stdout.writer.end = 0;
+    scan.review.findings = &.{};
+    try renderPkgbuilds(&tc.context, &invocation.dispatch, &.{.{ .name = "demo", .pkgbuild = scan.content, .scan = scan }});
+    text = tc.stdout.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, text, "Security scan completed: no findings.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "[critical]") == null);
+
+    tc.stdout.writer.end = 0;
+    try renderPkgbuilds(&tc.context, &invocation.dispatch, &.{.{ .name = "demo", .pkgbuild = scan.content }});
+    text = tc.stdout.writer.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, text, "pkgname=demo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Security scan") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Related files") == null);
 }

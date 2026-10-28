@@ -16,6 +16,8 @@ pub fn build(b: *std.Build) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
+    const enable_libalpm = b.option(bool, "libalpm", "Include libalpm alongside RLPM") orelse true;
+    const diagnostics = b.dependency("shelly_diagnostics", .{ .target = target, .optimize = optimize }).module("diagnostics");
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -40,6 +42,7 @@ pub fn build(b: *std.Build) void {
         // which requires us to specify a target.
         .target = target,
     });
+    mod.addImport("diagnostics", diagnostics);
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -82,6 +85,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    exe.root_module.addImport("diagnostics", diagnostics);
 
     const vaxis = b.dependency("vaxis", .{
         .target = target,
@@ -92,13 +96,14 @@ pub fn build(b: *std.Build) void {
     mod.addImport("vaxis", vaxis_module);
     exe.root_module.addImport("vaxis", vaxis_module);
 
-    const zigalpm_dependency = b.dependency("zigalpm", .{
+    const package_manager_dependency = b.dependency("package_manager", .{
+        .libalpm = enable_libalpm,
         .target = target,
         .optimize = optimize,
     });
-    const zigalpm = zigalpm_dependency.module("Zigalpm");
-    mod.addImport("Zigalpm", zigalpm);
-    exe.root_module.addImport("Zigalpm", zigalpm);
+    const package_manager = package_manager_dependency.module("PackageManager");
+    mod.addImport("PackageManager", package_manager);
+    exe.root_module.addImport("PackageManager", package_manager);
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

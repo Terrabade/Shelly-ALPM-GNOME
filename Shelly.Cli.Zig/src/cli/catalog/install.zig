@@ -11,7 +11,7 @@ pub const variants = [_]types.Variant{
         .name = "standard",
         .type_code = 's',
         .description = "Install ALPM repository packages, local Arch or Shelly binary archives, and package archives downloaded from HTTP(S) URLs.",
-        .implementation = "Zigalpm.AlpmManager.install_packages / install_local_packages / install_dependencies_only; Zigalpm.LocalManager.installBinariesPackage; Zigalpm.shared.Downloader.downloadToFile for URLs",
+        .implementation = "PackageManager.Manager.install_packages / install_local_packages / install_dependencies_only; PackageManager.LocalManager.installBinariesPackage; PackageManager.shared.Downloader.downloadToFile for URLs",
         .arguments = &.{repeatedArgument(
             "packages",
             0,
@@ -22,6 +22,7 @@ pub const variants = [_]types.Variant{
             flag("--make-deps", &.{"-m"}, "Install make dependencies for the requested packages"),
             flag("--no-deps", &.{"-d"}, "Pass the ALPM nodeps transaction flag when installing repository packages"),
             flag("--upgrade", &.{"-u"}, "After confirmation, synchronize and upgrade the standard system before installing the requested repository packages"),
+            flag("--needed", &.{}, "Skip reinstalling ALPM packages that are already up to date"),
         },
     },
     .{
@@ -29,7 +30,7 @@ pub const variants = [_]types.Variant{
         .name = "appimage",
         .type_code = 'i',
         .description = "Install a local AppImage into the configured AppImage directory and update Shelly's AppImage metadata database.",
-        .implementation = "Zigalpm.AppImageManager.installAppImage",
+        .implementation = "PackageManager.AppImageManager.installAppImage",
         .arguments = &.{requiredArgument(
             "location",
             "Path to an existing file whose extension is .AppImage",
@@ -46,7 +47,7 @@ pub const variants = [_]types.Variant{
         .name = "aur",
         .type_code = 'a',
         .description = "Fetch, review, build, and install one or more AUR packages, install one package's build dependencies, or install one package at an exact Git commit.",
-        .implementation = "Zigalpm.AurManager.installPackages / installDependenciesOnly / installPackageVersion",
+        .implementation = "PackageManager.AurManager.installPackages / installDependenciesOnly / installPackageVersion",
         .arguments = &.{repeatedArgument(
             "packages",
             0,
@@ -56,11 +57,13 @@ pub const variants = [_]types.Variant{
             flag("--build-deps", &.{"-b"}, "Install build dependencies for the requested packages"),
             flag("--make-deps", &.{"-m"}, "Install make dependencies for the requested packages"),
             flag("--chroot", &.{"-c"}, "Build packages in a clean chroot with makechrootpkg"),
+            flag("--isolated", &.{}, "Build in a fresh systemd-nspawn root with repository build dependencies, then install the exported packages"),
             flag("--check", &.{}, "Enable the PKGBUILD check() function during package builds"),
             flag("--no-check", &.{}, "Disable the PKGBUILD check() function during package builds"),
             flag("--sign", &.{}, "Sign built packages with GPG"),
             flag("--nosign", &.{}, "Skip signing built packages"),
             flag("--version", &.{"-v"}, "Install exactly one AUR package from the following Git commit operand"),
+            flag("--needed", &.{}, "Skip building and reinstalling AUR packages whose installed version is current; dynamic versions may still require a build"),
         },
     },
     .{
@@ -68,7 +71,7 @@ pub const variants = [_]types.Variant{
         .name = "flatpak",
         .type_code = 'f',
         .description = "Install a Flatpak application, runtime, .flatpakref file, or bundle, or repair an installed Flatpak while preserving its configuration.",
-        .implementation = "Zigalpm.flatpak.AppstreamManager.getAllRemoteCatalogs; Zigalpm.FlatpakManager.install_flatpak / install_from_ref_flatpak / install_from_bundle_flatpak / repair_installed_flatpak",
+        .implementation = "PackageManager.flatpak.AppstreamManager.getAllRemoteCatalogs; PackageManager.FlatpakManager.install_flatpak / install_from_ref_flatpak / install_from_bundle_flatpak / repair_installed_flatpak",
         .arguments = &.{requiredArgument(
             "package",
             "Application/runtime ID, friendly AppStream name, installed target with --repair, .flatpakref path with --ref-file, or bundle path with --bundle",

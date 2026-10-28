@@ -1,0 +1,51 @@
+# Maintainer: Devario maintainers
+
+pkgname=devario-devel
+pkgver=1
+pkgrel=1
+pkgdesc='Build tools for Shelly native and isolated builds on Devario'
+arch=('any')
+url='https://github.com/Seafoam-Labs/Shelly-ALPM'
+license=('GPL-3.0-only')
+
+# Use the build-tool subset of Shelly.PackageManager/src/alpm/build_root.zig.
+# Recipes may assume the base-devel toolchain; omit pacman and archlinux-keyring.
+# Shelly supplies the native builder, package operations, and root provisioning.
+depends=(
+  'autoconf'
+  'automake'
+  'bash'
+  'binutils'
+  'bison'
+  'coreutils'
+  'debugedit'
+  'fakeroot'
+  'file'
+  'findutils'
+  'flex'
+  'gawk'
+  'gcc'
+  'gettext'
+  'grep'
+  'groff'
+  'gzip'
+  'libtool'
+  'm4'
+  'make'
+  'patch'
+  'pkgconf'
+  'sed'
+  'sudo'
+  'texinfo'
+  'which'
+  # Native --isolated builds use systemd-nspawn and unshare.
+  'systemd'
+  'util-linux'
+)
+
+# This subset does not provide base-devel or devtools. The --chroot path uses
+# mkarchroot/makechrootpkg from devtools; use Shelly's --isolated path on Devario.
+package() {
+  # Dependency-only metapackage; no payload or install script is needed.
+  :
+}

@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const Io = std.Io;
 const Package = @import("../models/packages.zig").Package;
 const Remote = @import("../models/flatpak.zig").Remote;
@@ -33,7 +34,17 @@ pub const CliMessage = struct {
     }
 };
 
+fn containsPackageName(packages: []const Package, name: []const u8) bool {
+    for (packages) |pkg| {
+        if (std.mem.eql(u8, pkg.Name, name)) return true;
+    }
+    return false;
+}
+
 pub const ShellyCli = struct {
+    /// Optional explanation for a failed subprocess. Initialize to null;
+    /// the caller owns the returned slice using this client's allocator.
+    failure_detail: ?*?[]u8 = null,
     allocator: std.mem.Allocator,
     io: Io,
 
@@ -88,20 +99,30 @@ pub const ShellyCli = struct {
             }
         }
 
-        const result = try std.process.run(self.allocator, self.io, .{
+        const result = std.process.run(self.allocator, self.io, .{
             .argv = argv,
             .environ_map = runtime.environ_map,
-        });
+        }) catch |err| {
+            const message = try diagnostics.format(self.allocator, err, .{ .operation = "the Shelly command", .path = argv[0] });
+            defer self.allocator.free(message);
+            log.err("{s}", .{message});
+            if (self.failure_detail) |detail| detail.* = try self.allocator.dupe(u8, message);
+            return err;
+        };
 
         errdefer self.allocator.free(result.stdout);
         errdefer self.allocator.free(result.stderr);
 
         if (result.term != .exited or result.term.exited != 0) {
-            log.err("command failed: term={any} stderr='{s}' stdout='{s}'", .{
-                result.term,
-                result.stderr[0..@min(500, result.stderr.len)],
-                result.stdout[0..@min(500, result.stdout.len)],
+            const structured = try JsonPackFrame.failureMessage(self.allocator, result.stdout);
+            defer if (structured) |message| self.allocator.free(message);
+            const message = try diagnostics.sanitizeAlloc(self.allocator, structured orelse
+                if (result.stderr.len > 0) result.stderr else "Shelly returned no error details. Review the command output before retrying.");
+            defer self.allocator.free(message);
+            log.err("Could not run {f}. {s}\nProcess result: {any}", .{
+                diagnostics.safe(argv[0]), message, result.term,
             });
+            if (self.failure_detail) |detail| detail.* = try self.allocator.dupe(u8, message);
             return error.CommandFailed;
         }
 
@@ -132,7 +153,18 @@ pub const ShellyCli = struct {
         return try JsonPackFrame.decode([]Package, self.allocator, result.stdout);
     }
 
-    pub fn get_remotes(self: ShellyCli) !std.json.Parsed([]Remote) {
+    pub fn isPackageInstalled(self: ShellyCli, name: []const u8) !bool {
+        const result = try self.run(&.{ "-Ssi", name });
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+
+        const parsed = JsonPackFrame.decode([]Package, self.allocator, result.stdout) catch return false;
+        defer parsed.deinit();
+
+        return containsPackageName(parsed.value, name);
+    }
+
+    pub fn getRemotes(self: ShellyCli) !std.json.Parsed([]Remote) {
         const result = try self.run(&.{ "list", "flatpak", "remote" });
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
@@ -140,7 +172,7 @@ pub const ShellyCli = struct {
         return try JsonPackFrame.decode([]Remote, self.allocator, result.stdout);
     }
 
-    pub fn get_installed_flatpaks(self: ShellyCli) !std.json.Parsed([]Flatpak) {
+    pub fn getInstalledFlatpaks(self: ShellyCli) !std.json.Parsed([]Flatpak) {
         const result = try self.run(&.{"-Lf"});
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
@@ -148,7 +180,7 @@ pub const ShellyCli = struct {
         return try JsonPackFrame.decode([]Flatpak, self.allocator, result.stdout);
     }
 
-    pub fn get_remote_appstream_apps(self: ShellyCli) !std.json.Parsed([]AppstreamApp) {
+    pub fn getRemoteAppstreamApps(self: ShellyCli) !std.json.Parsed([]AppstreamApp) {
         const result = try self.run(&.{ "list", "flatpak", "remote", "all" });
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
@@ -165,7 +197,7 @@ pub const ShellyCli = struct {
     }
 
     pub fn get_package_details(self: ShellyCli, name: []const u8) !std.json.Parsed(Package) {
-        const result = try self.run(&.{ "search", "standard", name });
+        const result = try self.run(&.{ "-Ssdi", name });
         defer self.allocator.free(result.stdout);
         defer self.allocator.free(result.stderr);
 
@@ -266,6 +298,12 @@ pub const ShellyCli = struct {
         defer self.allocator.free(result.stderr);
     }
 
+    pub fn set_aur_url(self: ShellyCli, url: []const u8) !void {
+        const result = try self.run(&.{ "config", "set", "AurUrl", url });
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+    }
+
     pub fn check_updates(self: ShellyCli) !std.json.Parsed(CheckUpdates) {
         var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         defer argv.deinit(self.allocator);
@@ -300,8 +338,19 @@ pub const ShellyCli = struct {
         return error.NoDataFrame;
     }
 
+    pub const PkgbuildFetchMode = enum { preview, atoll_preview, atoll_scan };
+
     pub fn fetch_pkgbuild(self: ShellyCli, name: []const u8) !std.json.Parsed([]PkgBuild) {
-        const result = try self.run(&.{ "search", "aur", name, "--pkgbuild" });
+        return self.fetchPkgbuild(name, .preview);
+    }
+
+    pub fn fetchPkgbuild(self: ShellyCli, name: []const u8, mode: PkgbuildFetchMode) !std.json.Parsed([]PkgBuild) {
+        const args: []const []const u8 = switch (mode) {
+            .preview => &.{ "search", "aur", name, "--pkgbuild" },
+            .atoll_preview => &.{ "search", "aur", name, "--pkgbuild", "--aur-url", "https://atoll.seafoam-labs.org" },
+            .atoll_scan => &.{ "search", "aur", name, "--pkgbuild", "--scan-pkgbuild", "--aur-url", "https://atoll.seafoam-labs.org" },
+        };
+        const result = try self.run(args);
         defer self.allocator.free(result.stderr);
         defer self.allocator.free(result.stdout);
 
@@ -356,4 +405,16 @@ test "get_flatpaks" {
 
     try std.testing.expect(parsed.value.len > 0);
     std.debug.print("{s} {t}\n", .{ parsed.value[0].Name, parsed.value[0].InstallLevel });
+}
+
+test "installed lookup only accepts an exact package name" {
+    const packages = [_]Package{
+        .{ .Name = "noctalia", .Repository = "local" },
+        .{ .Name = "aqueous-configs", .Repository = "local" },
+    };
+
+    try std.testing.expect(containsPackageName(&packages, "noctalia"));
+    try std.testing.expect(!containsPackageName(&packages, "noct"));
+    try std.testing.expect(!containsPackageName(&packages, "flatpak"));
+    try std.testing.expect(!containsPackageName(&[_]Package{}, "fuse2"));
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const bindings = @import("Shelly_Ui_Gtk");
 const glib = bindings.glib;
 const JsonPackFrame = @import("../helpers/ui_decode.zig").JsonPackFrame;
@@ -9,6 +10,23 @@ const runtime = @import("runtime.zig");
 
 const log = std.log.scoped(.shelly_operation);
 const proxy_environment_marker = "--proxy-environment-stdin";
+
+// Resolve before pkexec sanitizes XDG_CACHE_HOME and HOME.
+fn purifyCacheRoot(allocator: std.mem.Allocator, args: []const []const u8, environment: *const std.process.Environ.Map) !?[]u8 {
+    if (args.len < 2 or !std.mem.eql(u8, args[0], "purify") or !std.mem.eql(u8, args[1], "standard")) return null;
+    var enabled = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--aur-cache-root")) return null;
+        if (std.mem.eql(u8, arg, "--aur-cache")) enabled = true;
+    }
+    if (!enabled) return null;
+    if (environment.get("XDG_CACHE_HOME")) |cache| {
+        if (std.fs.path.isAbsolute(cache)) return try std.fs.path.join(allocator, &.{ cache, "Shelly" });
+    }
+    const home = environment.get("HOME") orelse return error.HomeNotSet;
+    if (!std.fs.path.isAbsolute(home)) return error.HomeNotSet;
+    return try std.fs.path.join(allocator, &.{ home, ".cache", "Shelly" });
+}
 
 const ProxyEnvironmentFrame = struct {
     @"$kind": []const u8 = "proxy.environment",
@@ -84,6 +102,8 @@ const AlpmInfo = struct {
 const AlpmError = struct {
     @"$kind": []const u8 = "",
     ErrorMessage: []const u8 = "",
+    Level: []const u8 = "Error",
+    Recoverable: bool = false,
 };
 
 const AlpmProgress = struct {
@@ -108,6 +128,7 @@ pub const Question = union(enum) {
         question_id: []const u8,
         question_kind: []const u8,
         question_text: []const u8,
+        arguments: []const []const u8,
     },
     select_many: struct {
         question_id: []const u8,
@@ -131,7 +152,15 @@ pub const Question = union(enum) {
     transaction: TransactionQuestion,
 };
 
+pub const TransactionMigration = struct {
+    path: []const u8,
+    destination: []const u8,
+    source: ?[]const u8 = null,
+    origin: []const u8,
+};
+
 pub const TransactionQuestion = struct {
+    migrations: []const TransactionMigration = &.{},
     question_id: []const u8,
     question_text: []const u8,
     action: []const u8,
@@ -206,6 +235,7 @@ const YesNoRequest = struct {
     QuestionId: []const u8 = "",
     QuestionKind: []const u8 = "",
     QuestionText: []const u8 = "",
+    Arguments: []const []const u8 = &.{},
 };
 
 pub const TransactionRequest = struct {
@@ -214,6 +244,7 @@ pub const TransactionRequest = struct {
     QuestionText: []const u8 = "",
     Action: []const u8 = "",
     Packages: []TransactionPackageWire = &.{},
+    Migrations: []TransactionMigration = &.{},
     TotalDownloadSize: ?u64 = null,
     TotalInstalledSize: ?u64 = null,
     NetInstalledSize: ?i64 = null,
@@ -287,11 +318,11 @@ pub const ShellyCommands = struct {
         return argv.toOwnedSlice(alloc);
     }
 
-    pub fn install_flatpak(alloc: std.mem.Allocator, names: []const u8, remote: Scope, remote_name: []const u8) ![]const []const u8 {
-        return install_flatpak_ex(alloc, names, remote, remote_name, false);
+    pub fn installFlatpak(alloc: std.mem.Allocator, names: []const u8, remote: Scope, remote_name: []const u8) ![]const []const u8 {
+        return installFlatpakEx(alloc, names, remote, remote_name, false);
     }
 
-    pub fn install_flatpak_ex(alloc: std.mem.Allocator, names: []const u8, remote: Scope, remote_name: []const u8, is_runtime: bool) ![]const []const u8 {
+    pub fn installFlatpakEx(alloc: std.mem.Allocator, names: []const u8, remote: Scope, remote_name: []const u8, is_runtime: bool) ![]const []const u8 {
         var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         try argv.append(alloc, "install");
         try argv.append(alloc, "flatpak");
@@ -305,7 +336,7 @@ pub const ShellyCommands = struct {
         return argv.toOwnedSlice(alloc);
     }
 
-    pub fn remove_flatpak(alloc: std.mem.Allocator, names: []const u8, config_removal: bool) ![]const []const u8 {
+    pub fn removeFlatpak(alloc: std.mem.Allocator, names: []const u8, config_removal: bool) ![]const []const u8 {
         var argv: std.ArrayListUnmanaged([]const u8) = .empty;
         try argv.append(alloc, "remove");
         try argv.append(alloc, "flatpak");
@@ -382,6 +413,7 @@ pub const ShellyCommands = struct {
         try argv.append(alloc, "standard");
         try argv.append(alloc, "--cache");
         try argv.append(alloc, keep_str);
+        try argv.append(alloc, "--aur-cache");
         return argv.toOwnedSlice(alloc);
     }
 
@@ -426,6 +458,10 @@ pub const ShellyCommands = struct {
         try argv.append(alloc, "appimage");
         if (name) |n| if (n.len > 0) try argv.append(alloc, n);
         return argv.toOwnedSlice(alloc);
+    }
+
+    pub fn configure_appimage_environment(alloc: std.mem.Allocator, name: []const u8, json: []const u8) ![]const []const u8 {
+        return alloc.dupe([]const u8, &.{ "config", "appimage", name, "--replace-env", json });
     }
 
     pub fn configure_appimage(
@@ -476,27 +512,33 @@ pub const ShellyOperation = struct {
         };
     }
 
-    fn build_full_argv(self: *ShellyOperation, args: []const []const u8) ![]const []const u8 {
+    fn build_full_argv(self: *ShellyOperation, args: []const []const u8, cache_root: ?[]const u8) ![]const []const u8 {
         const shelly_bin = if (builtin.mode == .Debug)
             "../Shelly.Cli.Zig/zig-out/bin/shelly"
         else
             "shelly";
-        var full = try self.allocator.alloc([]const u8, args.len + 2);
+        var full = try self.allocator.alloc([]const u8, args.len + 2 + @as(usize, if (cache_root != null) 2 else 0));
         full[0] = shelly_bin;
         @memcpy(full[1 .. 1 + args.len], args);
+        if (cache_root) |root| {
+            full[1 + args.len] = "--aur-cache-root";
+            full[2 + args.len] = root;
+        }
         full[full.len - 1] = "--ui-mode";
 
         return full;
     }
 
     pub fn start(self: *ShellyOperation, args: []const []const u8) !void {
-        const full = try self.build_full_argv(args);
+        const full = try self.build_full_argv(args, null);
         defer self.allocator.free(full);
         try self.spawn_and_read(full, null);
     }
 
     pub fn startPrivileged(self: *ShellyOperation, args: []const []const u8) !void {
-        const full = try self.build_full_argv(args);
+        const cache_root = try purifyCacheRoot(self.allocator, args, runtime.environ_map);
+        defer if (cache_root) |root| self.allocator.free(root);
+        const full = try self.build_full_argv(args, cache_root);
         defer self.allocator.free(full);
         const proxy_environment = try serializeProxyEnvironment(self.allocator, runtime.environ_map);
         defer if (proxy_environment) |json| self.allocator.free(json);
@@ -564,7 +606,7 @@ pub const ShellyOperation = struct {
         }
 
         const term = self.child.wait(self.io) catch |err| {
-            log.debug("reader_loop: wait error: {t}", .{err});
+            log.debug("Could not collect the result of the requested operation. {0s} Its final status could not be confirmed.\n\nTechnical details: {1s}", .{ diagnostics.cause(err), @errorName(err) });
             post_done(self, 255);
             return;
         };
@@ -777,18 +819,34 @@ fn parsePkgbuildDiff(op: *ShellyOperation, json: []const u8) !?*PendingQuestion 
 }
 
 fn parseYesNo(op: *ShellyOperation, json: []const u8) !?*PendingQuestion {
-    const e = try std.json.parseFromSlice(YesNoRequest, op.allocator, json, .{ .ignore_unknown_fields = true });
+    const e = try std.json.parseFromSlice(
+        YesNoRequest,
+        op.allocator,
+        json,
+        .{ .ignore_unknown_fields = true },
+    );
     defer e.deinit();
 
     const pending = try newPending(op);
     errdefer pending.destroy();
     const qa = pending.arena.allocator();
 
+    const arguments = try qa.alloc(
+        []const u8,
+        e.value.Arguments.len,
+    );
+
+    for (e.value.Arguments, arguments) |argument, *owned| {
+        owned.* = try qa.dupe(u8, argument);
+    }
+
     pending.request = .{ .yes_no = .{
         .question_id = try qa.dupe(u8, e.value.QuestionId),
         .question_kind = try qa.dupe(u8, e.value.QuestionKind),
         .question_text = try qa.dupe(u8, e.value.QuestionText),
+        .arguments = arguments,
     } };
+
     return pending;
 }
 
@@ -813,7 +871,15 @@ fn parseTransaction(op: *ShellyOperation, json: []const u8) !?*PendingQuestion {
         .installed_size = package.InstalledSize,
     };
 
+    const migrations = try qa.alloc(TransactionMigration, e.value.Migrations.len);
+    for (e.value.Migrations, migrations) |migration, *target| target.* = .{
+        .path = try qa.dupe(u8, migration.path),
+        .destination = try qa.dupe(u8, migration.destination),
+        .source = if (migration.source) |source| try qa.dupe(u8, source) else null,
+        .origin = try qa.dupe(u8, migration.origin),
+    };
     pending.request = .{ .transaction = .{
+        .migrations = migrations,
         .question_id = try qa.dupe(u8, e.value.QuestionId),
         .question_text = qa.dupe(u8, e.value.QuestionText) catch "",
         .action = qa.dupe(u8, e.value.Action) catch "",
@@ -852,12 +918,6 @@ fn parseSelection(op: *ShellyOperation, json: []const u8, kind: []const u8) !?*P
             .prompt = qa.dupe(u8, e.value.QuestionText) catch "",
             .options = opts,
         } };
-    } else if (std.mem.eql(u8, kind, "q.provider")) {
-        pending.request = .{ .select_one = .{
-            .question_id = qid,
-            .prompt = qa.dupe(u8, e.value.QuestionText) catch "",
-            .options = opts,
-        } };
     } else {
         pending.request = .{ .select_one = .{
             .question_id = qid,
@@ -882,7 +942,11 @@ fn dispatchEvent(op: *ShellyOperation, alloc: std.mem.Allocator, json: []const u
     } else if (std.mem.eql(u8, kind, "alpm.error")) {
         const e = std.json.parseFromSlice(AlpmError, alloc, json, .{ .ignore_unknown_fields = true }) catch return;
         defer e.deinit();
-        op.on_event(op.ctx, .{ .err = .{ .message = e.value.ErrorMessage } });
+        if (e.value.Recoverable or !std.mem.eql(u8, e.value.Level, "Error")) {
+            op.on_event(op.ctx, .{ .info = .{ .event_type = "Warning", .message = e.value.ErrorMessage, .package_name = null, .current = null, .total = null } });
+        } else {
+            op.on_event(op.ctx, .{ .err = .{ .message = e.value.ErrorMessage } });
+        }
     } else if (std.mem.eql(u8, kind, "alpm.progress")) {
         const e = std.json.parseFromSlice(AlpmProgress, alloc, json, .{ .ignore_unknown_fields = true }) catch return;
         defer e.deinit();
@@ -944,27 +1008,27 @@ test "progress percentages are clamped to the GTK protocol range" {
 }
 
 test "flatpak install argv adds --user only for user scope" {
-    const system_argv = try ShellyCommands.install_flatpak(std.testing.allocator, "org.example.App", .system, "");
+    const system_argv = try ShellyCommands.installFlatpak(std.testing.allocator, "org.example.App", .system, "");
     defer std.testing.allocator.free(system_argv);
     try std.testing.expectEqualSlices([]const u8, &.{ "install", "flatpak", "org.example.App" }, system_argv);
 
-    const user_argv = try ShellyCommands.install_flatpak(std.testing.allocator, "org.example.App", .user, "");
+    const user_argv = try ShellyCommands.installFlatpak(std.testing.allocator, "org.example.App", .user, "");
     defer std.testing.allocator.free(user_argv);
     try std.testing.expectEqualSlices([]const u8, &.{ "install", "flatpak", "org.example.App", "--user" }, user_argv);
 }
 
 test "flatpak install argv passes --remote when a remote name is supplied" {
-    const argv = try ShellyCommands.install_flatpak(std.testing.allocator, "org.example.App", .system, "flathub");
+    const argv = try ShellyCommands.installFlatpak(std.testing.allocator, "org.example.App", .system, "flathub");
     defer std.testing.allocator.free(argv);
     try std.testing.expectEqualSlices([]const u8, &.{ "install", "flatpak", "org.example.App", "--remote", "flathub" }, argv);
 
-    const with_user = try ShellyCommands.install_flatpak_ex(std.testing.allocator, "org.example.App", .user, "flathub-beta", false);
+    const with_user = try ShellyCommands.installFlatpakEx(std.testing.allocator, "org.example.App", .user, "flathub-beta", false);
     defer std.testing.allocator.free(with_user);
     try std.testing.expectEqualSlices([]const u8, &.{ "install", "flatpak", "org.example.App", "--user", "--remote", "flathub-beta" }, with_user);
 }
 
 test "flatpak addon install argv marks addon refs as runtimes" {
-    const argv = try ShellyCommands.install_flatpak_ex(std.testing.allocator, "org.example.App.Plugin", .user, "", true);
+    const argv = try ShellyCommands.installFlatpakEx(std.testing.allocator, "org.example.App.Plugin", .user, "", true);
     defer std.testing.allocator.free(argv);
     try std.testing.expectEqualSlices([]const u8, &.{ "install", "flatpak", "org.example.App.Plugin", "--user", "--runtime" }, argv);
 }
@@ -999,4 +1063,46 @@ test "proxy environment serialization is absent without proxy variables" {
     defer environment.deinit();
     try environment.put("PATH", "/usr/bin");
     try std.testing.expect(try serializeProxyEnvironment(std.testing.allocator, &environment) == null);
+}
+
+test "clean cache argv includes the entire AUR cache regardless of repository retention" {
+    for ([_][]const u8{ "0", "3" }) |keep| {
+        const argv = try ShellyCommands.clean_cache(std.testing.allocator, keep);
+        defer std.testing.allocator.free(argv);
+        try std.testing.expectEqualSlices([]const u8, &.{ "purify", "standard", "--cache", keep, "--aur-cache" }, argv);
+    }
+}
+
+test "clean cache argv preserves the caller cache before privileged launch" {
+    var environment = std.process.Environ.Map.init(std.testing.allocator);
+    defer environment.deinit();
+    try environment.put("HOME", "/home/tester");
+    for ([_][]const u8{ "/tmp/custom cache", "relative", "" }) |cache| {
+        try environment.put("XDG_CACHE_HOME", cache);
+        const root = (try purifyCacheRoot(std.testing.allocator, &.{ "purify", "standard", "--aur-cache" }, &environment)).?;
+        defer std.testing.allocator.free(root);
+        try std.testing.expectEqualStrings(if (std.fs.path.isAbsolute(cache)) "/tmp/custom cache/Shelly" else "/home/tester/.cache/Shelly", root);
+        var operation: ShellyOperation = undefined;
+        operation.allocator = std.testing.allocator;
+        const argv = try operation.build_full_argv(&.{ "purify", "standard", "--aur-cache" }, root);
+        defer std.testing.allocator.free(argv);
+        try std.testing.expectEqualSlices([]const u8, &.{ "purify", "standard", "--aur-cache", "--aur-cache-root", root, "--ui-mode" }, argv[1..]);
+    }
+    try std.testing.expectEqual(null, try purifyCacheRoot(std.testing.allocator, &.{ "purify", "standard", "--cache", "0" }, &environment));
+    try std.testing.expectEqual(null, try purifyCacheRoot(std.testing.allocator, &.{ "purify", "standard", "--aur-cache", "--aur-cache-root", "/tmp/explicit/Shelly" }, &environment));
+}
+
+test "transaction migration preview owns strings after decoding" {
+    // Parsing needs only the allocator; no subprocess or GTK display is used.
+    var operation: ShellyOperation = undefined;
+    operation.allocator = std.testing.allocator;
+    const pending = (try parseTransaction(&operation,
+        \\{"$kind":"q.transaction","QuestionId":"1","Action":"install","Migrations":[{"path":"etc/local.conf","destination":"demo","source":"legacy","origin":"declared"}]}
+    )).?;
+    defer pending.destroy();
+    const migration = pending.request.transaction.migrations[0];
+    try std.testing.expectEqualStrings("etc/local.conf", migration.path);
+    try std.testing.expectEqualStrings("demo", migration.destination);
+    try std.testing.expectEqualStrings("legacy", migration.source.?);
+    try std.testing.expectEqualStrings("declared", migration.origin);
 }

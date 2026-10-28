@@ -1,4 +1,5 @@
 const std = @import("std");
+pub const compression_policy = @import("compression.zig");
 
 const c = @cImport({
     @cInclude("archive.h");
@@ -22,6 +23,8 @@ pub const Error = error{
     InvalidEntryTimestamp,
     EntryTooLarge,
     UnsupportedCompression,
+    UnsupportedCompressionPresetFormat,
+    CompressionConfigurationFailed,
     UnsupportedFileType,
 };
 
@@ -29,6 +32,7 @@ pub const EntryKind = enum {
     regular_file,
     directory,
     symbolic_link,
+    hard_link,
     other,
 };
 
@@ -57,6 +61,11 @@ pub const OwnershipOverride = struct {
     ownership: VirtualOwnership,
 };
 
+pub const ModeOverride = struct {
+    path: []const u8,
+    mode: u32,
+};
+
 /// Metadata view used by both package and mtree generation. Package staging
 /// always remains owned by the unprivileged build user; only this view is
 /// written to the resulting archive.
@@ -64,6 +73,22 @@ pub const VirtualMetadata = struct {
     default_ownership: VirtualOwnership = .{},
     ownership_overrides: []const OwnershipOverride = &.{},
     ownership_overrides_sorted: bool = false,
+    /// Sorted by path. These are package modes before temporary staging access.
+    mode_overrides: []const ModeOverride = &.{},
+
+    pub fn modeForPath(self: VirtualMetadata, path: []const u8, filesystem_mode: u32) u32 {
+        var low: usize = 0;
+        var high = self.mode_overrides.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            switch (std.mem.order(u8, path, self.mode_overrides[middle].path)) {
+                .lt => high = middle,
+                .gt => low = middle + 1,
+                .eq => return self.mode_overrides[middle].mode,
+            }
+        }
+        return filesystem_mode;
+    }
 
     pub fn ownershipForPath(self: VirtualMetadata, path: []const u8) VirtualOwnership {
         if (self.ownership_overrides_sorted) {
@@ -87,6 +112,11 @@ pub const VirtualMetadata = struct {
 };
 
 pub const Writer = struct {
+    pub const Options = struct {
+        /// Null preserves libarchive's defaults for existing callers.
+        compression_level: ?compression_policy.Preset = null,
+    };
+
     allocator: std.mem.Allocator,
     io: std.Io,
     handle: *c.struct_archive,
@@ -108,13 +138,23 @@ pub const Writer = struct {
         output_path: []const u8,
         virtual_metadata: VirtualMetadata,
     ) !Writer {
+        return initWithOptions(allocator, io, output_path, virtual_metadata, .{});
+    }
+
+    pub fn initWithOptions(
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        output_path: []const u8,
+        virtual_metadata: VirtualMetadata,
+        options: Options,
+    ) !Writer {
         const output_path_z = try allocator.dupeZ(u8, output_path);
         errdefer allocator.free(output_path_z);
 
         const handle = c.archive_write_new() orelse return Error.ArchiveCreateFailed;
         errdefer _ = c.archive_write_free(handle);
 
-        try addFilterForPath(handle, output_path);
+        try configureCompression(handle, output_path, options.compression_level);
         try requireWriteStatus(c.archive_write_set_format_pax_restricted(handle));
         try requireWriteStatus(c.archive_write_open_filename(handle, output_path_z.ptr));
 
@@ -232,7 +272,7 @@ fn writeDirectory(
             archive_entry,
             archive_path_z.ptr,
             file_type,
-            @intCast(stat.permissions.toMode() & 0o7777),
+            virtual_metadata.modeForPath(file_entry.path, @intCast(stat.permissions.toMode() & 0o7777)),
             virtual_metadata.ownershipForPath(file_entry.path),
         );
         setEntryMtime(archive_entry, stat.mtime.nanoseconds);
@@ -302,7 +342,16 @@ fn writeDataAll(handle: *c.struct_archive, contents: []const u8) !void {
     }
 }
 
-fn addFilterForPath(handle: *c.struct_archive, output_path: []const u8) !void {
+/// Checks filter availability and options without creating an output file.
+pub fn validateCompression(output_path: []const u8, preset: ?compression_policy.Preset) !void {
+    if (preset == null) return;
+    const handle = c.archive_write_new() orelse return Error.ArchiveCreateFailed;
+    defer _ = c.archive_write_free(handle);
+    try configureCompression(handle, output_path, preset);
+}
+
+fn configureCompression(handle: *c.struct_archive, output_path: []const u8, preset: ?compression_policy.Preset) !void {
+    const format = if (preset != null) try compression_policy.Format.fromPath(output_path) else null;
     const status = if (std.mem.endsWith(u8, output_path, ".zst"))
         c.archive_write_add_filter_zstd(handle)
     else if (std.mem.endsWith(u8, output_path, ".gz"))
@@ -315,8 +364,187 @@ fn addFilterForPath(handle: *c.struct_archive, output_path: []const u8) !void {
         c.archive_write_add_filter_none(handle)
     else
         return Error.UnsupportedCompression;
-    try requireWriteStatus(status);
+    if (preset) |selected| {
+        // ARCHIVE_WARN can mean a filter fell back to an external executable.
+        // Explicit presets require the native filter and exact option support.
+        if (status != c.ARCHIVE_OK) return error.CompressionConfigurationFailed;
+        const filter = format.?.filterName();
+        if (c.archive_write_set_filter_option(handle, filter.ptr, "compression-level", selected.backendLevel(format.?).ptr) != c.ARCHIVE_OK)
+            return error.CompressionConfigurationFailed;
+        if (format.? == .zstd or format.? == .xz) {
+            if (c.archive_write_set_filter_option(handle, filter.ptr, "threads", "1") != c.ARCHIVE_OK)
+                return error.CompressionConfigurationFailed;
+        }
+    } else {
+        try requireWriteStatus(status);
+    }
 }
+
+/// Compression of a single source file, rather than an archive of entries.
+/// Both the content signature and the source alias must match makepkg's rules.
+pub const StandaloneCompression = enum {
+    gzip,
+    compress,
+    bzip2,
+    xz,
+    zstd,
+
+    pub fn detect(prefix: []const u8) ?StandaloneCompression {
+        if (std.mem.startsWith(u8, prefix, "\x1f\x8b")) return .gzip;
+        if (std.mem.startsWith(u8, prefix, "\x1f\x9d")) return .compress;
+        if (std.mem.startsWith(u8, prefix, "BZh")) return .bzip2;
+        if (std.mem.startsWith(u8, prefix, "\xfd7zXZ\x00")) return .xz;
+        if (std.mem.startsWith(u8, prefix, "\x28\xb5\x2f\xfd")) return .zstd;
+        return null;
+    }
+
+    pub fn outputName(self: StandaloneCompression, alias: []const u8) ?[]const u8 {
+        const suffixes: []const []const u8 = switch (self) {
+            .gzip, .compress => &.{ ".gz", ".z", ".Z" },
+            .bzip2 => &.{ ".bz2", ".bz" },
+            .xz => &.{".xz"},
+            .zstd => &.{".zst"},
+        };
+        for (suffixes) |suffix| {
+            if (std.mem.endsWith(u8, alias, suffix)) return alias[0 .. alias.len - suffix.len];
+        }
+        return null;
+    }
+
+    pub fn fromFile(io: std.Io, path: []const u8) !?StandaloneCompression {
+        var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+        defer file.close(io);
+        var buffer: [16]u8 = undefined;
+        var reader = file.reader(io, &buffer);
+        var prefix: [6]u8 = undefined;
+        const length = try reader.interface.readSliceShort(&prefix);
+        return detect(prefix[0..length]);
+    }
+};
+
+/// A dedicated single-file decoder. Never registers raw format on normal
+/// archive readers: raw would otherwise accept ordinary non-archive sources.
+pub const CompressedReader = struct {
+    raw: ?Reader = null,
+    gzip: ?*GzipReader = null,
+    empty: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, path: []const u8, compression: StandaloneCompression) !CompressedReader {
+        if (compression == .gzip) return .{ .gzip = try GzipReader.init(allocator, io, path) };
+        const path_z = try allocator.dupeZ(u8, path);
+        errdefer allocator.free(path_z);
+        const handle = c.archive_read_new() orelse return Error.ArchiveCreateFailed;
+        errdefer _ = c.archive_read_free(handle);
+        const expected_filter: c_int = switch (compression) {
+            .compress => c.ARCHIVE_FILTER_COMPRESS,
+            .bzip2 => c.ARCHIVE_FILTER_BZIP2,
+            .xz => c.ARCHIVE_FILTER_XZ,
+            .zstd => c.ARCHIVE_FILTER_ZSTD,
+            .gzip => unreachable,
+        };
+        const status = switch (compression) {
+            .compress => c.archive_read_support_filter_compress(handle),
+            .bzip2 => c.archive_read_support_filter_bzip2(handle),
+            .xz => c.archive_read_support_filter_xz(handle),
+            .zstd => c.archive_read_support_filter_zstd(handle),
+            .gzip => unreachable,
+        };
+        if (status != c.ARCHIVE_OK or c.archive_read_support_format_raw(handle) != c.ARCHIVE_OK or
+            c.archive_read_support_format_empty(handle) != c.ARCHIVE_OK)
+            return error.SourceDecompressionFailed;
+        if (c.archive_read_open_filename(handle, path_z.ptr, 64 * 1024) != c.ARCHIVE_OK)
+            return error.SourceDecompressionFailed;
+        if (c.archive_filter_code(handle, 0) != expected_filter or c.archive_filter_count(handle) != 2)
+            return error.SourceDecompressionFailed;
+        var entry: ?*c.struct_archive_entry = null;
+        const header_status = c.archive_read_next_header(handle, &entry);
+        if (header_status != c.ARCHIVE_OK and header_status != c.ARCHIVE_EOF)
+            return error.SourceDecompressionFailed;
+        return .{ .raw = .{ .allocator = allocator, .handle = handle, .path_z = path_z }, .empty = header_status == c.ARCHIVE_EOF };
+    }
+
+    pub fn deinit(self: *CompressedReader) void {
+        if (self.raw) |*raw| raw.deinit();
+        if (self.gzip) |gzip| gzip.deinit();
+        self.* = undefined;
+    }
+
+    pub fn read(self: *CompressedReader, buffer: []u8) !usize {
+        if (self.empty or buffer.len == 0) return 0;
+        if (self.gzip) |gzip| return gzip.read(buffer);
+        return self.raw.?.read(buffer) catch error.SourceDecompressionFailed;
+    }
+
+    /// Bounded streaming copy. The context supplies checkCancelled().
+    pub fn copyTo(self: *CompressedReader, writer: *std.Io.Writer, max_bytes: u64, context: anytype) !void {
+        var buffer: [64 * 1024]u8 = undefined;
+        var remaining = max_bytes;
+        while (true) {
+            try context.checkCancelled();
+            const amount = try self.read(&buffer);
+            if (amount == 0) break;
+            if (amount > remaining) return error.SourcePayloadTooLarge;
+            remaining -= amount;
+            try writer.writeAll(buffer[0..amount]);
+        }
+        try writer.flush();
+    }
+};
+
+// Libarchive's gzip filter does not validate member CRCs. Zig's streaming
+// inflater exposes each member's trailer so we can check its CRC and size.
+// Heap storage keeps the reader and inflater's internal pointers stable.
+const GzipReader = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    file: std.Io.File,
+    input_buffer: [64 * 1024]u8 = undefined,
+    window: [std.compress.flate.max_window_len]u8 = undefined,
+    input: std.Io.File.Reader = undefined,
+    inflater: std.compress.flate.Decompress = undefined,
+    crc: std.hash.Crc32 = .init(),
+    size: u32 = 0,
+    done: bool = false,
+
+    fn init(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !*GzipReader {
+        const self = try allocator.create(GzipReader);
+        errdefer allocator.destroy(self);
+        self.* = .{ .allocator = allocator, .io = io, .file = try std.Io.Dir.cwd().openFile(io, path, .{}) };
+        self.input = self.file.reader(io, &self.input_buffer);
+        self.inflater = .init(&self.input.interface, .gzip, &self.window);
+        return self;
+    }
+
+    fn deinit(self: *GzipReader) void {
+        self.file.close(self.io);
+        self.allocator.destroy(self);
+    }
+
+    fn read(self: *GzipReader, buffer: []u8) !usize {
+        while (!self.done) {
+            const amount = self.inflater.reader.readSliceShort(buffer) catch return error.SourceDecompressionFailed;
+            if (amount > 0) {
+                self.crc.update(buffer[0..amount]);
+                self.size +%= @truncate(amount);
+                return amount;
+            }
+            const trailer = self.inflater.container_metadata.gzip;
+            if (trailer.crc != self.crc.final() or trailer.count != self.size) return error.SourceDecompressionFailed;
+            const next = self.input.interface.peekByte() catch |err| switch (err) {
+                error.EndOfStream => {
+                    self.done = true;
+                    return 0;
+                },
+                else => return error.SourceDecompressionFailed,
+            };
+            if (next != 0x1f) return error.SourceDecompressionFailed;
+            self.crc = .init();
+            self.size = 0;
+            self.inflater = .init(&self.input.interface, .gzip, &self.window);
+        }
+        return 0;
+    }
+};
 
 pub const Reader = struct {
     allocator: std.mem.Allocator,
@@ -324,16 +552,29 @@ pub const Reader = struct {
     path_z: [:0]u8,
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8) !Reader {
-        return initWithSupport(allocator, path, false);
+        return (try initWithSupport(allocator, path, false, false)) orelse
+            Error.ArchiveOpenFailed;
     }
 
     /// Opens a source archive using every filter and format supported by the
     /// installed libarchive. Package readers use init() and remain tar-only.
     pub fn initAll(allocator: std.mem.Allocator, path: []const u8) !Reader {
-        return initWithSupport(allocator, path, true);
+        return (try initWithSupport(allocator, path, true, false)) orelse
+            Error.ArchiveOpenFailed;
     }
 
-    fn initWithSupport(allocator: std.mem.Allocator, path: []const u8, support_all: bool) !Reader {
+    /// Opens a source only when libarchive recognizes its contents. A null
+    /// result means no registered format bidder accepted the readable input.
+    pub fn initAllIfRecognized(allocator: std.mem.Allocator, path: []const u8) !?Reader {
+        return initWithSupport(allocator, path, true, true);
+    }
+
+    fn initWithSupport(
+        allocator: std.mem.Allocator,
+        path: []const u8,
+        support_all: bool,
+        allow_unrecognized: bool,
+    ) !?Reader {
         const path_z = try allocator.dupeZ(u8, path);
         errdefer allocator.free(path_z);
 
@@ -347,11 +588,19 @@ pub const Reader = struct {
             try requireStatus(c.archive_read_support_filter_none(handle));
             try requireStatus(c.archive_read_support_filter_gzip(handle));
             try requireStatus(c.archive_read_support_filter_zstd(handle));
+            try requireStatus(c.archive_read_support_filter_xz(handle));
+            try requireStatus(c.archive_read_support_filter_bzip2(handle));
             try requireStatus(c.archive_read_support_format_tar(handle));
         }
 
-        if (c.archive_read_open_filename(handle, path_z.ptr, 64 * 1024) < c.ARCHIVE_WARN)
+        if (c.archive_read_open_filename(handle, path_z.ptr, 64 * 1024) < c.ARCHIVE_WARN) {
+            if (allow_unrecognized and c.archive_format(handle) == 0) {
+                _ = c.archive_read_free(handle);
+                allocator.free(path_z);
+                return null;
+            }
             return Error.ArchiveOpenFailed;
+        }
 
         return .{
             .allocator = allocator,
@@ -366,20 +615,61 @@ pub const Reader = struct {
         self.* = undefined;
     }
 
+    /// Source extraction must preserve mtree-detected text as a file: mtree's
+    /// permissive bidder also accepts ordinary templates and configuration.
+    /// Empty decompressed streams likewise describe a file, not an archive.
+    /// Explicit mtree readers can still consume entries through next().
+    pub fn isPlainSourceFile(self: *Reader) bool {
+        const format = c.archive_format(self.handle);
+        return format == c.ARCHIVE_FORMAT_MTREE or
+            (c.archive_filter_count(self.handle) > 1 and format == c.ARCHIVE_FORMAT_EMPTY);
+    }
+
+    /// Result of asking libarchive's registered format bidders to classify
+    /// the input. The first entry is returned with the open reader so callers
+    /// can continue extracting without reopening the untrusted source.
+    pub const Probe = union(enum) {
+        not_archive,
+        archive: ?Entry,
+    };
+
+    pub fn probe(self: *Reader) !Probe {
+        var raw_entry: ?*c.struct_archive_entry = null;
+        const status = c.archive_read_next_header(self.handle, &raw_entry);
+        if (status == c.ARCHIVE_EOF)
+            return if (c.archive_format(self.handle) == 0)
+                .not_archive
+            else
+                .{ .archive = null };
+        if (status < c.ARCHIVE_WARN)
+            return if (c.archive_format(self.handle) == 0)
+                .not_archive
+            else
+                Error.ArchiveReadFailed;
+        const entry = raw_entry orelse return Error.ArchiveReadFailed;
+        return .{ .archive = try entryFromRaw(entry) };
+    }
+
     pub fn next(self: *Reader) !?Entry {
         var raw_entry: ?*c.struct_archive_entry = null;
         const status = c.archive_read_next_header(self.handle, &raw_entry);
         if (status == c.ARCHIVE_EOF) return null;
         if (status < c.ARCHIVE_WARN or raw_entry == null) return Error.ArchiveReadFailed;
 
-        const entry = raw_entry.?;
+        return @as(?Entry, try entryFromRaw(raw_entry.?));
+    }
+
+    fn entryFromRaw(entry: *c.struct_archive_entry) !Entry {
         const pathname = c.archive_entry_pathname_utf8(entry) orelse
             c.archive_entry_pathname(entry) orelse return Error.InvalidEntryPath;
         const raw_size = c.archive_entry_size(entry);
+        // Tar hard links may have no file type at all. Their target takes
+        // precedence over filetype, including formats reporting AE_IFREG.
+        const hard_target = c.archive_entry_hardlink_utf8(entry) orelse c.archive_entry_hardlink(entry);
 
         return .{
             .path = std.mem.span(pathname),
-            .kind = switch (c.archive_entry_filetype(entry)) {
+            .kind = if (hard_target != null) .hard_link else switch (c.archive_entry_filetype(entry)) {
                 ae_ifreg => .regular_file,
                 ae_ifdir => .directory,
                 ae_iflnk => .symbolic_link,
@@ -390,7 +680,9 @@ pub const Reader = struct {
             .uid = @intCast(c.archive_entry_uid(entry)),
             .gid = @intCast(c.archive_entry_gid(entry)),
             .mtime = try entryMtime(entry),
-            .link_target = if (c.archive_entry_symlink_utf8(entry)) |target|
+            .link_target = if (hard_target) |target|
+                std.mem.span(target)
+            else if (c.archive_entry_symlink_utf8(entry)) |target|
                 std.mem.span(target)
             else if (c.archive_entry_symlink(entry)) |target|
                 std.mem.span(target)
@@ -443,7 +735,16 @@ fn requireWriteStatus(status: c_int) !void {
 /// Normalizes an archive entry into a path relative to an extraction root.
 /// Absolute paths, backslashes, and parent traversal are rejected.
 pub fn normalizeEntryPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    if (path.len == 0 or std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, '\\') != null)
+    if (std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, '\\') != null)
+        return Error.InvalidEntryPath;
+    return normalizePosixEntryPath(allocator, path);
+}
+
+/// Normalizes entries extracted with POSIX filesystem operations. Backslashes
+/// are literal filename bytes, as in GStreamer's generated documentation.
+/// Never use this for consumers that interpret backslashes as separators.
+pub fn normalizePosixEntryPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    if (path.len == 0 or std.fs.path.isAbsolutePosix(path))
         return Error.InvalidEntryPath;
 
     var normalized: std.ArrayList(u8) = .empty;
@@ -463,7 +764,7 @@ pub fn normalizeEntryPath(allocator: std.mem.Allocator, path: []const u8) ![]u8 
 
 // Test fixture support is intentionally kept in this internal module rather
 // than making tests depend on external `tar`, `gzip`, `zstd`, or `xz` executables.
-pub const FixtureCompression = enum { none, gzip, zstd, xz };
+pub const FixtureCompression = enum { none, gzip, zstd, xz, bzip2, compress };
 
 pub const FixtureEntry = struct {
     path: [:0]const u8,
@@ -480,6 +781,34 @@ pub fn writeFixture(
     compression: FixtureCompression,
     entries: []const FixtureEntry,
 ) !void {
+    return writeFixtureWithFormat(allocator, path, compression, .pax, entries);
+}
+
+pub fn writeZipFixture(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    entries: []const FixtureEntry,
+) !void {
+    return writeFixtureWithFormat(allocator, path, .none, .zip, entries);
+}
+
+pub fn writeCompressedFixture(allocator: std.mem.Allocator, path: []const u8, compression: FixtureCompression, contents: []const u8) !void {
+    return writeFixtureWithFormat(allocator, path, compression, .raw, &.{.{ .path = "embedded-name", .contents = contents }});
+}
+
+pub fn writeIsoFixture(allocator: std.mem.Allocator, path: []const u8, entries: []const FixtureEntry) !void {
+    return writeFixtureWithFormat(allocator, path, .none, .iso9660, entries);
+}
+
+const FixtureFormat = enum { pax, zip, raw, iso9660 };
+
+fn writeFixtureWithFormat(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    compression: FixtureCompression,
+    format: FixtureFormat,
+    entries: []const FixtureEntry,
+) !void {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
@@ -491,16 +820,23 @@ pub fn writeFixture(
         .gzip => c.archive_write_add_filter_gzip(handle),
         .zstd => c.archive_write_add_filter_zstd(handle),
         .xz => c.archive_write_add_filter_xz(handle),
+        .bzip2 => c.archive_write_add_filter_bzip2(handle),
+        .compress => c.archive_write_add_filter_compress(handle),
     };
     if (filter_status < c.ARCHIVE_WARN) return Error.ArchiveWriteFailed;
     const needs_full_pax = for (entries) |fixture| {
         const mtime = fixture.mtime orelse continue;
         if (@mod(mtime.nanoseconds, std.time.ns_per_s) != 0) break true;
     } else false;
-    const format_status = if (needs_full_pax)
-        c.archive_write_set_format_pax(handle)
-    else
-        c.archive_write_set_format_pax_restricted(handle);
+    const format_status = switch (format) {
+        .pax => if (needs_full_pax)
+            c.archive_write_set_format_pax(handle)
+        else
+            c.archive_write_set_format_pax_restricted(handle),
+        .zip => c.archive_write_set_format_zip(handle),
+        .raw => c.archive_write_set_format_raw(handle),
+        .iso9660 => c.archive_write_set_format_iso9660(handle),
+    };
     if (format_status < c.ARCHIVE_WARN)
         return Error.ArchiveWriteFailed;
     if (c.archive_write_open_filename(handle, path_z.ptr) < c.ARCHIVE_WARN)
@@ -510,10 +846,10 @@ pub fn writeFixture(
     for (entries) |fixture| {
         const entry = c.archive_entry_new() orelse return Error.ArchiveCreateFailed;
         defer c.archive_entry_free(entry);
-        const kind: EntryKind = if (fixture.link_target != null) .symbolic_link else fixture.kind;
+        const kind: EntryKind = if (fixture.kind == .hard_link) .hard_link else if (fixture.link_target != null) .symbolic_link else fixture.kind;
         c.archive_entry_set_pathname(entry, fixture.path.ptr);
         c.archive_entry_set_filetype(entry, switch (kind) {
-            .regular_file => ae_ifreg,
+            .regular_file, .hard_link => ae_ifreg,
             .directory => ae_ifdir,
             .symbolic_link => ae_iflnk,
             .other => return Error.UnsupportedFileType,
@@ -524,6 +860,10 @@ pub fn writeFixture(
             const target = fixture.link_target orelse return Error.ArchiveWriteFailed;
             c.archive_entry_set_symlink(entry, target.ptr);
         }
+        if (kind == .hard_link) {
+            const target = fixture.link_target orelse return Error.ArchiveWriteFailed;
+            c.archive_entry_set_hardlink(entry, target.ptr);
+        }
         if (fixture.mtime) |mtime| setEntryMtime(entry, mtime.nanoseconds);
         if (c.archive_write_header(handle, entry) < c.ARCHIVE_WARN)
             return Error.ArchiveWriteFailed;
@@ -532,6 +872,32 @@ pub fn writeFixture(
             if (amount < 0 or amount != fixture.contents.len) return Error.ArchiveWriteFailed;
         }
     }
+}
+
+test "archive reader identifies hard links in probe and next" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/hardlinks.tar.gz", .{tmp.sub_path});
+    defer testing.allocator.free(path);
+    try writeFixture(testing.allocator, path, .gzip, &.{
+        .{ .path = "forward", .kind = .hard_link, .link_target = "original" },
+        .{ .path = "original", .contents = "payload" },
+        .{ .path = "backward", .kind = .hard_link, .link_target = "original" },
+    });
+    var reader = try Reader.initAll(testing.allocator, path);
+    defer reader.deinit();
+    const first = (try reader.probe()).archive.?;
+    try testing.expectEqual(EntryKind.hard_link, first.kind);
+    try testing.expectEqualStrings("original", first.link_target.?);
+    try testing.expectEqual(@as(u64, 0), first.size);
+    const original = (try reader.next()).?;
+    try testing.expectEqual(EntryKind.regular_file, original.kind);
+    try testing.expectEqual(@as(?[]const u8, null), original.link_target);
+    const last = (try reader.next()).?;
+    try testing.expectEqual(EntryKind.hard_link, last.kind);
+    try testing.expectEqualStrings("original", last.link_target.?);
+    try testing.expectEqual(@as(?Entry, null), try reader.next());
 }
 
 test "archive reader exposes exact entry modification timestamps" {
@@ -608,6 +974,97 @@ test "archive writer preserves tree modes and symlinks while forcing root owners
     try testing.expect(saw_link);
 }
 
+test "compression presets round trip all formats with contents and virtual metadata" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "tree/bin");
+    const payload = "repeatable binary payload\x00\xff\n" ** 2048;
+    try tmp.dir.writeFile(io, .{ .sub_path = "tree/bin/demo", .data = payload });
+    try tmp.dir.symLink(io, "demo", "tree/bin/link", .{});
+    const source = try tmp.dir.realPathFileAlloc(io, "tree", allocator);
+    defer allocator.free(source);
+    const ownership = [_]OwnershipOverride{.{ .path = "bin/demo", .ownership = .{ .uid = 42, .gid = 84 } }};
+    const modes = [_]ModeOverride{.{ .path = "bin/demo", .mode = 0o4755 }};
+    const contents = try allocator.alloc(u8, payload.len);
+    defer allocator.free(contents);
+
+    for ([_][]const u8{ "zst", "gz", "xz", "bz2" }) |extension| {
+        var first_header: [4]u8 = undefined;
+        for (std.enums.values(compression_policy.Preset)) |preset| {
+            const path = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/out.pkg.tar.{s}", .{ tmp.sub_path, extension });
+            defer allocator.free(path);
+            try validateCompression(path, preset);
+            var writer = try Writer.initWithOptions(allocator, io, path, .{
+                .ownership_overrides = &ownership,
+                .mode_overrides = &modes,
+            }, .{ .compression_level = preset });
+            defer writer.deinit();
+            try writer.addDirectory(source);
+            try writer.finish();
+
+            var reader = try Reader.init(allocator, path);
+            defer reader.deinit();
+            var files: usize = 0;
+            var links: usize = 0;
+            while (try reader.next()) |entry| {
+                if (std.mem.eql(u8, entry.path, "bin/demo")) {
+                    files += 1;
+                    try std.testing.expectEqual(@as(u32, 0o4755), entry.permissions);
+                    try std.testing.expectEqual(@as(i64, 42), entry.uid);
+                    try std.testing.expectEqual(@as(i64, 84), entry.gid);
+                    try std.testing.expectEqual(payload.len, entry.size);
+                    try std.testing.expectEqual(payload.len, try reader.readPrefix(contents));
+                    try std.testing.expectEqualSlices(u8, payload, contents);
+                } else if (std.mem.eql(u8, entry.path, "bin/link")) {
+                    links += 1;
+                    try std.testing.expectEqualStrings("demo", entry.link_target.?);
+                }
+            }
+            try std.testing.expectEqual(@as(usize, 1), files);
+            try std.testing.expectEqual(@as(usize, 1), links);
+
+            // bzip2 stores its block size in the stream header, providing an
+            // independent check that the writer actually applies the preset.
+            if (std.mem.eql(u8, extension, "bz2")) {
+                var file = try std.Io.Dir.cwd().openFile(io, path, .{});
+                defer file.close(io);
+                try std.testing.expectEqual(first_header.len, try file.readPositionalAll(io, &first_header, 0));
+                const expected = [_][]const u8{ "BZh1", "BZh3", "BZh5", "BZh7", "BZh9" };
+                try std.testing.expectEqualStrings(expected[@intFromEnum(preset) - 1], &first_header);
+            }
+        }
+    }
+}
+
+test "compression presets reject unsupported output before creating a file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}/out.pkg.tar.lz4", .{tmp.sub_path});
+    defer std.testing.allocator.free(path);
+    try std.testing.expectError(error.UnsupportedCompressionPresetFormat, Writer.initWithOptions(std.testing.allocator, std.testing.io, path, .{}, .{ .compression_level = .balanced }));
+    try std.testing.expectError(error.FileNotFound, std.Io.Dir.cwd().access(std.testing.io, path, .{}));
+}
+
+test "compression presets report compressor flush failures" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    try tmp.dir.createDir(io, "tree", .default_dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "tree/payload", .data = "payload" });
+    try tmp.dir.symLink(io, "/dev/full", "full.pkg.tar.zst", .{});
+    const source = try tmp.dir.realPathFileAlloc(io, "tree", allocator);
+    defer allocator.free(source);
+    const output = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/full.pkg.tar.zst", .{tmp.sub_path});
+    defer allocator.free(output);
+    var writer = try Writer.initWithOptions(allocator, io, output, .{}, .{ .compression_level = .balanced });
+    defer writer.deinit();
+    try writer.addDirectory(source);
+    try std.testing.expectError(error.ArchiveCloseFailed, writer.finish());
+}
+
 test "archive virtual ownership is shared by package and mtree writers" {
     const testing = std.testing;
     const io = testing.io;
@@ -647,7 +1104,10 @@ test "archive virtual ownership is shared by package and mtree writers" {
         defer reader.deinit();
         var saw_data = false;
         while (try reader.next()) |entry| {
-            if (!std.mem.eql(u8, entry.path, "usr/share/demo/data")) continue;
+            // Mtree paths may carry a ./ prefix that tar paths omit.
+            const normalized = try normalizeEntryPath(testing.allocator, entry.path);
+            defer testing.allocator.free(normalized);
+            if (!std.mem.eql(u8, normalized, "usr/share/demo/data")) continue;
             saw_data = true;
             try testing.expectEqual(@as(i64, 42), entry.uid);
             try testing.expectEqual(@as(i64, 84), entry.gid);
@@ -695,4 +1155,104 @@ test "archive paths cannot escape the extraction root" {
     const normalized = try normalizeEntryPath(testing.allocator, "./usr//bin/demo");
     defer testing.allocator.free(normalized);
     try testing.expectEqualStrings("usr/bin/demo", normalized);
+}
+
+test "POSIX archive paths preserve backslashes without allowing parent traversal" {
+    const testing = std.testing;
+    const normalized = try normalizePosixEntryPath(testing.allocator, "./html//GES_TEXT_HALIGN_TYPE\\.fragment");
+    defer testing.allocator.free(normalized);
+    try testing.expectEqualStrings("html/GES_TEXT_HALIGN_TYPE\\.fragment", normalized);
+
+    for ([_][]const u8{ "", ".", "./", "/etc/passwd", "../etc/passwd", "docs\\/../../etc/passwd" }) |path|
+        try testing.expectError(Error.InvalidEntryPath, normalizePosixEntryPath(testing.allocator, path));
+    // Package/database consumers retain their stricter path policy.
+    try testing.expectError(Error.InvalidEntryPath, normalizeEntryPath(testing.allocator, "html/GES_TEXT_HALIGN_TYPE\\.fragment"));
+}
+
+const CompressionTestContext = struct {
+    calls: usize = 0,
+    cancel_after: usize = std.math.maxInt(usize),
+    pub fn checkCancelled(self: *@This()) !void {
+        if (self.calls >= self.cancel_after) return error.Cancelled;
+        self.calls += 1;
+    }
+};
+
+test "standalone compression streams every supported format including empty files" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/payload", .{tmp.sub_path});
+    defer testing.allocator.free(path);
+    inline for (.{ FixtureCompression.gzip, .compress, .bzip2, .xz, .zstd }) |compression| {
+        for ([_][]const u8{ "payload\n", "" }) |contents| {
+            try writeCompressedFixture(testing.allocator, path, compression, contents);
+            // Libarchive's compress writer emits a spurious zero code for empty input.
+            if (compression == .compress and contents.len == 0)
+                try tmp.dir.writeFile(testing.io, .{ .sub_path = "payload", .data = "\x1f\x9d\x90" });
+            const detected = (try StandaloneCompression.fromFile(testing.io, path)).?;
+            try testing.expectEqualStrings(@tagName(compression), @tagName(detected));
+            var reader = try CompressedReader.init(testing.allocator, testing.io, path, detected);
+            defer reader.deinit();
+            var output: std.Io.Writer.Allocating = .init(testing.allocator);
+            defer output.deinit();
+            var context: CompressionTestContext = .{};
+            reader.copyTo(&output.writer, contents.len, &context) catch |err| {
+                std.debug.print("compression={s} length={d}\n", .{ @tagName(compression), contents.len });
+                return err;
+            };
+            try testing.expectEqualStrings(contents, output.written());
+        }
+    }
+}
+
+test "standalone compression enforces output limits and cancellation while streaming" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/payload", .{tmp.sub_path});
+    defer testing.allocator.free(path);
+    const contents = try testing.allocator.alloc(u8, 128 * 1024);
+    defer testing.allocator.free(contents);
+    @memset(contents, 'a');
+    try writeCompressedFixture(testing.allocator, path, .gzip, contents);
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var context: CompressionTestContext = .{};
+    var reader = try CompressedReader.init(testing.allocator, testing.io, path, .gzip);
+    defer reader.deinit();
+    try testing.expectError(error.SourcePayloadTooLarge, reader.copyTo(&output.writer, 65536, &context));
+    try testing.expectEqual(@as(usize, 65536), output.written().len);
+    var cancelled_reader = try CompressedReader.init(testing.allocator, testing.io, path, .gzip);
+    defer cancelled_reader.deinit();
+    context = .{ .cancel_after = 1 };
+    try testing.expectError(error.Cancelled, cancelled_reader.copyTo(&output.writer, contents.len, &context));
+}
+
+test "standalone compression validates concatenated gzip members and trailers" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try std.fmt.allocPrint(testing.allocator, ".zig-cache/tmp/{s}/payload", .{tmp.sub_path});
+    defer testing.allocator.free(path);
+    try writeCompressedFixture(testing.allocator, path, .gzip, "payload\n");
+    const compressed = try tmp.dir.readFileAlloc(testing.io, "payload", testing.allocator, .limited(1024));
+    defer testing.allocator.free(compressed);
+    const concatenated = try std.mem.concat(testing.allocator, u8, &.{ compressed, compressed });
+    defer testing.allocator.free(concatenated);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "payload", .data = concatenated });
+    var reader = try CompressedReader.init(testing.allocator, testing.io, path, .gzip);
+    defer reader.deinit();
+    var output: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer output.deinit();
+    var context: CompressionTestContext = .{};
+    try reader.copyTo(&output.writer, 16, &context);
+    try testing.expectEqualStrings("payload\npayload\n", output.written());
+    for ([_]usize{ 0, 4 }) |truncate| {
+        compressed[compressed.len - 8] ^= 1;
+        try tmp.dir.writeFile(testing.io, .{ .sub_path = "payload", .data = compressed[0 .. compressed.len - truncate] });
+        var damaged = try CompressedReader.init(testing.allocator, testing.io, path, .gzip);
+        defer damaged.deinit();
+        try testing.expectError(error.SourceDecompressionFailed, damaged.copyTo(&output.writer, 1024, &context));
+    }
 }

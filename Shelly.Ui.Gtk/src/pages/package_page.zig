@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const bindings = @import("Shelly_Ui_Gtk");
 const gtk = bindings.gtk;
 const gio = bindings.gio;
@@ -20,6 +21,7 @@ const RecommendCategory = @import("../models/recommendation.zig").RecommendCateg
 const sorters = @import("../helpers/sorters.zig");
 const recommendations = @import("../services/recommendations.zig");
 const translations = @import("../helpers/translations.zig");
+const a11y = @import("../helpers/a11y.zig");
 
 const Event = @import("../services/shelly_operation.zig").Event;
 const PackageDetail = @import("package_detail.zig").PackageDetail;
@@ -222,6 +224,7 @@ pub const PackagePage = extern struct {
         const cell = gobject.ext.cast(gtk.ColumnViewCell, item) orelse return;
         const label = gtk.Label.new("");
         gtk.Widget.setHalign(label.as(gtk.Widget), gtk.Align.start);
+        gtk.Label.setEllipsize(label, .end);
         gtk.ColumnViewCell.setChild(cell, label.as(gtk.Widget));
     }
 
@@ -240,6 +243,7 @@ pub const PackagePage = extern struct {
                 const cell = gobject.ext.cast(gtk.ColumnViewCell, item) orelse return;
                 const label = gtk.Label.new("");
                 gtk.Widget.setHalign(label.as(gtk.Widget), halign);
+                gtk.Label.setEllipsize(label, .end);
                 gtk.ColumnViewCell.setChild(cell, label.as(gtk.Widget));
             }
 
@@ -286,6 +290,7 @@ pub const PackagePage = extern struct {
 
                 const installed_icon = gtk.Image.newFromIconName("object-select-symbolic");
                 gtk.Widget.setTooltipText(installed_icon.as(gtk.Widget), translations._("Installed"));
+                a11y.setName(installed_icon.as(gtk.Widget), translations._("Installed"));
                 gtk.Box.append(name_row, installed_icon.as(gtk.Widget));
 
                 gtk.Box.append(text_box, name_row.as(gtk.Widget));
@@ -328,10 +333,14 @@ pub const PackagePage = extern struct {
                 gtk.Widget.setVisible(installed_w, @intFromBool(pkg.isInstalled()));
 
                 const p = page.priv();
-                if (p.resolver.resolve(pkg.getName())) |path| {
-                    gtk.Image.setFromFile(icon, path);
-                } else {
-                    gtk.Image.setFromIconName(icon, "package-x-generic-symbolic");
+                const icons_on = runtime.shellyIconsEnabled();
+                gtk.Widget.setVisible(icon_w, @intFromBool(icons_on));
+                if (icons_on) {
+                    if (p.resolver.resolve(pkg.getName())) |path| {
+                        gtk.Image.setFromFile(icon, path);
+                    } else {
+                        gtk.Image.setFromIconName(icon, "package-x-generic-symbolic");
+                    }
                 }
             }
         };
@@ -362,6 +371,7 @@ pub const PackagePage = extern struct {
         const check = gobject.ext.cast(gtk.CheckButton, child) orelse return;
 
         page.priv().check_map_column.put(std.heap.c_allocator, pkg, check) catch {};
+        a11y.setName(check.as(gtk.Widget), pkg.getName());
 
         gobject.Object.setData(check.as(gobject.Object), "syncing", @ptrFromInt(1));
         gtk.CheckButton.setActive(check, @intFromBool(pkg.isSelected()));
@@ -389,6 +399,7 @@ pub const PackagePage = extern struct {
         const cell = gobject.ext.cast(gtk.ColumnViewCell, item) orelse return;
         const label = gtk.Label.new("");
         gtk.Widget.setHalign(label.as(gtk.Widget), gtk.Align.start);
+        gtk.Label.setEllipsize(label, .end);
         gtk.ColumnViewCell.setChild(cell, label.as(gtk.Widget));
     }
 
@@ -455,6 +466,7 @@ pub const PackagePage = extern struct {
                 gtk.Widget.setHalign(installed_check.as(gtk.Widget), .start);
                 gtk.Widget.setHexpand(installed_check.as(gtk.Widget), 0);
                 gtk.Widget.setTooltipText(installed_check.as(gtk.Widget), translations._("Package is already installed"));
+                a11y.setName(installed_check.as(gtk.Widget), translations._("Package is already installed"));
 
                 const title_grid = gtk.Grid.new();
                 gtk.Grid.setColumnSpacing(title_grid, 4);
@@ -510,6 +522,7 @@ pub const PackagePage = extern struct {
                 const selection_check = gobject.ext.cast(gtk.CheckButton, gtk.Grid.getChildAt(content_grid, 2, 0) orelse return) orelse return;
 
                 page.priv().check_map_grid.put(std.heap.c_allocator, pkg, selection_check) catch {};
+                a11y.setName(selection_check.as(gtk.Widget), pkg.getName());
 
                 const title_grid_w = gtk.Widget.getFirstChild(right_box.as(gtk.Widget)) orelse return;
                 const title_grid = gobject.ext.cast(gtk.Grid, title_grid_w) orelse return;
@@ -523,10 +536,14 @@ pub const PackagePage = extern struct {
                 gobject.Object.setData(selection_check.as(gobject.Object), "syncing", null);
 
                 const p = page.priv();
-                if (p.resolver.resolve(pkg.getName())) |path| {
-                    gtk.Image.setFromFile(icon_image, path);
-                } else {
-                    gtk.Image.setFromIconName(icon_image, "package-x-generic");
+                const icons_on = runtime.shellyIconsEnabled();
+                gtk.Widget.setVisible(icon_image.as(gtk.Widget), @intFromBool(icons_on));
+                if (icons_on) {
+                    if (p.resolver.resolve(pkg.getName())) |path| {
+                        gtk.Image.setFromFile(icon_image, path);
+                    } else {
+                        gtk.Image.setFromIconName(icon_image, "package-x-generic");
+                    }
                 }
                 var name_buf: [256]u8 = undefined;
                 const markup = std.fmt.bufPrintZ(&name_buf, "<b>{s}</b>", .{pkg.getName()}) catch pkg.getName();
@@ -637,6 +654,18 @@ pub const PackagePage = extern struct {
         const loaded = gio.ListModel.getNItems(p.list_store.as(gio.ListModel));
         const visible = loaded > 0 and gio.ListModel.getNItems(selection.as(gio.ListModel)) == 0;
         gtk.Widget.setVisible(p.no_results_overlay.as(gtk.Widget), @intFromBool(visible));
+
+        // The overlay is static text that never takes focus, so an AT cannot tell
+        // an empty result from a hung app. Publish the same text as the search
+        // entry's description: that is the widget the user is typing into, and
+        // writing it fires a property change.
+        // `gtk.Label.getLabel()` is owned by the widget, and the helper copies the
+        // text, so nothing here may free it.
+        if (visible) {
+            a11y.setDescription(p.search_entry.as(gtk.Widget), std.mem.span(gtk.Label.getLabel(p.no_results_label)));
+        } else {
+            a11y.setDescription(p.search_entry.as(gtk.Widget), "");
+        }
     }
 
     fn contains_ignore_case(haystack: []const u8, needle: []const u8) bool {
@@ -742,7 +771,7 @@ pub const PackagePage = extern struct {
     ) void {
         const svc = runtime.config orelse return;
         svc.updateField(field, value) catch |err| {
-            std.log.err("package page: failed to update config: {t}", .{err});
+            std.log.err("Could not update setting {0f}. {1s}\n\nTechnical details: {2s}", .{ diagnostics.safe(@tagName(field)), diagnostics.cause(err), @errorName(err) });
         };
     }
 
@@ -779,7 +808,7 @@ pub const PackagePage = extern struct {
         arena_ptr.* = std.heap.ArenaAllocator.init(std.heap.c_allocator);
         const alloc = arena_ptr.allocator();
         const p = page.priv();
-        if (!p.resolver.loaded) {
+        if (runtime.shellyIconsEnabled() and !p.resolver.loaded) {
             p.resolver.load(runtime.io, runtime.environ_map) catch {};
         }
         var threaded: std.Io.Threaded = .init(alloc, .{});
@@ -787,7 +816,7 @@ pub const PackagePage = extern struct {
 
         const cli = ShellyCli{ .allocator = alloc, .io = threaded.io() };
         const parsed = cli.get_packages(show_hidden) catch |err| {
-            std.debug.print("get_packages failed: {t}\n", .{err});
+            std.debug.print("Could not load the standard-package list. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
             arena_ptr.deinit();
             std.heap.c_allocator.destroy(arena_ptr);
             return;

@@ -22,6 +22,10 @@
                 <child>
                   <object class="GtkLabel">
                     <property name="label" translatable="yes">Utilities</property>
+                    <property name="accessible-role">heading</property>
+                    <accessibility>
+                      <property name="level">2</property>
+                    </accessibility>
                     <style>
                       <class name="title-2"/>
                     </style>
@@ -253,7 +257,7 @@
                             </child>
                             <child>
                               <object class="GtkLabel">
-                                <property name="label" translatable="yes">Removes old cached package versions, keeping the selected number per package.</property>
+                                <property name="label" translatable="yes">Keeps the selected number of repository package versions and clears the entire Shelly cache, including AUR sources and build directories.</property>
                                 <property name="halign">start</property>
                                 <property name="wrap">true</property>
                                 <style>
@@ -281,7 +285,7 @@
                             <child>
                               <object class="GtkSpinButton" id="cache_keep_spin">
                                 <property name="valign">center</property>
-                                <property name="tooltip-text" translatable="yes">Number of cached versions to keep per package</property>
+                                <property name="tooltip-text" translatable="yes">Number of repository package versions to keep; the Shelly cache is cleared completely</property>
                                 <property name="digits">0</property>
                                 <property name="numeric">true</property>
                                 <property name="wrap">true</property>

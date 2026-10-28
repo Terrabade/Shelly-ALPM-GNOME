@@ -1,5 +1,6 @@
 const bindings = @import("bindings.zig");
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const remotes = @import("remote_manager.zig");
 const events = @import("events.zig");
 const operation_api = @import("operation_context");
@@ -165,20 +166,20 @@ pub const Manager = struct {
         else
             rawflatpak.flatpak_installation_new_user(cancellable, &g_error);
         if (installation == null or g_error != null) {
-            self.emitGError(g_error, "Failed to open the Flatpak installation");
+            self.emitGError(g_error, "Could not open the Flatpak installation.", .{ .scope = @tagName(scope), .subject = flatpak_id });
             return error.InstallationCreateFailed;
         }
         defer rawflatpak.g_object_unref(installation);
 
         const trans_ptr = rawflatpak.flatpak_transaction_new_for_installation(installation, cancellable, &g_error);
         if (trans_ptr == null or g_error != null) {
-            self.emitGError(g_error, "Failed to create the Flatpak transaction");
+            self.emitGError(g_error, "Could not prepare the Flatpak transaction.", .{ .scope = @tagName(scope), .subject = flatpak_id });
             return error.TransactionCreateFailed;
         }
         defer rawflatpak.g_object_unref(trans_ptr);
 
         if (rawflatpak.flatpak_installation_update_remote_sync(installation, remote_name, cancellable, &g_error) == 0) {
-            self.emitGError(g_error, "Failed to update the Flatpak remote");
+            self.emitGError(g_error, "Could not refresh the selected Flatpak remote.", .{ .scope = @tagName(scope), .subject = flatpak_id });
             return error.RemoteUpdateFailed;
         }
 
@@ -186,7 +187,7 @@ pub const Manager = struct {
             if (branch.len > 0) break :blk try self.allocator.dupeZ(u8, branch);
             const kind: c_int = if (runtime) rawflatpak.FLATPAK_REF_KIND_RUNTIME else rawflatpak.FLATPAK_REF_KIND_APP;
             break :blk (try self.resolve_remote_branch(installation, remote_name, flatpak_id, kind, cancellable)) orelse {
-                self.emitGError(g_error, "Failed to resolve the Flatpak branch from the remote");
+                self.emitGError(g_error, "Could not resolve the branch for the selected Flatpak from its remote.", .{ .scope = @tagName(scope), .subject = flatpak_id });
                 return error.AddInstallFailed;
             };
         };
@@ -204,7 +205,7 @@ pub const Manager = struct {
         defer self.allocator.free(ref_string);
 
         if (rawflatpak.flatpak_transaction_add_install(trans_ptr, remote_name, ref_string, null, &g_error) == 0) {
-            self.emitGError(g_error, "Failed to add the Flatpak installation operation");
+            self.emitGError(g_error, "Could not add the selected Flatpak to the installation transaction.", .{ .scope = @tagName(scope), .subject = flatpak_id });
             return error.AddInstallFailed;
         }
 
@@ -354,7 +355,7 @@ pub const Manager = struct {
 
         const installation_system = rawflatpak.flatpak_installation_new_system(cancellable, &g_error);
         if (installation_system == null or g_error != null) {
-            self.emitGError(g_error, "Failed to open the system Flatpak installation");
+            self.emitGError(g_error, "Could not open the system Flatpak installation.", .{});
             return error.InstallationCreateFailed;
         }
         defer rawflatpak.g_object_unref(installation_system);
@@ -363,7 +364,7 @@ pub const Manager = struct {
 
         const installation_user = rawflatpak.flatpak_installation_new_user(cancellable, &g_error);
         if (installation_user == null or g_error != null) {
-            self.emitGError(g_error, "Failed to open the user Flatpak installation");
+            self.emitGError(g_error, "Could not open the current user’s Flatpak installation.", .{});
             return error.InstallationCreateFailed;
         }
         defer rawflatpak.g_object_unref(installation_user);
@@ -391,7 +392,7 @@ pub const Manager = struct {
         else
             rawflatpak.flatpak_installation_new_user(cancellable, &g_error);
         if (installation == null or g_error != null) {
-            self.emitGError(g_error, "Failed to open the Flatpak installation");
+            self.emitGError(g_error, "Could not open the Flatpak installation.", .{ .scope = @tagName(scope), .subject = flatpak_id });
             return error.InstallationCreateFailed;
         }
         defer rawflatpak.g_object_unref(installation);
@@ -404,13 +405,13 @@ pub const Manager = struct {
 
         const trans_ptr = rawflatpak.flatpak_transaction_new_for_installation(installation, cancellable, &g_error);
         if (trans_ptr == null or g_error != null) {
-            self.emitGError(g_error, "Failed to create the Flatpak transaction");
+            self.emitGError(g_error, "Could not prepare the Flatpak transaction.", .{ .scope = @tagName(scope), .subject = flatpak_id });
             return error.TransactionCreateFailed;
         }
         defer rawflatpak.g_object_unref(trans_ptr);
 
         if (rawflatpak.flatpak_transaction_add_uninstall(trans_ptr, ref_string, &g_error) == 0) {
-            self.emitGError(g_error, "Failed to add the Flatpak removal operation");
+            self.emitGError(g_error, "Could not add the selected Flatpak to the removal transaction.", .{ .scope = @tagName(scope), .subject = flatpak_id });
             return error.AddUninstallFailed;
         }
 
@@ -445,7 +446,7 @@ pub const Manager = struct {
         else
             rawflatpak.flatpak_installation_new_user(cancellable, &g_error);
         if (installation == null or g_error != null) {
-            self.emitGError(g_error, "Failed to open the Flatpak installation");
+            self.emitGError(g_error, "Could not open the Flatpak installation.", .{ .scope = @tagName(scope), .subject = flatpak_id });
             return error.InstallationCreateFailed;
         }
         defer rawflatpak.g_object_unref(installation);
@@ -465,13 +466,13 @@ pub const Manager = struct {
 
         const trans_ptr = rawflatpak.flatpak_transaction_new_for_installation(installation, cancellable, &g_error);
         if (trans_ptr == null or g_error != null) {
-            self.emitGError(g_error, "Failed to create the Flatpak transaction");
+            self.emitGError(g_error, "Could not prepare the Flatpak transaction.", .{ .scope = @tagName(scope), .subject = flatpak_id });
             return error.TransactionCreateFailed;
         }
         defer rawflatpak.g_object_unref(trans_ptr);
 
         if (rawflatpak.flatpak_transaction_add_update(trans_ptr, ref_string, null, commit_ptr, &g_error) == 0) {
-            self.emitGError(g_error, "Failed to add the Flatpak update operation");
+            self.emitGError(g_error, "Could not add the selected Flatpak to the update transaction.", .{ .scope = @tagName(scope), .subject = flatpak_id });
             return error.AddUpdateFailed;
         }
         var callback_context = self.transactionCallbackContext(cancellable);
@@ -490,7 +491,7 @@ pub const Manager = struct {
         previous_ids: []const [:0]const u8,
     ) !bool {
         if (previous_ids.len == 0) {
-            self.emitStatus(.err, "Cannot rebase without at least one previous application ID");
+            self.emitStatus(.err, "Could not replace the Flatpak because no previous application ID was provided. Select the installed application to replace.");
             return error.InvalidRef;
         }
 
@@ -511,14 +512,14 @@ pub const Manager = struct {
         else
             rawflatpak.flatpak_installation_new_user(cancellable, &g_error);
         if (installation == null or g_error != null) {
-            self.emitGError(g_error, "Failed to open the Flatpak installation");
+            self.emitGError(g_error, "Could not open the Flatpak installation.", .{ .scope = @tagName(scope) });
             return error.InstallationCreateFailed;
         }
         defer rawflatpak.g_object_unref(installation);
 
         const trans_ptr = rawflatpak.flatpak_transaction_new_for_installation(installation, cancellable, &g_error);
         if (trans_ptr == null or g_error != null) {
-            self.emitGError(g_error, "Failed to create the Flatpak transaction");
+            self.emitGError(g_error, "Could not prepare the Flatpak transaction.", .{ .scope = @tagName(scope) });
             return error.TransactionCreateFailed;
         }
         defer rawflatpak.g_object_unref(trans_ptr);
@@ -536,7 +537,7 @@ pub const Manager = struct {
             previous_ids_c.ptr,
             &g_error,
         ) == 0) {
-            self.emitGError(g_error, "Failed to add the Flatpak rebase operation");
+            self.emitGError(g_error, "Could not prepare replacement of the selected Flatpak.", .{ .scope = @tagName(scope) });
             return error.AddRebaseFailed;
         }
 
@@ -708,7 +709,7 @@ pub const Manager = struct {
         else
             rawflatpak.flatpak_installation_new_user(cancellable, &g_error);
         if (installation == null or g_error != null) {
-            self.emitGError(g_error, "Failed to open the Flatpak installation");
+            self.emitGError(g_error, "Could not open the Flatpak installation.", .{ .subject = flatpak_id });
             return false;
         }
         defer rawflatpak.g_object_unref(installation);
@@ -725,7 +726,7 @@ pub const Manager = struct {
         if (result != 0) {
             self.emitStatus(.success, "Flatpak application launched");
         } else {
-            self.emitGError(g_error, "Failed to launch the Flatpak application");
+            self.emitGError(g_error, "Could not launch the selected Flatpak.", .{ .subject = flatpak_id });
         }
         return result != 0;
     }
@@ -750,7 +751,7 @@ pub const Manager = struct {
             installation = rawflatpak.flatpak_installation_new_user(cancellable, &g_error);
         }
         if (installation == null) {
-            self.emitGError(g_error, "Failed to open the Flatpak installation");
+            self.emitGError(g_error, "Could not open the Flatpak installation.", .{ .scope = @tagName(scope), .subject = flatpak_location });
             return error.InstallationCreateFailed;
         }
         defer rawflatpak.g_object_unref(installation);
@@ -763,14 +764,14 @@ pub const Manager = struct {
 
         const trans_ptr = rawflatpak.flatpak_transaction_new_for_installation(installation, cancellable, &g_error);
         if (trans_ptr == null) {
-            self.emitGError(g_error, "Failed to create the Flatpak transaction");
+            self.emitGError(g_error, "Could not prepare the Flatpak transaction.", .{ .scope = @tagName(scope), .subject = flatpak_location });
             return error.TransactionCreateFailed;
         }
         defer rawflatpak.g_object_unref(trans_ptr);
 
         const added = rawflatpak.flatpak_transaction_add_install_flatpakref(trans_ptr, g_bytes_ptr, &g_error);
         if (added == 0) {
-            self.emitGError(g_error, "Failed to add the Flatpak ref installation operation");
+            self.emitGError(g_error, "Could not add the selected Flatpak reference file to the installation transaction.", .{ .scope = @tagName(scope), .subject = flatpak_location });
             return error.AddInstallFailed;
         }
 
@@ -801,28 +802,28 @@ pub const Manager = struct {
             installation = rawflatpak.flatpak_installation_new_user(cancellable, &g_error);
         }
         if (installation == null) {
-            self.emitGError(g_error, "Failed to open the Flatpak installation");
+            self.emitGError(g_error, "Could not open the Flatpak installation.", .{ .scope = @tagName(scope), .subject = flatpak_location });
             return error.InstallationCreateFailed;
         }
         defer rawflatpak.g_object_unref(installation);
 
         const file_ptr = rawflatpak.g_file_new_for_path(flatpak_location);
         if (file_ptr == null) {
-            self.emitStatus(.err, "Failed to open the Flatpak bundle");
+            self.emitStatus(.err, "Could not open the selected Flatpak bundle.");
             return error.BundleOpenFailed;
         }
         defer rawflatpak.g_object_unref(file_ptr);
 
         const trans_ptr = rawflatpak.flatpak_transaction_new_for_installation(installation, cancellable, &g_error);
         if (trans_ptr == null) {
-            self.emitGError(g_error, "Failed to create the Flatpak transaction");
+            self.emitGError(g_error, "Could not prepare the Flatpak transaction.", .{ .scope = @tagName(scope), .subject = flatpak_location });
             return error.TransactionCreateFailed;
         }
         defer rawflatpak.g_object_unref(trans_ptr);
 
         const added = rawflatpak.flatpak_transaction_add_install_bundle(trans_ptr, file_ptr, null, &g_error);
         if (added == 0) {
-            self.emitGError(g_error, "Failed to add the Flatpak bundle installation operation");
+            self.emitGError(g_error, "Could not add the selected Flatpak bundle to the installation transaction.", .{ .scope = @tagName(scope), .subject = flatpak_location });
             return error.AddInstallFailed;
         }
 
@@ -924,7 +925,7 @@ pub const Manager = struct {
             installation = rawflatpak.flatpak_installation_new_user(cancellable, &g_error);
         }
         if (installation == null or g_error != null) {
-            self.emitGError(g_error, "Failed to open the Flatpak installation");
+            self.emitGError(g_error, "Could not open the Flatpak installation.", .{ .scope = @tagName(scope), .subject = flatpak_name });
             return error.FlatpakError;
         }
         defer rawflatpak.g_object_unref(installation);
@@ -938,7 +939,7 @@ pub const Manager = struct {
                 rawflatpak.FLATPAK_REF_KIND_APP,
                 cancellable,
             )) orelse {
-                self.emitGError(g_error, "Failed to resolve the Flatpak branch from the remote");
+                self.emitGError(g_error, "Could not resolve the branch for the selected Flatpak from its remote.", .{ .scope = @tagName(scope), .subject = flatpak_name });
                 return error.FetchRemoteRefFailed;
             };
         };
@@ -946,7 +947,7 @@ pub const Manager = struct {
 
         const remote_ref_ptr = rawflatpak.flatpak_installation_fetch_remote_ref_sync(installation, cStr(remote_name), 0, cStr(flatpak_name), rawflatpak.flatpak_get_default_arch(), resolved_branch.ptr, cancellable, &g_error);
         if (remote_ref_ptr == null) {
-            self.emitGError(g_error, "Failed to fetch the Flatpak remote reference");
+            self.emitGError(g_error, "Could not fetch the selected Flatpak reference from its remote.", .{ .scope = @tagName(scope), .subject = flatpak_name });
             return error.FetchRemoteRefFailed;
         }
         errdefer rawflatpak.g_object_unref(remote_ref_ptr);
@@ -1039,20 +1040,20 @@ pub const Manager = struct {
         }
 
         const found_pid = pid orelse {
-            std.log.err("Failed to find PID for running instance of {s}.", .{flatpak_id});
-            self.emitStatus(.err, "Failed to find a running Flatpak instance");
+            std.log.err("Could not find a running instance of Flatpak {0f}. Check the running-application list before trying to stop it.", .{diagnostics.safe(flatpak_id)});
+            self.emitStatus(.err, "Could not find a running instance of the selected Flatpak. Check the running-application list before trying to stop it.");
             return error.InvalidPid;
         };
 
         if (found_pid <= 0) {
-            std.log.err("Invalid PID for running instance of {s}.", .{flatpak_id});
-            self.emitStatus(.err, "Flatpak instance has an invalid PID");
+            std.log.err("Could not stop Flatpak {0f} because its instance has an invalid process ID. Refresh the running-application list and retry.", .{diagnostics.safe(flatpak_id)});
+            self.emitStatus(.err, "Could not stop the selected Flatpak because its instance has an invalid process ID. Refresh the running-application list and retry.");
             return error.InvalidPid;
         }
 
         std.posix.kill(found_pid, std.posix.SIG.KILL) catch |err| {
-            std.log.err("Failed to kill instance of {s} with PID {d}: {s}", .{ flatpak_id, found_pid, @errorName(err) });
-            self.emitStatus(.err, "Failed to kill Flatpak instance");
+            std.log.err("Could not stop Flatpak {0f}, process {1d}. {2s}\n\nTechnical details: {3s}", .{ diagnostics.safe(flatpak_id), found_pid, diagnostics.cause(err), @errorName(err) });
+            self.emitStatus(.err, "Could not stop the selected Flatpak.");
             return err;
         };
 
@@ -1073,14 +1074,14 @@ pub const Manager = struct {
 
         const update_refs_ptr = rawflatpak.flatpak_installation_list_installed_refs_for_update(installation, cancellable, &g_error);
         if (update_refs_ptr == null) {
-            if (g_error) |e| std.debug.print("failed to list updates: {s}\n", .{e.*.message});
+            if (g_error) |e| std.debug.print("Could not list Flatpak updates. {0f}\n", .{diagnostics.safe(e.*.message)});
             return list.toOwnedSlice(self.allocator);
         }
         defer rawflatpak.g_ptr_array_unref(update_refs_ptr);
 
         const trans_ptr = rawflatpak.flatpak_transaction_new_for_installation(installation, cancellable, &g_error);
         if (trans_ptr == null) {
-            if (g_error) |e| std.debug.print("failed to create transaction: {s}\n", .{e.*.message});
+            if (g_error) |e| std.debug.print("Could not prepare a Flatpak transaction. {0f}\n", .{diagnostics.safe(e.*.message)});
             return list.toOwnedSlice(self.allocator);
         }
         defer rawflatpak.g_object_unref(trans_ptr);
@@ -1122,6 +1123,7 @@ pub const Manager = struct {
                         const old_kf = rawflatpak.flatpak_transaction_operation_get_old_metadata(operation_ptr);
 
                         item.permissions = diffPermissions(ctx.manager, new_kf, old_kf) catch &.{};
+                        item.download_size = rawflatpak.flatpak_transaction_operation_get_download_size(operation_ptr);
                         break;
                     }
                 }
@@ -1188,7 +1190,7 @@ pub const Manager = struct {
 
         const loaded = rawflatpak.g_key_file_load_from_data(key_file_ptr, @ptrCast(data_ptr), size, 0, &g_error);
         if (loaded == 0) {
-            if (g_error) |e| std.debug.print("failed to load keyfile: {s}\n", .{e.*.message});
+            if (g_error) |e| std.debug.print("Could not read permission metadata for the selected Flatpak. {0f}\n", .{diagnostics.safe(e.*.message)});
             return permissions.toOwnedSlice(self.allocator);
         }
 
@@ -1196,11 +1198,18 @@ pub const Manager = struct {
     }
 
     fn get_permissions_from_key_file(self: Manager, key_file_ptr: ?*rawflatpak.GKeyFile, permissions: *std.ArrayList([:0]u8)) ![]const [:0]u8 {
-        const groups = [_][:0]const u8{ "Context", "ExtensionBus", "Shared", "Sockets", "Filesystems", "SessionBus", "SystemBus" };
+        // Only [Context] holds semicolon-separated lists. Reading a bus policy or
+        // environment value as a list would split it on every ';' it contains.
+        const groups = [_]struct { name: [:0]const u8, list: bool }{
+            .{ .name = "Context", .list = true },
+            .{ .name = "Session Bus Policy", .list = false },
+            .{ .name = "System Bus Policy", .list = false },
+            .{ .name = "Environment", .list = false },
+        };
 
         for (groups) |group| {
             var num_keys: usize = 0;
-            const keys_ptr = rawflatpak.g_key_file_get_keys(key_file_ptr, group.ptr, &num_keys, null);
+            const keys_ptr = rawflatpak.g_key_file_get_keys(key_file_ptr, group.name.ptr, &num_keys, null);
             if (keys_ptr == null) continue;
             defer rawflatpak.g_strfreev(keys_ptr);
 
@@ -1208,40 +1217,46 @@ pub const Manager = struct {
             while (keys_ptr[i] != null) : (i += 1) {
                 const key = keys_ptr[i];
                 if (key == null or std.mem.len(key) == 0) continue;
+                const key_span = std.mem.span(key);
 
-                var list_len: usize = 0;
-                const list_ptr = rawflatpak.g_key_file_get_string_list(key_file_ptr, group.ptr, key, &list_len, null);
-                if (list_ptr != null) {
-                    defer rawflatpak.g_strfreev(list_ptr);
-                    var j: usize = 0;
-                    while (list_ptr[j] != null) : (j += 1) {
-                        const val = list_ptr[j];
-                        if (val == null or std.mem.len(val) == 0) continue;
-                        const entry = try std.fmt.allocPrintSentinel(
-                            self.allocator,
-                            "{s}={s}:{s}",
-                            .{ group, std.mem.span(key), std.mem.span(val) },
-                            0,
-                        );
-                        try permissions.append(self.allocator, entry);
+                if (group.list) {
+                    const list_ptr = rawflatpak.g_key_file_get_string_list(key_file_ptr, group.name.ptr, key, null, null);
+                    if (list_ptr != null) {
+                        defer rawflatpak.g_strfreev(list_ptr);
+                        var j: usize = 0;
+                        while (list_ptr[j] != null) : (j += 1) {
+                            const val = list_ptr[j];
+                            if (val == null or std.mem.len(val) == 0) continue;
+                            try appendPermission(self.allocator, permissions, group.name, key_span, std.mem.span(val));
+                        }
+                        continue;
                     }
-                } else {
-                    const val_ptr = rawflatpak.g_key_file_get_string(key_file_ptr, group.ptr, key, null);
-                    if (val_ptr == null) continue;
-                    defer rawflatpak.g_free(val_ptr);
-                    if (std.mem.len(val_ptr) == 0) continue;
-                    const entry = try std.fmt.allocPrintSentinel(
-                        self.allocator,
-                        "{s}={s}:{s}",
-                        .{ group, std.mem.span(key), std.mem.span(val_ptr) },
-                        0,
-                    );
-                    try permissions.append(self.allocator, entry);
                 }
+
+                const val_ptr = rawflatpak.g_key_file_get_string(key_file_ptr, group.name.ptr, key, null);
+                if (val_ptr == null) continue;
+                defer rawflatpak.g_free(val_ptr);
+                if (std.mem.len(val_ptr) == 0) continue;
+                try appendPermission(self.allocator, permissions, group.name, key_span, std.mem.span(val_ptr));
             }
         }
 
         return permissions.toOwnedSlice(self.allocator);
+    }
+
+    /// Emits one flattened permission entry as `{group}={key}:{value}`. The value
+    /// runs to the end of the string, so a mode suffix, an absolute path or a
+    /// conditional keeps its own colons intact.
+    fn appendPermission(
+        allocator: std.mem.Allocator,
+        permissions: *std.ArrayList([:0]u8),
+        group: []const u8,
+        key: []const u8,
+        value: []const u8,
+    ) !void {
+        const entry = try std.fmt.allocPrintSentinel(allocator, "{s}={s}:{s}", .{ group, key, value }, 0);
+        errdefer allocator.free(entry);
+        try permissions.append(allocator, entry);
     }
 
     fn resolve_remote_branch(
@@ -1314,13 +1329,13 @@ pub const Manager = struct {
 
         const updated = rawflatpak.flatpak_installation_update_remote_sync(installation, remote, cancellable, &g_error);
         if (updated == 0) {
-            if (g_error) |e| std.debug.print("failed to update remote cache: {s}\n", .{e.*.message});
+            if (g_error) |e| std.debug.print("Could not refresh the metadata cache for the selected Flatpak remote. {0f}\n", .{diagnostics.safe(e.*.message)});
             return error.RemoteUpdateFailed;
         }
 
         const refs_ptr = rawflatpak.flatpak_installation_list_remote_refs_sync_full(installation, remote, 1, cancellable, &g_error);
         if (refs_ptr == null) {
-            if (g_error) |e| std.debug.print("failed to list remote refs: {s}\n", .{e.*.message});
+            if (g_error) |e| std.debug.print("Could not list references from the selected Flatpak remote. {0f}\n", .{diagnostics.safe(e.*.message)});
             return error.ListRemoteRefsFailed;
         }
 
@@ -1356,7 +1371,7 @@ pub const Manager = struct {
             if (remote.get_scope() == scope and remote.disabled() != true) {
                 const refs_ptr = rawflatpak.flatpak_installation_list_remote_refs_sync_full(installation, cStr(remote.name()), 1, cancellable, &g_error);
                 if (refs_ptr == null) {
-                    if (g_error) |e| std.debug.print("failed to list remote refs: {s}\n", .{e.*.message});
+                    if (g_error) |e| std.debug.print("Could not list references from the selected Flatpak remote. {0f}\n", .{diagnostics.safe(e.*.message)});
                     return error.ListRemoteRefsFailed;
                 }
 
@@ -1613,7 +1628,7 @@ pub const Manager = struct {
 
         const update_refs_ptr = rawflatpak.flatpak_installation_list_installed_refs_for_update(installation, cancellable, &g_error);
         if (update_refs_ptr == null or g_error != null) {
-            self.emitGError(g_error, "Failed to list Flatpak updates");
+            self.emitGError(g_error, "Could not list Flatpak updates.", .{ .scope = @tagName(scope) });
             return error.ListUpdatesFailed;
         }
         defer rawflatpak.g_ptr_array_unref(update_refs_ptr);
@@ -1624,7 +1639,7 @@ pub const Manager = struct {
 
         const trans_ptr = rawflatpak.flatpak_transaction_new_for_installation(installation, cancellable, &g_error);
         if (trans_ptr == null or g_error != null) {
-            self.emitGError(g_error, "Failed to create the Flatpak transaction");
+            self.emitGError(g_error, "Could not prepare the Flatpak transaction.", .{ .scope = @tagName(scope) });
             return error.TransactionCreateFailed;
         }
         defer rawflatpak.g_object_unref(trans_ptr);
@@ -1636,7 +1651,7 @@ pub const Manager = struct {
             defer self.allocator.free(ref_string);
 
             if (rawflatpak.flatpak_transaction_add_update(trans_ptr, ref_string, null, null, &g_error) == 0) {
-                self.emitGError(g_error, "Failed to add a Flatpak update operation");
+                self.emitGError(g_error, "Could not add the selected Flatpak to the update transaction.", .{ .scope = @tagName(scope) });
                 return error.AddUpdateFailed;
             }
         }
@@ -1670,7 +1685,7 @@ pub const Manager = struct {
 
         const system_installations = rawflatpak.flatpak_get_system_installations(cancellable, &g_error);
         if (system_installations == null or g_error != null) {
-            self.emitGError(g_error, "Failed to open system Flatpak installations");
+            self.emitGError(g_error, "Could not open the system Flatpak installation.", .{});
             return error.InstallationCreateFailed;
         }
         defer rawflatpak.g_ptr_array_unref(system_installations);
@@ -1682,7 +1697,7 @@ pub const Manager = struct {
 
         const user_installation = rawflatpak.flatpak_installation_new_user(cancellable, &g_error);
         if (user_installation == null or g_error != null) {
-            self.emitGError(g_error, "Failed to open the user Flatpak installation");
+            self.emitGError(g_error, "Could not open the current user’s Flatpak installation.", .{});
             return error.InstallationCreateFailed;
         }
         defer rawflatpak.g_object_unref(user_installation);
@@ -1714,7 +1729,7 @@ pub const Manager = struct {
                 succeeded = (try self.removed_unused(installation)) and succeeded;
             }
         } else {
-            self.emitGError(g_error, "Failed to open system Flatpak installations");
+            self.emitGError(g_error, "Could not open the system Flatpak installation.", .{});
             succeeded = false;
         }
 
@@ -1727,14 +1742,14 @@ pub const Manager = struct {
             defer rawflatpak.g_object_unref(installation_user);
             succeeded = (try self.removed_unused(installation_user)) and succeeded;
         } else {
-            self.emitGError(g_error, "Failed to open the user Flatpak installation");
+            self.emitGError(g_error, "Could not open the current user’s Flatpak installation.", .{});
             succeeded = false;
         }
 
         self.emitStatus(if (succeeded) .success else .err, if (succeeded)
             "Unused Flatpak dependency cleanup completed"
         else
-            "Unused Flatpak dependency cleanup completed with errors");
+            "Some unused Flatpak dependencies could not be removed. Review the dependency errors for the affected references.");
         return succeeded;
     }
 
@@ -1754,7 +1769,7 @@ pub const Manager = struct {
         const arch = std.mem.span(rawflatpak.flatpak_get_default_arch());
         const unused_refs = rawflatpak.flatpak_installation_list_unused_refs(installation, arch, cancellable, &g_error);
         if (unused_refs == null or g_error != null) {
-            self.emitGError(g_error, "Failed to list unused Flatpak dependencies");
+            self.emitGError(g_error, "Could not list unused Flatpak dependencies.", .{ .scope = @tagName(scope) });
             return error.ListUnusedDependenciesFailed;
         }
         defer rawflatpak.g_ptr_array_unref(unused_refs);
@@ -1785,7 +1800,7 @@ pub const Manager = struct {
         const arch = std.mem.span(rawflatpak.flatpak_get_default_arch());
         const unused_ref_ptrs = rawflatpak.flatpak_installation_list_unused_refs(installation, arch, cancellable, &g_error);
         if (unused_ref_ptrs == null or g_error != null) {
-            self.emitGError(g_error, "Failed to list unused Flatpak dependencies");
+            self.emitGError(g_error, "Could not list unused Flatpak dependencies.", .{});
             return false;
         }
         defer rawflatpak.g_ptr_array_unref(unused_ref_ptrs);
@@ -1796,7 +1811,7 @@ pub const Manager = struct {
 
         const trans_ptr = rawflatpak.flatpak_transaction_new_for_installation(installation, cancellable, &g_error);
         if (trans_ptr == null or g_error != null) {
-            self.emitGError(g_error, "Failed to create the Flatpak cleanup transaction");
+            self.emitGError(g_error, "Could not prepare the unused-dependency removal transaction.", .{});
             return false;
         }
         defer rawflatpak.g_object_unref(trans_ptr);
@@ -1808,7 +1823,7 @@ pub const Manager = struct {
             const ref_string = try flatpak.refToString(self.allocator, raw);
             defer self.allocator.free(ref_string);
             if (rawflatpak.flatpak_transaction_add_uninstall(trans_ptr, ref_string, &g_error) == 0) {
-                self.emitGError(g_error, "Failed to add an unused Flatpak dependency to the removal transaction");
+                self.emitGError(g_error, "Could not add an unused Flatpak dependency to the removal transaction.", .{});
                 return false;
             }
         }
@@ -1862,7 +1877,7 @@ pub const Manager = struct {
         const message = if (g_error != null and g_error.*.message != null)
             std.mem.span(g_error.*.message)
         else
-            "Flatpak operation failed";
+            "Could not complete the package operation.";
         if (context.dispatcher) |dispatcher| dispatcher.raiseStatus(.{
             .event_type = .warning,
             .message = if (ref_name.len > 0) ref_name else message,
@@ -1947,24 +1962,22 @@ pub const Manager = struct {
         });
     }
 
-    fn emitGError(self: Manager, g_error: ?*rawflatpak.GError, fallback: []const u8) void {
-        if (g_error) |value| {
-            const message = std.mem.span(value.message);
-            if (self.dispatcher) |dispatcher| {
-                if (dispatcher.operation) |operation| {
-                    const domain_ptr = rawflatpak.g_quark_to_string(value.domain);
-                    operation.reportError(
-                        error.FlatpakError,
-                        message,
-                        if (domain_ptr == null) "flatpak" else std.mem.span(domain_ptr),
-                        value.code,
-                        false,
-                    );
-                }
-            }
-            self.emitStatus(.err, message);
-        } else {
-            self.emitStatus(.err, fallback);
+    fn emitGError(self: Manager, g_error: ?*rawflatpak.GError, fallback: []const u8, context: diagnostics.Context) void {
+        const native = if (g_error) |value| std.mem.span(value.message) else diagnostics.unknown_cause;
+        const message = std.fmt.allocPrint(self.allocator, "{s} {f}{s}{f}{s}{f}", .{ fallback, diagnostics.safe(native), if (context.scope != null) "\nInstallation: " else "", diagnostics.safe(context.scope orelse ""), if (context.subject != null) "\nPackage: " else "", diagnostics.safe(context.subject orelse "") }) catch {
+            self.emitStatus(.err, diagnostics.allocation_failure);
+            return;
+        };
+        defer self.allocator.free(message);
+        if (self.dispatcher) |dispatcher| {
+            const domain_ptr = if (g_error) |value| rawflatpak.g_quark_to_string(value.domain) else null;
+            dispatcher.raiseStatus(.{
+                .event_type = .err,
+                .message = message,
+                .err = error.FlatpakError,
+                .domain = if (domain_ptr == null) "flatpak" else std.mem.span(domain_ptr),
+                .native_code = if (g_error) |value| value.code else null,
+            });
         }
     }
 
@@ -1976,12 +1989,11 @@ pub const Manager = struct {
     ) !bool {
         try self.checkCancelled();
         if (g_error) |value| {
-            const message = std.mem.span(value.message);
-            self.emitStatus(.err, message);
+            self.emitGError(value, "Could not complete the Flatpak transaction.", .{});
             return error.FlatpakError;
         }
         if (result == 0) {
-            self.emitStatus(.err, "Flatpak transaction failed");
+            self.emitStatus(.err, "Could not complete the package operation.");
             return false;
         }
         self.emitStatus(.success, success_message);
@@ -2045,7 +2057,7 @@ const OperationScope = struct {
     fn fail(self: *OperationScope) void {
         if (self.operation) |*operation| operation.reportError(
             if (operation.isCancelled()) error.Cancelled else error.FlatpakOperationFailed,
-            if (operation.isCancelled()) "Flatpak operation cancelled" else "Flatpak operation failed",
+            if (operation.isCancelled()) "Operation cancelled." else "Could not complete the package operation.",
             "flatpak",
             null,
             false,
@@ -2237,6 +2249,224 @@ test "shared cancellation propagates to GLib cancellables" {
 
     context.cancel();
     try std.testing.expect(rawflatpak.g_cancellable_is_cancelled(cancellable) != 0);
+}
+
+/// A metadata key file shaped like a real Flathub app, covering every permission
+/// group flatpak documents plus the structural forms inside a value: access
+/// modes, a conditional grant, a denial, a wildcard D-Bus name, and environment
+/// values holding a colon or a semicolon.
+const permissions_metadata_fixture =
+    \\[Application]
+    \\name=org.example.Permissions
+    \\runtime=org.freedesktop.Platform/x86_64/24.08
+    \\
+    \\[Extension org.example.Permissions.Locale]
+    \\directory=share/runtime/locale
+    \\autodelete=true
+    \\
+    \\[Context]
+    \\shared=ipc;network;
+    \\sockets=wayland;fallback-x11;pulseaudio;!x11;if:x11:!has-wayland;
+    \\devices=all;dri;
+    \\filesystems=host:ro;xdg-download;xdg-run/keyring;~/.config/example:create;/srv/data;
+    \\persistent=cache;
+    \\features=devel;!bluetooth;
+    \\unset-environment=LD_PRELOAD;
+    \\
+    \\[Session Bus Policy]
+    \\org.gtk.vfs.*=talk
+    \\org.freedesktop.secrets=talk
+    \\
+    \\[System Bus Policy]
+    \\org.freedesktop.NetworkManager=see
+    \\
+    \\[Environment]
+    \\TMPDIR=/var/tmp
+    \\PATH=/app/bin:/usr/bin
+    \\GST_PLUGIN_PATH=/app/lib/gstreamer-1.0;/app/lib/gst
+;
+
+/// The documented permission vocabulary as `<key>:<value>` pairs, grouped by key
+/// and one entry per individual list item the backend is expected to emit as
+/// `Context=<key>:<value>`.
+const permissions_vocabulary = [_][]const u8{
+    "shared:network",
+    "shared:ipc",
+    "shared:if:network:true",
+    "sockets:x11",
+    "sockets:wayland",
+    "sockets:fallback-x11",
+    "sockets:pulseaudio",
+    "sockets:session-bus",
+    "sockets:system-bus",
+    "sockets:ssh-auth",
+    "sockets:pcsc",
+    "sockets:cups",
+    "sockets:gpg-agent",
+    "sockets:inherit-wayland-socket",
+    "sockets:!x11",
+    "sockets:if:x11:!has-wayland",
+    "devices:dri",
+    "devices:input",
+    "devices:usb",
+    "devices:kvm",
+    "devices:all",
+    "devices:shm",
+    "devices:if:usb:has-usb-device",
+    "filesystems:home",
+    "filesystems:host",
+    "filesystems:host-os",
+    "filesystems:host-etc",
+    "filesystems:host-root",
+    "filesystems:xdg-desktop",
+    "filesystems:xdg-documents",
+    "filesystems:xdg-download",
+    "filesystems:xdg-music",
+    "filesystems:xdg-pictures",
+    "filesystems:xdg-public-share",
+    "filesystems:xdg-videos",
+    "filesystems:xdg-templates",
+    "filesystems:xdg-cache",
+    "filesystems:xdg-config",
+    "filesystems:xdg-data",
+    "filesystems:xdg-run/keyring",
+    "filesystems:xdg-download/sub:ro",
+    "filesystems:~/projects:rw",
+    "filesystems:~",
+    "filesystems:/srv/data:create",
+    "persistent:cache",
+    "persistent:data/example",
+    "features:devel",
+    "features:multiarch",
+    "features:bluetooth",
+    "features:canbus",
+    "features:per-app-dev-shm",
+    "features:!bluetooth",
+    "features:if:devel:true",
+    "unset-environment:LD_PRELOAD",
+};
+
+fn loadPermissionsFixture(data: []const u8) !*rawflatpak.GKeyFile {
+    const key_file = rawflatpak.g_key_file_new() orelse return error.OutOfMemory;
+    errdefer rawflatpak.g_key_file_free(key_file);
+    var g_error: ?*rawflatpak.GError = null;
+    defer if (g_error) |e| rawflatpak.g_error_free(e);
+    if (rawflatpak.g_key_file_load_from_data(key_file, data.ptr, data.len, 0, &g_error) == 0) {
+        return error.KeyFileRejected;
+    }
+    return key_file;
+}
+
+fn flattenPermissionsFixture(data: []const u8) ![]const [:0]u8 {
+    const manager = Manager{ .allocator = std.testing.allocator, .io = std.testing.io };
+    const key_file = try loadPermissionsFixture(data);
+    defer rawflatpak.g_key_file_free(key_file);
+    var permissions: std.ArrayList([:0]u8) = .empty;
+    return manager.get_permissions_from_key_file(key_file, &permissions);
+}
+
+fn freeFlattenedPermissions(permissions: []const [:0]u8) void {
+    for (permissions) |permission| std.testing.allocator.free(permission);
+    std.testing.allocator.free(permissions);
+}
+
+fn expectFlattenedPermissions(expected: []const []const u8, actual: []const [:0]u8) !void {
+    try std.testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |want, got| try std.testing.expectEqualStrings(want, got);
+}
+
+test "permission metadata flattens to group=key:value strings" {
+    const permissions = try flattenPermissionsFixture(permissions_metadata_fixture);
+    defer freeFlattenedPermissions(permissions);
+
+    // One string per individual list item, in group order and then file order.
+    // Conditional grants and denials are passed through unparsed, and a mode
+    // suffix stays glued to its path: consumers must split on the first colon
+    // after the key to recover them.
+    try expectFlattenedPermissions(&.{
+        "Context=shared:ipc",
+        "Context=shared:network",
+        "Context=sockets:wayland",
+        "Context=sockets:fallback-x11",
+        "Context=sockets:pulseaudio",
+        "Context=sockets:!x11",
+        "Context=sockets:if:x11:!has-wayland",
+        "Context=devices:all",
+        "Context=devices:dri",
+        "Context=filesystems:host:ro",
+        "Context=filesystems:xdg-download",
+        "Context=filesystems:xdg-run/keyring",
+        "Context=filesystems:~/.config/example:create",
+        "Context=filesystems:/srv/data",
+        "Context=persistent:cache",
+        "Context=features:devel",
+        "Context=features:!bluetooth",
+        "Context=unset-environment:LD_PRELOAD",
+        "Session Bus Policy=org.gtk.vfs.*:talk",
+        "Session Bus Policy=org.freedesktop.secrets:talk",
+        "System Bus Policy=org.freedesktop.NetworkManager:see",
+        "Environment=TMPDIR:/var/tmp",
+        "Environment=PATH:/app/bin:/usr/bin",
+        "Environment=GST_PLUGIN_PATH:/app/lib/gstreamer-1.0;/app/lib/gst",
+    }, permissions);
+}
+
+test "permission metadata flattening survives the documented vocabulary" {
+    var metadata = try std.ArrayList(u8).initCapacity(std.testing.allocator, permissions_vocabulary.len * 32);
+    defer metadata.deinit(std.testing.allocator);
+
+    var expected = try std.ArrayList([]const u8).initCapacity(std.testing.allocator, permissions_vocabulary.len);
+    defer expected.deinit(std.testing.allocator);
+
+    try metadata.appendSlice(std.testing.allocator, "[Context]\n");
+    var current_key: ?[]const u8 = null;
+    inline for (permissions_vocabulary) |entry| {
+        const separator = std.mem.indexOfScalar(u8, entry, ':') orelse return error.MalformedFixture;
+        const key = entry[0..separator];
+        const value = entry[separator + 1 ..];
+        if (current_key == null or !std.mem.eql(u8, current_key.?, key)) {
+            try metadata.appendSlice(std.testing.allocator, "\n");
+            try metadata.appendSlice(std.testing.allocator, key);
+            try metadata.appendSlice(std.testing.allocator, "=");
+            current_key = key;
+        }
+        try metadata.appendSlice(std.testing.allocator, value);
+        try metadata.appendSlice(std.testing.allocator, ";");
+        try expected.append(std.testing.allocator, "Context=" ++ entry);
+    }
+
+    const permissions = try flattenPermissionsFixture(metadata.items);
+    defer freeFlattenedPermissions(permissions);
+    try expectFlattenedPermissions(expected.items, permissions);
+}
+
+test "permission metadata reads the D-Bus policy and environment groups" {
+    const permissions = try flattenPermissionsFixture(
+        \\[Context]
+        \\shared=network;
+        \\
+        \\[Session Bus Policy]
+        \\org.gtk.vfs.*=talk
+        \\org.freedesktop.secrets=talk
+        \\
+        \\[System Bus Policy]
+        \\org.freedesktop.NetworkManager=see
+        \\
+        \\[Environment]
+        \\TMPDIR=/var/tmp
+    );
+    defer freeFlattenedPermissions(permissions);
+
+    // These groups key on a name, not a fixed vocabulary, so what follows the
+    // colon is an access level or a value rather than a permission token. The
+    // value runs to the end of the string, keeping wildcards and paths intact.
+    try expectFlattenedPermissions(&.{
+        "Context=shared:network",
+        "Session Bus Policy=org.gtk.vfs.*:talk",
+        "Session Bus Policy=org.freedesktop.secrets:talk",
+        "System Bus Policy=org.freedesktop.NetworkManager:see",
+        "Environment=TMPDIR:/var/tmp",
+    }, permissions);
 }
 
 //disabled until uninstall is added.

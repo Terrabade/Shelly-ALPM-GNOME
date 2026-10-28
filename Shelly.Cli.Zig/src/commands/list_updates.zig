@@ -1,5 +1,6 @@
 const std = @import("std");
-const Zigalpm = @import("Zigalpm");
+const diagnostics = @import("diagnostics");
+const PackageManager = @import("PackageManager");
 const test_support = @import("test_support.zig");
 const config_manager = @import("../config/manager.zig");
 const config_model = @import("../config/model.zig");
@@ -71,6 +72,7 @@ pub const FlatpakUpdate = struct {
     id: []const u8,
     name: []const u8,
     version: []const u8,
+    new_version: []const u8 = "",
     arch: []const u8,
     branch: []const u8,
     latest_commit: []const u8,
@@ -80,6 +82,7 @@ pub const FlatpakUpdate = struct {
     install_level: i32,
     permissions: []const []const u8,
     installed_size: u64,
+    download_size: u64 = 0,
     ref: []const u8,
     full_ref: []const u8,
     eol: []const u8 = "",
@@ -225,7 +228,7 @@ fn executeAllWithRunner(
             checkOptions(invocation),
         ) catch |err| {
             if (backend == .flatpak) {
-                if (Zigalpm.flatpak.errors.unavailableMessage(err)) |message| {
+                if (PackageManager.flatpak.errors.unavailableMessage(err)) |message| {
                     try writeBackendSkipped(context, invocation, message);
                     continue;
                 }
@@ -266,7 +269,7 @@ fn writeQueryFailure(
     err: anyerror,
 ) !void {
     if (backend == .flatpak) {
-        if (Zigalpm.flatpak.errors.unavailableMessage(err)) |message| {
+        if (PackageManager.flatpak.errors.unavailableMessage(err)) |message| {
             if (invocation.globals.ui_mode)
                 try output.writeErrorFrame(context, message)
             else
@@ -276,8 +279,8 @@ fn writeQueryFailure(
     }
     const message = try std.fmt.allocPrint(
         context.allocator,
-        "Unable to query {s} updates: {t}",
-        .{ @tagName(backend), err },
+        "Could not check for {0f} updates. {1s}\n\nTechnical details: {2s}",
+        .{ diagnostics.safe(@tagName(backend)), diagnostics.cause(err), @errorName(err) },
     );
     defer context.allocator.free(message);
     if (invocation.globals.ui_mode) {
@@ -477,6 +480,7 @@ fn writeFlatpakJson(json: *std.json.Stringify, update: FlatpakUpdate) !void {
     try field(json, "Id", update.id);
     try field(json, "Name", update.name);
     try field(json, "Version", update.version);
+    try field(json, "NewVersion", update.new_version);
     try field(json, "Arch", update.arch);
     try field(json, "Branch", update.branch);
     try field(json, "LatestCommit", update.latest_commit);
@@ -490,6 +494,7 @@ fn writeFlatpakJson(json: *std.json.Stringify, update: FlatpakUpdate) !void {
     try field(json, "InstallLevel", update.install_level);
     try field(json, "Permissions", update.permissions);
     try field(json, "InstalledSize", update.installed_size);
+    try field(json, "DownloadSize", update.download_size);
     try field(json, "Ref", update.ref);
     try field(json, "FullRef", update.full_ref);
     try field(json, "Eol", update.eol);
@@ -672,14 +677,15 @@ fn runReal(
 }
 
 fn runStandard(context: *runtime.RuntimeContext) !Result {
-    const database_path = try xdg.shellyCache(context, &.{"db"});
+    const database_path = try xdg.previewDatabase(context);
     defer context.allocator.free(database_path);
     try std.Io.Dir.cwd().createDirPath(context.io, database_path);
 
-    var manager = try Zigalpm.AlpmManager.init(
+    var manager = try PackageManager.Manager.init(
         context.allocator,
         context.environ,
         .{
+            .config_path = context.config_path,
             .use_root = false,
             .temp_root_path = database_path,
         },
@@ -687,7 +693,7 @@ fn runStandard(context: *runtime.RuntimeContext) !Result {
     defer manager.deinit();
     try manager.sync_for_update_check(force_standard_database_refresh);
     const native_updates = try manager.get_updates_available();
-    defer Zigalpm.alpm.bindings.libalpm.OwnedPackageWithUpdate.deinitSlice(
+    defer PackageManager.Manager.types.OwnedPackageWithUpdate.deinitSlice(
         context.allocator,
         native_updates,
     );
@@ -725,12 +731,13 @@ fn runStandard(context: *runtime.RuntimeContext) !Result {
 }
 
 fn runAur(context: *runtime.RuntimeContext, options: CheckOptions) !Result {
-    const database_path = try xdg.shellyCache(context, &.{"db"});
+    const database_path = try xdg.previewDatabase(context);
     defer context.allocator.free(database_path);
     try std.Io.Dir.cwd().createDirPath(context.io, database_path);
 
     const aur_base = try aur_url.resolve(context, options.aur_url);
-    const manager = try Zigalpm.AurManager.init(context.allocator, context.environ, .{
+    const manager = try PackageManager.AurManager.init(context.allocator, context.environ, .{
+        .config_path = context.config_path,
         .aur_git_base_url = aur_base,
         .use_temp_path = true,
         .temp_path = database_path,
@@ -738,7 +745,7 @@ fn runAur(context: *runtime.RuntimeContext, options: CheckOptions) !Result {
     });
     defer manager.deinit();
     const native_updates = try manager.getPackagesNeedingUpdate(!options.no_devel);
-    defer Zigalpm.aur.models.Update.deinitSlice(context.allocator, native_updates);
+    defer PackageManager.aur.models.Update.deinitSlice(context.allocator, native_updates);
 
     const arena = try context.allocator.create(std.heap.ArenaAllocator);
     arena.* = std.heap.ArenaAllocator.init(context.allocator);
@@ -774,7 +781,7 @@ fn runAppImage(context: *runtime.RuntimeContext) !Result {
     );
     defer context.allocator.free(local_db_path);
 
-    var manager = Zigalpm.appimage.UpdateManager{
+    var manager = PackageManager.appimage.UpdateManager{
         .allocator = context.allocator,
         .io = context.io,
         .environ = context.environ,
@@ -805,13 +812,13 @@ fn runAppImage(context: *runtime.RuntimeContext) !Result {
 }
 
 fn runFlatpak(context: *runtime.RuntimeContext) !Result {
-    var manager = Zigalpm.FlatpakManager{
+    var manager = PackageManager.FlatpakManager{
         .allocator = context.allocator,
         .io = context.io,
     };
     defer manager.deinit();
     const native_updates = try manager.get_updates_flatpak();
-    defer Zigalpm.flatpak.InstalledRef.deinitSlice(
+    defer PackageManager.flatpak.InstalledRef.deinitSlice(
         context.allocator,
         native_updates,
     );
@@ -839,6 +846,7 @@ fn runFlatpak(context: *runtime.RuntimeContext) !Result {
             .install_level = @intFromEnum(native.scope),
             .permissions = try dupeStrings(allocator, native.permissions),
             .installed_size = native.installed_size,
+            .download_size = native.download_size,
             .ref = ref,
             .full_ref = try std.fmt.allocPrint(
                 allocator,
@@ -849,7 +857,55 @@ fn runFlatpak(context: *runtime.RuntimeContext) !Result {
             .eol_rebase = if (native.eol_rebase) |value| try allocator.dupe(u8, value) else "",
         };
     }
+    applyAvailableVersions(manager, allocator, updates);
     return .{ .flatpak = .{ .items = updates, .arena = arena } };
+}
+
+fn applyAvailableVersions(
+    manager: PackageManager.FlatpakManager,
+    allocator: std.mem.Allocator,
+    updates: []FlatpakUpdate,
+) void {
+    for (updates, 0..) |*update, index| {
+        var already_loaded = false;
+        for (updates[0..index]) |earlier| {
+            if (std.mem.eql(u8, earlier.remote, update.remote)) {
+                already_loaded = true;
+                break;
+            }
+        }
+        if (already_loaded or update.remote.len == 0) continue;
+
+        var catalog = manager.get_remote_appstream(update.remote, null) catch continue;
+        defer catalog.deinit();
+        for (updates) |*target| {
+            if (target.new_version.len != 0) continue;
+            if (!std.mem.eql(u8, target.remote, update.remote)) continue;
+            const version = catalogVersion(catalog.apps, target.id) orelse continue;
+            target.new_version = allocator.dupe(u8, version) catch "";
+        }
+    }
+}
+
+fn catalogVersion(
+    apps: []const PackageManager.flatpak.AppstreamApp,
+    id: []const u8,
+) ?[]const u8 {
+    for (apps) |app| {
+        if (!isSameApp(app.id, id)) continue;
+        if (app.releases.len == 0) return null;
+        if (app.releases[0].version.len == 0) return null;
+        return app.releases[0].version;
+    }
+    return null;
+}
+
+const desktop_suffix = ".desktop";
+
+fn isSameApp(app_id: []const u8, id: []const u8) bool {
+    if (std.mem.eql(u8, app_id, id)) return true;
+    if (!std.mem.endsWith(u8, app_id, desktop_suffix)) return false;
+    return std.mem.eql(u8, app_id[0 .. app_id.len - desktop_suffix.len], id);
 }
 
 fn stringValue(configuration: *const config_model.Config, key: []const u8) ?[]const u8 {
@@ -1128,7 +1184,7 @@ test "bare list-updates shortcode continues after a backend failure" {
         "{\"Packages\":[],\"Aur\":[],\"AppImage\":[],\"Flatpak\":[]}\n",
         tc.stdout.writer.buffered(),
     );
-    try std.testing.expect(std.mem.indexOf(u8, tc.stderr.writer.buffered(), "Unable to query appimage updates") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stderr.writer.buffered(), "Could not check for appimage updates") != null);
 }
 
 test "aggregate list-updates skips an unavailable Flatpak backend without failing" {
@@ -1171,7 +1227,7 @@ test "aggregate list-updates skips an unavailable Flatpak backend without failin
     try std.testing.expect(std.mem.indexOf(
         u8,
         tc.stderr.writer.buffered(),
-        "Install shelly-flatpak-backend and Flatpak",
+        "Install flatpak and shelly-flatpak-backend",
     ) != null);
 }
 
@@ -1648,4 +1704,65 @@ test "Flatpak list-updates renders EOL annotations in JSON output" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"Eol\":\"Deprecated.\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"EolRebase\":\"no.bragefuglseth.Keypunch\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"Eol\":\"No longer maintained\"") != null);
+}
+
+test "Flatpak available version resolves from AppStream releases" {
+    const releases = [_]PackageManager.flatpak.AppstreamRelease{
+        .{ .version = "1.4.0", .type = "stable", .timestamp = null, .description = "" },
+        .{ .version = "1.2.0", .type = "stable", .timestamp = null, .description = "" },
+    };
+    const base = PackageManager.flatpak.AppstreamApp{
+        .type = "desktop-application",
+        .id = "",
+        .name = "Example",
+        .summary = "",
+        .project_license = "",
+        .developer_name = "",
+        .extends = null,
+        .description = "",
+        .categories = &.{},
+        .keywords = &.{},
+        .urls = .empty,
+        .icons = &.{},
+        .screenshots = &.{},
+        .releases = &releases,
+        .is_verified = false,
+        .verification_method = null,
+        .addons = &.{},
+    };
+    var apps = [_]PackageManager.flatpak.AppstreamApp{ base, base, base };
+    apps[0].id = "org.example.App";
+    apps[1].id = "org.example.Suffixed.desktop";
+    apps[2].id = "org.freedesktop.Platform";
+    apps[2].releases = &.{};
+
+    try std.testing.expectEqualStrings("1.4.0", catalogVersion(&apps, "org.example.App").?);
+    try std.testing.expectEqualStrings("1.4.0", catalogVersion(&apps, "org.example.Suffixed").?);
+    try std.testing.expectEqual(@as(?[]const u8, null), catalogVersion(&apps, "org.freedesktop.Platform"));
+    try std.testing.expectEqual(@as(?[]const u8, null), catalogVersion(&apps, "org.example.Absent"));
+
+    var output_buffer = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer output_buffer.deinit();
+    const updates = [_]FlatpakUpdate{.{
+        .id = "org.example.App",
+        .name = "Example",
+        .version = "1.2.0",
+        .new_version = "1.4.0",
+        .arch = "x86_64",
+        .branch = "stable",
+        .latest_commit = "abc1234567890",
+        .summary = "",
+        .kind = 0,
+        .remote = "flathub",
+        .install_level = 1,
+        .permissions = &.{},
+        .installed_size = 0,
+        .ref = "app/org.example.App/x86_64/stable",
+        .full_ref = "flathub:app/org.example.App/x86_64/stable",
+    }};
+    const result: Result = .{ .flatpak = .{ .items = &updates } };
+    try writeJson(std.testing.allocator, &output_buffer.writer, &result);
+    try std.testing.expect(
+        std.mem.indexOf(u8, output_buffer.writer.buffered(), "\"Version\":\"1.2.0\",\"NewVersion\":\"1.4.0\"") != null,
+    );
 }

@@ -1,11 +1,14 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const bindings = @import("Shelly_Ui_Gtk");
 const gtk = bindings.gtk;
 const glib = bindings.glib;
 const gio = bindings.gio;
 const gobject = bindings.gobject;
 const support = @import("support.zig");
+const features = @import("../services/build_features.zig");
 const translations = @import("../helpers/translations.zig");
+const a11y = @import("../helpers/a11y.zig");
 const ConfirmDialog = @import("../dialog/page/yn_dialog.zig").ConfirmDialog;
 const AurWarningDialog = @import("../dialog/page/aur_warning.zig").AurWarningDialog;
 const ShellyWindow = @import("../shelly_window.zig").ShellyWindow;
@@ -32,6 +35,7 @@ pub const WelcomePage = extern struct {
         window: *ShellyWindow,
         flatpak: bool,
         appimage: bool,
+        started_transaction: bool = false,
         stage: enum {
             dependencies,
             backend_standard,
@@ -99,19 +103,23 @@ pub const WelcomePage = extern struct {
         p.welcome_scrim = null;
         p.welcome_dialog_host = null;
 
-        build_internal_overlay(self);
+        buildInternalOverlay(self);
+
+        if (!features.builtWithBuiltinAur) {
+            gtk.Widget.setVisible(p.source_aur.as(gtk.Widget), 0);
+        }
 
         _ = gobject.Object.signals.notify.connect(
             p.source_aur.as(gobject.Object),
             *Self,
-            &on_aur_notify,
+            &onAurNotify,
             self,
             .{ .detail = "active" },
         );
         _ = gobject.Object.signals.notify.connect(
             p.source_recommended.as(gobject.Object),
             *Self,
-            &on_recommended_notify,
+            &onRecommendedNotify,
             self,
             .{ .detail = "active" },
         );
@@ -119,7 +127,7 @@ pub const WelcomePage = extern struct {
         support.connectLifecycle(Self, self);
     }
 
-    fn build_internal_overlay(self: *Self) void {
+    fn buildInternalOverlay(self: *Self) void {
         const p = self.priv();
 
         const overlay = gtk.Overlay.new();
@@ -186,19 +194,19 @@ pub const WelcomePage = extern struct {
         gtk.Widget.setVisible(scrim.as(gtk.Widget), 0);
     }
 
-    fn on_aur_notify(_: *gobject.Object, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
+    fn onAurNotify(_: *gobject.Object, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
         const p = self.priv();
         if (p.suppress_warnings) return;
         if (gtk.CheckButton.getActive(p.source_aur) == 0) return;
 
         gtk.CheckButton.setActive(p.source_aur, 0);
 
-        const dialog = AurWarningDialog.new(&on_aur_response, self);
+        const dialog = AurWarningDialog.new(&onAurResponse, self);
         self.showInternalDialog(dialog.as(gtk.Widget));
         dialog.focusCancel();
     }
 
-    fn on_aur_response(ctx: ?*anyopaque, confirmed: bool) void {
+    fn onAurResponse(ctx: ?*anyopaque, confirmed: bool) void {
         const self: *Self = @ptrCast(@alignCast(ctx.?));
         self.hideInternalDialog();
         if (!confirmed) return;
@@ -207,7 +215,8 @@ pub const WelcomePage = extern struct {
         gtk.CheckButton.setActive(p.source_aur, 1);
         p.suppress_warnings = false;
     }
-    fn on_recommended_notify(_: *gobject.Object, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
+
+    fn onRecommendedNotify(_: *gobject.Object, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
         const p = self.priv();
         if (p.suppress_warnings) return;
         if (gtk.CheckButton.getActive(p.source_recommended) == 0) return;
@@ -217,14 +226,14 @@ pub const WelcomePage = extern struct {
         const dialog = ConfirmDialog.new(
             translations._("Enable Recommended?"),
             translations._("Recommended shows curated package suggestions based on your installed software. Package data is fetched from external sources."),
-            &on_recommended_response,
+            &onRecommendedResponse,
             self,
         );
         dialog.setButtons(translations._("Enable"), translations._("Cancel"));
         self.showInternalDialog(dialog.as(gtk.Widget));
     }
 
-    fn on_recommended_response(ctx: ?*anyopaque, confirmed: bool) void {
+    fn onRecommendedResponse(ctx: ?*anyopaque, confirmed: bool) void {
         const self: *Self = @ptrCast(@alignCast(ctx.?));
         self.hideInternalDialog();
         if (!confirmed) return;
@@ -234,21 +243,21 @@ pub const WelcomePage = extern struct {
         p.suppress_warnings = false;
     }
 
-    fn on_back(self: *Self) callconv(.c) void {
+    fn onBack(self: *Self) callconv(.c) void {
         const p = self.priv();
         if (p.current_step > 0) {
-            self.go_to_step(p.current_step - 1);
+            self.goToStep(p.current_step - 1);
         }
     }
 
-    fn on_next(self: *Self) callconv(.c) void {
+    fn onNext(self: *Self) callconv(.c) void {
         const p = self.priv();
         if (p.current_step < num_steps - 1) {
-            self.go_to_step(p.current_step + 1);
+            self.goToStep(p.current_step + 1);
         }
     }
 
-    fn on_finish(self: *Self) callconv(.c) void {
+    fn onFinish(self: *Self) callconv(.c) void {
         const p = self.priv();
         const win = support.getWindow(ShellyWindow, self);
 
@@ -265,7 +274,7 @@ pub const WelcomePage = extern struct {
         const appimage_selected = gtk.CheckButton.getActive(p.source_appimage) != 0;
 
         var updated = cfg.*;
-        updated.AurEnabled = gtk.CheckButton.getActive(p.source_aur) != 0;
+        updated.AurEnabled = features.builtWithAtollOnly or gtk.CheckButton.getActive(p.source_aur) != 0;
         updated.AurWarningConfirmed = updated.AurEnabled;
         updated.FlatPackEnabled = false;
         updated.AppImageEnabled = false;
@@ -279,10 +288,10 @@ pub const WelcomePage = extern struct {
         }
 
         svc.set(updated) catch |err| {
-            std.log.err("welcome: failed to apply config: {}", .{err});
+            std.log.err("Could not apply the setup settings. {0s}\n\nTechnical details: {1s}", .{ diagnostics.cause(err), @errorName(err) });
         };
         svc.save() catch |err| {
-            std.log.err("welcome: failed to save config: {}", .{err});
+            std.log.err("Could not save the setup settings to the configured file. {0s} Setup preferences were not saved.\n\nTechnical details: {1s}", .{ diagnostics.cause(err), @errorName(err) });
         };
 
         if (win) |w| {
@@ -296,13 +305,16 @@ pub const WelcomePage = extern struct {
     }
 
     fn startSupportInstall(window: *ShellyWindow, flatpak: bool, appimage: bool) void {
+        var selected_buffer: [2][]const u8 = undefined;
+        const selected = support_packages.selectedDependencies(&selected_buffer, flatpak, appimage);
+
         var package_buffer: [2][]const u8 = undefined;
-        const packages = support_packages.selectedDependencies(&package_buffer, flatpak, appimage);
-        const argv = ShellyCommands.install(std.heap.c_allocator, packages) catch {
-            window.hideLockout();
-            return;
-        };
-        defer std.heap.c_allocator.free(argv);
+        const packages = support_packages.missingPackages(
+            std.heap.c_allocator,
+            runtime.io,
+            selected,
+            &package_buffer,
+        );
 
         const ctx = std.heap.c_allocator.create(SupportInstallContext) catch {
             window.hideLockout();
@@ -314,17 +326,30 @@ pub const WelcomePage = extern struct {
             .appimage = appimage,
         };
 
+        if (packages.len == 0) {
+            onSupportInstallComplete(ctx, true);
+            return;
+        }
+
+        const argv = ShellyCommands.install(std.heap.c_allocator, packages) catch {
+            std.heap.c_allocator.destroy(ctx);
+            window.hideLockout();
+            return;
+        };
+        defer std.heap.c_allocator.free(argv);
+
+        ctx.started_transaction = true;
         window.startTransaction(.{
             .title = supportInstallTitle(flatpak, appimage),
             .argv = argv,
             .packages = packages,
             .privileged = true,
-            .on_complete = &on_support_install_complete,
+            .on_complete = &onSupportInstallComplete,
             .ctx = ctx,
         });
     }
 
-    fn on_support_install_complete(raw_ctx: *anyopaque, success: bool) void {
+    fn onSupportInstallComplete(raw_ctx: *anyopaque, success: bool) void {
         const ctx: *SupportInstallContext = @ptrCast(@alignCast(raw_ctx));
 
         switch (ctx.stage) {
@@ -335,14 +360,14 @@ pub const WelcomePage = extern struct {
                 }
                 if (ctx.flatpak) {
                     ctx.stage = .backend_standard;
-                    _ = glib.idleAdd(&start_support_backend_idle, ctx);
+                    _ = glib.idleAdd(&startSupportBackendIdle, ctx);
                     return;
                 }
             },
             .backend_standard => {
                 if (!success) {
                     ctx.stage = .backend_aur;
-                    _ = glib.idleAdd(&start_support_backend_idle, ctx);
+                    _ = glib.idleAdd(&startSupportBackendIdle, ctx);
                     return;
                 }
             },
@@ -355,10 +380,17 @@ pub const WelcomePage = extern struct {
         finishSupportInstall(ctx);
     }
 
-    fn start_support_backend_idle(data: ?*anyopaque) callconv(.c) c_int {
+    fn startSupportBackendIdle(data: ?*anyopaque) callconv(.c) c_int {
         const ctx: *SupportInstallContext = @ptrCast(@alignCast(data.?));
-        const package = support_packages.flatpakBackendPackage();
-        const packages = &.{package};
+        const packages = &.{support_packages.flatpakBackendPackage()};
+
+        var backend_buffer: [1][]const u8 = undefined;
+        const missing = support_packages.missingPackages(std.heap.c_allocator, runtime.io, packages, &backend_buffer);
+        if (missing.len == 0) {
+            onSupportInstallComplete(ctx, true);
+            return 0;
+        }
+
         const argv = switch (ctx.stage) {
             .backend_standard => ShellyCommands.install(std.heap.c_allocator, packages),
             .backend_aur => ShellyCommands.install_aur(std.heap.c_allocator, packages),
@@ -369,12 +401,13 @@ pub const WelcomePage = extern struct {
         };
         defer std.heap.c_allocator.free(argv);
 
+        ctx.started_transaction = true;
         ctx.window.startTransaction(.{
             .title = supportInstallTitle(true, false),
             .argv = argv,
             .packages = packages,
             .privileged = true,
-            .on_complete = &on_support_install_complete,
+            .on_complete = &onSupportInstallComplete,
             .ctx = ctx,
         });
         return 0;
@@ -382,6 +415,7 @@ pub const WelcomePage = extern struct {
 
     fn finishSupportInstall(ctx: *SupportInstallContext) void {
         defer std.heap.c_allocator.destroy(ctx);
+        if (!ctx.started_transaction) ctx.window.hideLockout();
 
         const svc = runtime.config orelse return;
         const cfg = svc.get() catch return;
@@ -389,11 +423,11 @@ pub const WelcomePage = extern struct {
         if (ctx.flatpak) updated.FlatPackEnabled = true;
         if (ctx.appimage) updated.AppImageEnabled = true;
         svc.set(updated) catch |err| {
-            std.log.err("welcome: failed to enable installed support: {}", .{err});
+            std.log.err("Support packages were installed, but the installed support could not be enabled. {0s}\n\nTechnical details: {1s}", .{ diagnostics.cause(err), @errorName(err) });
             return;
         };
         svc.save() catch |err| {
-            std.log.err("welcome: failed to save installed support: {}", .{err});
+            std.log.err("Support packages were installed, but the setting to enable the installed support could not be saved. {0s}\n\nTechnical details: {1s}", .{ diagnostics.cause(err), @errorName(err) });
             return;
         };
         ctx.window.applyConfig();
@@ -407,7 +441,7 @@ pub const WelcomePage = extern struct {
         return translations._("Installing AppImage support");
     }
 
-    fn go_to_step(self: *Self, step: u8) void {
+    fn goToStep(self: *Self, step: u8) void {
         const p = self.priv();
         p.current_step = step;
 
@@ -417,6 +451,11 @@ pub const WelcomePage = extern struct {
             p.page_appearance.as(gtk.Widget),
         };
         gtk.Stack.setVisibleChild(p.welcome_stack, pages[step]);
+        // Nothing else moves focus, so an AT hears the page change as silence.
+        // Focusing a control in the new page both announces it and gives the user
+        // a position to act from; the page's own group name is what makes the move
+        // legible rather than merely audible.
+        _ = a11y.focusFirst(pages[step]);
 
         gtk.Widget.setSensitive(p.btn_back.as(gtk.Widget), @intFromBool(step > 0));
 
@@ -458,9 +497,9 @@ pub const WelcomePage = extern struct {
             inline for (template_children) |child| {
                 support.bindChild(class, Private.offset, child[0], child[1]);
             }
-            gtk.Widget.Class.bindTemplateCallbackFull(wc, "on_back", @ptrCast(&on_back));
-            gtk.Widget.Class.bindTemplateCallbackFull(wc, "on_next", @ptrCast(&on_next));
-            gtk.Widget.Class.bindTemplateCallbackFull(wc, "on_finish", @ptrCast(&on_finish));
+            gtk.Widget.Class.bindTemplateCallbackFull(wc, "on_back", @ptrCast(&onBack));
+            gtk.Widget.Class.bindTemplateCallbackFull(wc, "on_next", @ptrCast(&onNext));
+            gtk.Widget.Class.bindTemplateCallbackFull(wc, "on_finish", @ptrCast(&onFinish));
         }
     };
 };

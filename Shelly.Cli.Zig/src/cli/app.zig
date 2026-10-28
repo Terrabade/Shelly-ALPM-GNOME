@@ -1,12 +1,14 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
+const builtin = @import("builtin");
 const help = @import("help.zig");
 const parser = @import("parser.zig");
 const shortcodes = @import("shortcodes.zig");
 const spec = @import("spec.zig");
 const runtime = @import("../runtime/context.zig");
-const Zigalpm = @import("Zigalpm");
+const PackageManager = @import("PackageManager");
 
-pub const sandbox_wrapper_argument = Zigalpm.builder.sandbox.wrapper_argument;
+pub const sandbox_wrapper_argument = PackageManager.builder.sandbox.wrapper_argument;
 
 pub fn run(context: *runtime.RuntimeContext, arguments: []const []const u8) !u8 {
     const manifest = try spec.Manifest.load(context.allocator);
@@ -30,7 +32,7 @@ fn runTranslated(
     const outcome = try parser.parse(context.allocator, manifest, arguments);
     return switch (outcome) {
         .help => |command| renderHelp(context, manifest, command),
-        .version => printVersion(context, manifest),
+        .version => |globals| printVersion(context, manifest, globals.json),
         .dispatch => |invocation| context.dispatch(&invocation),
         .failure => |failure| renderFailure(context, manifest, failure),
     };
@@ -58,8 +60,53 @@ fn renderHelp(
     return 0;
 }
 
-fn printVersion(context: *runtime.RuntimeContext, manifest: *const spec.Manifest) !u8 {
-    try context.stdout.print("{s}\n", .{manifest.informationalVersion});
+const AutomationCapability = struct {
+    name: []const u8,
+    version: u32,
+};
+
+const automation_capabilities = [_]AutomationCapability{
+    .{ .name = "remora.build-backend", .version = 1 },
+    .{ .name = "build.review", .version = 1 },
+    .{ .name = "build.resolve-dependencies", .version = 1 },
+    .{ .name = "build.result", .version = 1 },
+    .{ .name = "build.isolated", .version = 1 },
+    .{ .name = "build.package-destination", .version = 1 },
+    .{ .name = "operation.cancellation", .version = 1 },
+    .{ .name = "resolve.package-base", .version = 1 },
+};
+
+fn printVersion(
+    context: *runtime.RuntimeContext,
+    manifest: *const spec.Manifest,
+    json_output: bool,
+) !u8 {
+    if (!json_output) {
+        try context.stdout.print("{s}\n", .{manifest.informationalVersion});
+        return 0;
+    }
+
+    var json: std.json.Stringify = .{ .writer = context.stdout };
+    try json.beginObject();
+    try json.objectField("schemaVersion");
+    try json.write(1);
+    try json.objectField("name");
+    try json.write(manifest.binary);
+    try json.objectField("version");
+    try json.write(manifest.version);
+    try json.objectField("capabilities");
+    try json.beginArray();
+    for (automation_capabilities) |capability| {
+        try json.beginObject();
+        try json.objectField("name");
+        try json.write(capability.name);
+        try json.objectField("version");
+        try json.write(capability.version);
+        try json.endObject();
+    }
+    try json.endArray();
+    try json.endObject();
+    try context.stdout.writeByte('\n');
     return 0;
 }
 
@@ -85,9 +132,9 @@ pub fn runSandboxExec(
     stderr: *std.Io.Writer,
     arguments: []const []const u8,
 ) u8 {
-    const sandbox = Zigalpm.builder.sandbox;
+    const sandbox = PackageManager.builder.sandbox;
     const parsed = sandbox.parseWrapperArguments(allocator, arguments) catch |err| {
-        stderr.print("shelly sandbox: invalid wrapper arguments: {t}\n", .{err}) catch {};
+        stderr.print("Could not start the build sandbox because its wrapper arguments are invalid. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) }) catch {};
         return 1;
     };
     defer {
@@ -95,18 +142,18 @@ pub fn runSandboxExec(
         allocator.free(parsed.read_only_paths);
     }
 
-    Zigalpm.builder.setNoNewPrivs() catch {
-        stderr.print("shelly sandbox: unable to lock process privileges\n", .{}) catch {};
+    PackageManager.builder.setNoNewPrivs() catch {
+        stderr.print("Could not start the build sandbox because process privileges could not be locked.\n", .{}) catch {};
         return 1;
     };
 
     const read_write_paths = joinSandboxPaths(allocator, sandbox.base_read_write_paths, parsed.read_write_paths) catch {
-        stderr.print("shelly sandbox: out of memory\n", .{}) catch {};
+        stderr.print("Could not start the build sandbox because Shelly ran out of memory. Close other applications and try again.\n", .{}) catch {};
         return 1;
     };
     defer allocator.free(read_write_paths);
     const read_only_paths = joinSandboxPaths(allocator, sandbox.base_read_only_paths, parsed.read_only_paths) catch {
-        stderr.print("shelly sandbox: out of memory\n", .{}) catch {};
+        stderr.print("Could not start the build sandbox because Shelly ran out of memory. Close other applications and try again.\n", .{}) catch {};
         return 1;
     };
     defer allocator.free(read_only_paths);
@@ -115,7 +162,7 @@ pub fn runSandboxExec(
         .read_write_paths = read_write_paths,
         .read_only_paths = read_only_paths,
     }) catch |err| {
-        stderr.print("shelly sandbox: unable to confine step: {t}\n", .{err}) catch {};
+        stderr.print("Could not apply the sandbox restrictions for {0f}. {1s}\n\nTechnical details: {2s}\n", .{ diagnostics.safe("the build step"), diagnostics.cause(err), @errorName(err) }) catch {};
         return 1;
     };
 
@@ -139,21 +186,21 @@ fn execSandboxChild(
     stderr: *std.Io.Writer,
     child_argv: []const []const u8,
 ) u8 {
-    switch (@import("builtin").os.tag) {
+    switch (builtin.os.tag) {
         .linux => {
             const argv = buildPosixArgv(allocator, child_argv) catch {
-                stderr.print("shelly sandbox: out of memory\n", .{}) catch {};
+                stderr.print("Could not start the build sandbox because Shelly ran out of memory. Close other applications and try again.\n", .{}) catch {};
                 return 1;
             };
             const rc = std.os.linux.execve(argv[0].?, argv.ptr, environ.block.slice.ptr);
             stderr.print(
-                "shelly sandbox: unable to execute {s}: {t}\n",
-                .{ child_argv[0], std.os.linux.errno(@intCast(rc)) },
+                "Could not start {0f} inside the build sandbox. The operating system rejected the request. Review the technical details.\n\nTechnical details: {1t}\n",
+                .{ diagnostics.safe(child_argv[0]), std.os.linux.errno(@intCast(rc)) },
             ) catch {};
             return 127;
         },
         else => {
-            stderr.print("shelly sandbox: unsupported platform\n", .{}) catch {};
+            stderr.print("The build sandbox is not supported on this platform. Run this build on a supported Linux system.\n", .{}) catch {};
             return 1;
         },
     }
@@ -207,6 +254,45 @@ test "no arguments dispatch upgrade all through the injected runtime" {
     try std.testing.expect(observed);
 }
 
+test "version remains human-readable unless JSON capabilities are requested" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var stdout = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer stdout.deinit();
+    var stderr = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer stderr.deinit();
+    var context: runtime.RuntimeContext = .{
+        .allocator = arena.allocator(),
+        .io = std.testing.io,
+        .stdout = &stdout.writer,
+        .stderr = &stderr.writer,
+    };
+
+    try std.testing.expectEqual(@as(u8, 0), try run(&context, &.{"--version"}));
+    const manifest = try spec.Manifest.load(arena.allocator());
+    const expected_plain = try std.fmt.allocPrint(arena.allocator(), "{s}\n", .{manifest.informationalVersion});
+    try std.testing.expectEqualStrings(expected_plain, stdout.writer.buffered());
+    try std.testing.expectEqual(@as(usize, 0), stderr.writer.buffered().len);
+
+    stdout.writer.end = 0;
+    try std.testing.expectEqual(@as(u8, 0), try run(&context, &.{ "--version", "--json" }));
+    var parsed = try std.json.parseFromSlice(std.json.Value, arena.allocator(), stdout.writer.buffered(), .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+    const object = parsed.value.object;
+    try std.testing.expectEqual(@as(i64, 1), object.get("schemaVersion").?.integer);
+    try std.testing.expectEqualStrings("shelly", object.get("name").?.string);
+    try std.testing.expectEqualStrings(manifest.version, object.get("version").?.string);
+    const capabilities = object.get("capabilities").?.array.items;
+    try std.testing.expectEqual(automation_capabilities.len, capabilities.len);
+    try std.testing.expectEqualStrings(
+        "remora.build-backend",
+        capabilities[0].object.get("name").?.string,
+    );
+    try std.testing.expectEqual(@as(i64, 1), capabilities[0].object.get("version").?.integer);
+    try std.testing.expectEqual(@as(usize, 0), stderr.writer.buffered().len);
+}
+
 test "help and parser errors bypass dispatch" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -237,7 +323,7 @@ test "help and parser errors bypass dispatch" {
 
     stdout.writer.end = 0;
     try std.testing.expectEqual(@as(u8, 1), try run(&context, &.{ "config", "get" }));
-    try std.testing.expect(std.mem.indexOf(u8, stderr.writer.buffered(), "Required argument 'key' missing") != null);
+    try std.testing.expect(std.mem.indexOf(u8, stderr.writer.buffered(), "Command 'shelly config get' requires 'key'") != null);
 }
 
 test "combined search shortcodes dispatch each selected type and route modifiers" {

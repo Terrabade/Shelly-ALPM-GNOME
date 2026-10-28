@@ -15,11 +15,11 @@ pub fn has_forbidden_package_assignment(
     vars: *const std.StringHashMap([]const u8),
 ) !bool {
     const body = (try function_body.selected_package_body_with_vars(self, content, vars)) orelse blk: {
-        if (try function_body.extract_function_body(content, "package")) |generic| break :blk generic;
+        if (try function_body.resolved_function_body(self, content, "package")) |generic| break :blk generic;
         const package_name = vars.get("pkgname") orelse return false;
         const function_name = try std.fmt.allocPrint(self.allocator, "package_{s}", .{package_name});
         defer self.allocator.free(function_name);
-        break :blk (try function_body.extract_function_body(content, function_name)) orelse return false;
+        break :blk (try function_body.resolved_function_body(self, content, function_name)) orelse return false;
     };
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |line| {
@@ -143,9 +143,9 @@ pub fn inspect_package_functions(
     if (names.len == 0) {
         const scalar = vars.get("pkgname") orelse return .{
             .is_split = false,
-            .has_generic = (try function_body.extract_function_body(content, "package")) != null,
+            .has_generic = (try function_body.resolved_function_body(self, content, "package")) != null,
             .has_selected = false,
-            .has_build = (try function_body.extract_function_body(content, "build")) != null,
+            .has_build = (try function_body.resolved_function_body(self, content, "build")) != null,
             .has_complete_split = true,
         };
         const scalar_names = try self.allocator.alloc([]const u8, 1);
@@ -158,7 +158,7 @@ pub fn inspect_package_functions(
     }
     try validate_package_names(names);
 
-    const has_generic = (try function_body.extract_function_body(content, "package")) != null;
+    const has_generic = (try function_body.resolved_function_body(self, content, "package")) != null;
     const selected_name = self.selected_package_name orelse names[0];
     var selected_parser = self;
     selected_parser.selected_package_name = selected_name;
@@ -182,7 +182,7 @@ pub fn inspect_package_functions(
         .is_split = names.len > 1,
         .has_generic = has_generic,
         .has_selected = has_scoped,
-        .has_build = (try function_body.extract_function_body(content, "build")) != null,
+        .has_build = (try function_body.resolved_function_body(self, content, "build")) != null,
         .has_complete_split = has_complete_split,
     };
 }
@@ -201,7 +201,8 @@ pub fn validate_xdata(values: []const []const u8) !void {
             return error.InvalidPackageXdata;
         if (separator == 0 or
             std.mem.indexOfScalar(u8, value[separator + 1 ..], '=') != null or
-            std.mem.eql(u8, value[0..separator], "pkgtype"))
+            std.mem.eql(u8, value[0..separator], "pkgtype") or
+            std.mem.startsWith(u8, value[0..separator], "shelly.migration."))
             return error.InvalidPackageXdata;
     }
 }

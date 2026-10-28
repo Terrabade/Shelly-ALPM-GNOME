@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const Io = std.Io;
 const JsonPackFrame = @import("ui-mode-decode.zig").JsonPackFrame;
 const RunResult = std.process.RunResult;
@@ -30,19 +31,27 @@ pub const ShellyCli = struct {
     environ_map: *std.process.Environ.Map,
 
     fn exec(self: ShellyCli, argv: []const []const u8) !RunResult {
-        const result = try std.process.run(self.allocator, self.io, .{
+        const result = std.process.run(self.allocator, self.io, .{
             .argv = argv,
             .environ_map = self.environ_map,
-        });
+        }) catch |err| {
+            const message = try diagnostics.format(self.allocator, err, .{ .operation = "the Shelly command", .path = argv[0] });
+            defer self.allocator.free(message);
+            log.err("{s}", .{message});
+            return err;
+        };
 
         errdefer self.allocator.free(result.stdout);
         errdefer self.allocator.free(result.stderr);
 
         if (result.term != .exited or result.term.exited != 0) {
-            log.err("failed: term={any} stderr='{s}' stdout='{s}'", .{
-                result.term,
-                result.stderr,
-                result.stdout[0..@min(500, result.stdout.len)],
+            const structured = try JsonPackFrame.failureMessage(self.allocator, result.stdout);
+            defer if (structured) |message| self.allocator.free(message);
+            const message = try diagnostics.sanitizeAlloc(self.allocator, structured orelse
+                if (result.stderr.len > 0) result.stderr else "Shelly returned no error details. Review the command output before retrying.");
+            defer self.allocator.free(message);
+            log.err("Could not run {f}. {s}\nProcess result: {any}", .{
+                diagnostics.safe(argv[0]), message, result.term,
             });
             return error.CommandFailed;
         }

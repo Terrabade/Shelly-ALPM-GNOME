@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const bindings = @import("Shelly_Ui_Gtk");
 const gtk = bindings.gtk;
 const gio = bindings.gio;
@@ -14,6 +15,7 @@ const runtime = @import("../services/runtime.zig");
 const ShellyConfig = @import("../models/shelly_config.zig").ShellyConfig;
 const AurPackageDetail = @import("aur_package_detail.zig").PackageDetail;
 const translations = @import("../helpers/translations.zig");
+const a11y = @import("../helpers/a11y.zig");
 const sorters = @import("../helpers/sorters.zig");
 
 pub const AurPage = extern struct {
@@ -206,7 +208,7 @@ pub const AurPage = extern struct {
             },
             .prompt => self.show_placeholder("system-search-symbolic", translations._("Search the AUR"), translations._("The AUR has no browsable index — type a package name to begin.")),
             .empty => self.show_placeholder("edit-find-symbolic", translations._("No packages found"), translations._("Try a shorter or more general keyword.")),
-            .err => self.show_placeholder("dialog-error-symbolic", translations._("Could not reach the AUR"), translations._("Check your connection and try again.")),
+            .err => self.show_placeholder("dialog-error-symbolic", translations._("Could not search the configured AUR service."), translations._("Check your connection and try again.")),
         }
     }
 
@@ -313,10 +315,12 @@ pub const AurPage = extern struct {
 
                 const ood_icon = gtk.Image.newFromIconName("dialog-warning-symbolic");
                 gtk.Widget.setTooltipText(ood_icon.as(gtk.Widget), translations._("Flagged out of date"));
+                a11y.setName(ood_icon.as(gtk.Widget), translations._("Flagged out of date"));
                 gtk.Box.append(title_box, ood_icon.as(gtk.Widget));
 
                 const installed_icon = gtk.Image.newFromIconName("object-select-symbolic");
                 gtk.Widget.setTooltipText(installed_icon.as(gtk.Widget), translations._("Installed"));
+                a11y.setName(installed_icon.as(gtk.Widget), translations._("Installed"));
                 gtk.Box.append(title_box, installed_icon.as(gtk.Widget));
 
                 gtk.Box.append(box, title_box.as(gtk.Widget));
@@ -381,6 +385,7 @@ pub const AurPage = extern struct {
         const check = gobject.ext.cast(gtk.CheckButton, child) orelse return;
 
         page.priv().check_map.put(std.heap.c_allocator, pkg, check) catch {};
+        a11y.setName(check.as(gtk.Widget), pkg.getName());
         set_sync_active(check, pkg.isSelected());
     }
 
@@ -514,6 +519,7 @@ pub const AurPage = extern struct {
         applyOptionsFromConfig(self);
         self.update_selection_ui();
         _ = gtk.Widget.grabFocus(p.search_entry.as(gtk.Widget));
+        restore_current_view(self);
     }
 
     fn applyOptionsFromConfig(self: *Self) void {
@@ -540,7 +546,7 @@ pub const AurPage = extern struct {
     ) void {
         const svc = runtime.config orelse return;
         svc.updateField(field, value) catch |err| {
-            std.log.err("aur page: failed to update config: {t}", .{err});
+            std.log.err("Could not update setting {0f}. {1s}\n\nTechnical details: {2s}", .{ diagnostics.safe(@tagName(field)), diagnostics.cause(err), @errorName(err) });
         };
     }
 
@@ -595,13 +601,13 @@ pub const AurPage = extern struct {
                     return;
                 };
                 break :blk cli.search_aur(query) catch |err| {
-                    std.debug.print("aur_search failed: {t}\n", .{err});
+                    std.debug.print("Could not search the AUR. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
                     post_failure(page, arena_ptr, generation);
                     return;
                 };
             },
             .installed => cli.list_aur_installed() catch |err| {
-                std.debug.print("aur_installed failed: {t}\n", .{err});
+                std.debug.print("Could not load the installed AUR-package list. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
                 post_failure(page, arena_ptr, generation);
                 return;
             },
@@ -732,9 +738,8 @@ pub const AurPage = extern struct {
         self.start_load(.search);
     }
 
-    fn on_installed_toggled(self: *Self) callconv(.c) void {
+    fn restore_current_view(self: *Self) void {
         const p = self.priv();
-        p.installed_mode = gtk.CheckButton.getActive(p.installed_toggle) != 0;
 
         if (p.installed_mode) {
             self.start_load(.installed);
@@ -745,6 +750,12 @@ pub const AurPage = extern struct {
             self.update_selection_ui();
             self.set_state(.prompt);
         }
+    }
+
+    fn on_installed_toggled(self: *Self) callconv(.c) void {
+        const p = self.priv();
+        p.installed_mode = gtk.CheckButton.getActive(p.installed_toggle) != 0;
+        restore_current_view(self);
     }
 
     fn on_install_clicked(self: *Self) callconv(.c) void {
@@ -853,15 +864,8 @@ pub const AurPage = extern struct {
     fn on_transaction_complete(ctx: *anyopaque, success: bool) void {
         const self: *AurPage = @ptrCast(@alignCast(ctx));
         if (!success) return;
-
-        const p = self.priv();
         self.clear_selection();
-
-        if (p.installed_mode) {
-            self.start_load(.installed);
-        } else if (p.last_query_len > 0) {
-            self.start_load(.search);
-        }
+        restore_current_view(self);
     }
 
     const template_children = .{

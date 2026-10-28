@@ -1,12 +1,91 @@
 //! Bash parameter expansion engine: variables, case conversion, trimming,
 //! replacement, substring, arithmetic, and command-substitution handling.
 const std = @import("std");
+const shell_word = @import("word.zig");
+const diagnostics = @import("diagnostics");
 const shell_scan = @import("shell_scan.zig");
 const arithmetic = @import("arithmetic.zig");
+const fields = @import("fields.zig");
 const PkgbuildParser = @import("parser.zig").PkgbuildParser;
 
 pub fn resolve_string(self: PkgbuildParser, input: []const u8, vars: *std.StringHashMap([]const u8)) ![]const u8 {
     return resolve_expansions(self, input, vars, .metadata);
+}
+
+pub const WordValue = struct {
+    value: []const u8,
+    unresolved: bool = false,
+};
+
+pub const ArrayElement = struct { name: []const u8, index: usize };
+
+/// A single element is a scalar word part, unlike the multiword [@] form.
+/// Deliberately exclude Bash arithmetic, negative indices and base prefixes.
+pub fn match_array_element(text: []const u8) !?ArrayElement {
+    if (!std.mem.startsWith(u8, text, "${") or !std.mem.endsWith(u8, text, "}")) return null;
+    const end = shell_scan.scan_word_chars(text, 2);
+    if (end == 2 or text[end] != '[' or std.mem.startsWith(u8, text[end..], "[@]")) return null;
+    if (!std.mem.endsWith(u8, text, "]}")) return error.UnsupportedArrayExpansion;
+    const index = text[end + 1 .. text.len - 2];
+    if (index.len == 0 or (index.len > 1 and index[0] == '0')) return error.UnsupportedArrayExpansion;
+    for (index) |c| if (!std.ascii.isDigit(c)) return error.UnsupportedArrayExpansion;
+    // Bash arithmetic uses signed integers; an overflowing positive literal
+    // must not be mistaken for an ordinary out-of-range element.
+    const number = std.fmt.parseInt(i64, index, 10) catch return error.UnsupportedArrayExpansion;
+    return .{ .name = text[2..end], .index = std.math.cast(usize, number) orelse return error.UnsupportedArrayExpansion };
+}
+
+/// Expand each original expression once. Substituted bytes are data, never a
+/// new input to another expansion pass (even if they contain dollars/quotes).
+pub fn resolve_word(self: PkgbuildParser, input: []const u8, vars: *std.StringHashMap([]const u8)) !WordValue {
+    const word = try shell_word.read(self.allocator, input, 0);
+    defer word.deinit(self.allocator);
+    if (word.end != input.len) return error.UnsupportedShellWord;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(self.allocator);
+    var unresolved = false;
+    for (word.parts) |part| {
+        const text = input[part.start..part.end];
+        if (part.kind != .parameter) {
+            try out.appendSlice(self.allocator, text);
+            continue;
+        }
+        const expanded = try resolve_word_parameter(self, text, vars);
+        defer self.allocator.free(expanded.value);
+        unresolved = unresolved or expanded.unresolved;
+        try out.appendSlice(self.allocator, expanded.value);
+    }
+    return .{ .value = try out.toOwnedSlice(self.allocator), .unresolved = unresolved };
+}
+
+fn resolve_word_parameter(self: PkgbuildParser, text: []const u8, vars: *std.StringHashMap([]const u8)) !WordValue {
+    if (std.mem.startsWith(u8, text, "$(("))
+        return .{ .value = try replace_arithmetic(self, text, vars) };
+    if (try match_array_element(text)) |element| {
+        if (try fields.resolve_array_element(self, vars, element.name, element.index)) |value|
+            return .{ .value = value };
+        return .{ .value = try self.allocator.dupe(u8, text), .unresolved = true };
+    }
+    const braced = std.mem.startsWith(u8, text, "${");
+    const start: usize = if (braced) 2 else 1;
+    const end = shell_scan.scan_word_chars(text, start);
+    const name = text[start..end];
+    const tainted = if (self.unresolved_variables) |unresolved| unresolved.contains(name) else false;
+    const known = text[0] == '$' and name.len > 0 and vars.contains(name);
+    if (!known) return .{ .value = try self.allocator.dupe(u8, text), .unresolved = true };
+    const value = if (!braced or (end < text.len and text[end] == '}'))
+        try self.allocator.dupe(u8, vars.get(name).?)
+    else switch (text[end]) {
+        ',', '^' => try replace_case_expansion(self, text, vars),
+        '#', '%' => try replace_trim_expansion(self, text, vars),
+        '/' => try replace_replacement_expansion(self, text, vars),
+        ':' => if (end + 1 < text.len and std.mem.indexOfScalar(u8, "=-+?", text[end + 1]) != null)
+            return .{ .value = try self.allocator.dupe(u8, text), .unresolved = true }
+        else
+            try replace_substring_expansion(self, text, vars),
+        else => return .{ .value = try self.allocator.dupe(u8, text), .unresolved = true },
+    };
+    return .{ .value = value, .unresolved = tainted };
 }
 
 const expansion_mode = enum { metadata, execution };
@@ -339,7 +418,7 @@ fn replace_command(self: PkgbuildParser, input: []const u8) ![]const u8 {
         }
 
         const whole_match = input[open .. close + 1];
-        std.debug.print("[Shelly] Warning: Cannot evaluate command substitution: {s}\n", .{whole_match});
+        std.debug.print("Could not evaluate PKGBUILD command substitution {0f} in the PKGBUILD.\n", .{diagnostics.safe(whole_match)});
         pos = close + 1;
     }
 
@@ -609,7 +688,7 @@ fn glob_matches(pattern: []const u8, text: []const u8) bool {
     }
 }
 
-fn apply_parameter_expansion(value: []const u8, op: []const u8, glob: []const u8) []const u8 {
+pub fn apply_parameter_expansion(value: []const u8, op: []const u8, glob: []const u8) []const u8 {
     if (glob.len == 0) return value;
 
     if (std.mem.eql(u8, op, "#")) {

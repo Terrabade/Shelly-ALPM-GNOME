@@ -41,16 +41,23 @@ pub fn scan_word_chars(input: []const u8, start: usize) usize {
 }
 
 pub fn strip_comment(line: []const u8) ![]const u8 {
-    var single_q = false;
-    var double_q = false;
-    for (line, 0..) |l, i| {
-        if (l == '"' and !single_q) {
-            double_q = !double_q;
-        } else if (l == '\'' and !double_q) {
-            single_q = !single_q;
-        } else if (l == '#' and !single_q and !double_q) {
-            return line[0..i];
+    var quote: u8 = 0;
+    var boundary = true;
+    var i: usize = 0;
+    while (i < line.len) : (i += 1) {
+        const c = line[i];
+        if (c == '\\' and quote != '\'' and i + 1 < line.len) {
+            i += 1;
+            boundary = false;
+            continue;
         }
+        if ((c == '\'' or c == '"') and (quote == 0 or quote == c)) {
+            quote = if (quote == 0) c else 0;
+            boundary = false;
+            continue;
+        }
+        if (c == '#' and quote == 0 and boundary) return line[0..i];
+        boundary = quote == 0 and (std.ascii.isWhitespace(c) or std.mem.indexOfScalar(u8, ";&|()", c) != null);
     }
     return line;
 }
@@ -249,8 +256,11 @@ fn conditional_depth(self: PkgbuildParser, input: []const u8) !usize {
             word_start = false;
             continue;
         }
+        // The previous-byte check rejects the second `<` of a here-string
+        // (`<<<`), which would otherwise parse as a quoted heredoc.
         if (c == '<' and i + 1 < input.len and input[i + 1] == '<' and
-            (i + 2 >= input.len or input[i + 2] != '<'))
+            (i + 2 >= input.len or input[i + 2] != '<') and
+            (i == 0 or input[i - 1] != '<'))
         {
             if (try parse_heredoc_declaration(self, input, i + 2)) |declaration| {
                 errdefer self.allocator.free(declaration.delimiter);
@@ -455,8 +465,11 @@ pub fn split_shell_segments(self: PkgbuildParser, input: []const u8) ![]shell_se
             continue;
         }
 
+        // The previous-byte check rejects the second `<` of a here-string
+        // (`<<<`), which would otherwise parse as a quoted heredoc.
         if (c == '<' and !in_double and i + 1 < input.len and input[i + 1] == '<' and
-            (i + 2 >= input.len or input[i + 2] != '<'))
+            (i + 2 >= input.len or input[i + 2] != '<') and
+            (i == 0 or input[i - 1] != '<'))
         {
             if (try parse_heredoc_declaration(self, input, i + 2)) |declaration| {
                 errdefer self.allocator.free(declaration.delimiter);
@@ -481,6 +494,10 @@ pub fn split_shell_segments(self: PkgbuildParser, input: []const u8) ![]shell_se
 /// marks the body as non-expanding, mirroring bash. Returns null when
 /// no delimiter token follows the introducer.
 fn parse_heredoc_declaration(self: PkgbuildParser, input: []const u8, start: usize) !?heredoc_declaration {
+    return parse_heredoc(self.allocator, input, start);
+}
+
+pub fn parse_heredoc(allocator: std.mem.Allocator, input: []const u8, start: usize) !?heredoc_declaration {
     var j = start;
     var strip_tabs = false;
     if (j < input.len and input[j] == '-') {
@@ -490,7 +507,7 @@ fn parse_heredoc_declaration(self: PkgbuildParser, input: []const u8, start: usi
     while (j < input.len and (input[j] == ' ' or input[j] == '\t')) j += 1;
 
     var delim: std.ArrayList(u8) = .empty;
-    errdefer delim.deinit(self.allocator);
+    errdefer delim.deinit(allocator);
 
     var quoted = false;
     var quote_char: u8 = 0;
@@ -501,7 +518,7 @@ fn parse_heredoc_declaration(self: PkgbuildParser, input: []const u8, start: usi
             if (ch == quote_char) {
                 quote_char = 0;
             } else {
-                try delim.append(self.allocator, ch);
+                try delim.append(allocator, ch);
             }
             k += 1;
             continue;
@@ -514,22 +531,22 @@ fn parse_heredoc_declaration(self: PkgbuildParser, input: []const u8, start: usi
         }
         if (ch == '\\' and k + 1 < input.len) {
             quoted = true;
-            try delim.append(self.allocator, input[k + 1]);
+            try delim.append(allocator, input[k + 1]);
             k += 2;
             continue;
         }
         if (!is_heredoc_delimiter_char(ch)) break;
-        try delim.append(self.allocator, ch);
+        try delim.append(allocator, ch);
         k += 1;
     }
 
     if (delim.items.len == 0) {
-        delim.deinit(self.allocator);
+        delim.deinit(allocator);
         return null;
     }
 
     return heredoc_declaration{
-        .delimiter = try delim.toOwnedSlice(self.allocator),
+        .delimiter = try delim.toOwnedSlice(allocator),
         .expandable = !quoted,
         .strip_tabs = strip_tabs,
         .end = k,
@@ -668,4 +685,18 @@ test "is_inside_conditional_block: only command-position keywords affect depth" 
     ;
     const position = std.mem.indexOf(u8, content, "pkgname").?;
     try std.testing.expect(try is_inside_conditional_block(parser, content, position));
+}
+
+test "is_inside_conditional_block: here-string does not swallow the closing fi" {
+    // Issue 1848: the second `<` of `<<<` re-triggered heredoc detection,
+    // and the phantom body skip consumed every following line.
+    const parser = PkgbuildParser{ .allocator = std.testing.allocator, .io = std.testing.io };
+    const content =
+        \\if true; then
+        \\  mapfile -t deps <<< "$(cat list)"
+        \\fi
+        \\pkgname=foo
+    ;
+    const position = std.mem.indexOf(u8, content, "pkgname").?;
+    try std.testing.expect(!try is_inside_conditional_block(parser, content, position));
 }

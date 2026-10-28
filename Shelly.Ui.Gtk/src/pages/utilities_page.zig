@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 const bindings = @import("Shelly_Ui_Gtk");
 const gtk = bindings.gtk;
 const gobject = bindings.gobject;
@@ -98,9 +99,12 @@ pub const ShellyUtilitiesPage = extern struct {
         var threaded: std.Io.Threaded = .init(arena.allocator(), .{});
         defer threaded.deinit();
 
-        const cli = ShellyCli{ .allocator = arena.allocator(), .io = threaded.io() };
+        var failure_detail: ?[]u8 = null;
+        const cli = ShellyCli{ .allocator = arena.allocator(), .io = threaded.io(), .failure_detail = &failure_detail };
         const parsed = cli.repair_db() catch |err| {
-            std.log.err("utilities: repair-db failed: {any}", .{err});
+            std.log.err("Could not remove the package database lock. {0s}\n\nTechnical details: {1s}", .{ diagnostics.cause(err), @errorName(err) });
+            const message = arena.allocator().dupeZ(u8, failure_detail orelse "Could not remove the package database lock. Shelly returned no error details. Review the command output before retrying.") catch return;
+            self.priv().toast.show(.@"error", message);
             return;
         };
         defer parsed.deinit();
@@ -109,7 +113,8 @@ pub const ShellyUtilitiesPage = extern struct {
         if (response.isSuccess()) {
             self.priv().toast.show(.success, translations._("Database lock removed successfully"));
         } else {
-            self.priv().toast.show(.@"error", translations._("Failed to remove database lock"));
+            const message = arena.allocator().dupeZ(u8, response.text()) catch return;
+            self.priv().toast.show(.@"error", message);
         }
     }
 
@@ -168,7 +173,7 @@ pub const ShellyUtilitiesPage = extern struct {
         if (success) {
             self.priv().toast.show(.success, translations._("Operation completed successfully"));
         } else {
-            self.priv().toast.show(.@"error", translations._("Operation failed"));
+            self.priv().toast.show(.@"error", translations._("Could not complete the requested operation."));
         }
     }
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const diagnostics = @import("diagnostics");
 
 pub const ElevateError = error{
     NoElevator,
@@ -76,11 +77,11 @@ fn handleTerm(term: std.process.Child.Term) ElevateError!noreturn {
         // Mirror the shell convention of 128 + signum for signal termination.
         .signal => |sig| std.process.exit(@truncate(128 + @intFromEnum(sig))),
         .stopped => |sig| {
-            std.log.err("elevator stopped by signal {s}", .{@tagName(sig)});
+            std.log.err("The authorization helper was stopped by signal {0f}. Retry the operation if it was interrupted unintentionally.", .{diagnostics.safe(@tagName(sig))});
             return error.ExecFailed;
         },
         .unknown => |status| {
-            std.log.err("elevator unknown status 0x{x}", .{status});
+            std.log.err("The authorization helper returned an unrecognized process status. Review the technical details before retrying.\n\nTechnical details: {0x}", .{status});
             return error.ExecFailed;
         },
     }

@@ -1,5 +1,6 @@
 const std = @import("std");
-const Zigalpm = @import("Zigalpm");
+const diagnostics = @import("diagnostics");
+const PackageManager = @import("PackageManager");
 const test_support = @import("test_support.zig");
 const output = @import("../output/config.zig");
 const ui_operation = @import("../output/ui_operation.zig");
@@ -43,7 +44,7 @@ const Real = struct {
     fn list(
         _: Real,
         context: *runtime.RuntimeContext,
-        operation_context: *Zigalpm.OperationContext,
+        operation_context: *PackageManager.OperationContext,
         kind: MarkKind,
     ) !PackageList {
         return listReal(context, operation_context, kind);
@@ -52,7 +53,7 @@ const Real = struct {
     fn mutate(
         _: Real,
         context: *runtime.RuntimeContext,
-        operation_context: *Zigalpm.OperationContext,
+        operation_context: *PackageManager.OperationContext,
         kind: MarkKind,
         action: ListAction,
         packages: []const []const u8,
@@ -63,7 +64,7 @@ const Real = struct {
     fn reason(
         _: Real,
         context: *runtime.RuntimeContext,
-        operation_context: *Zigalpm.OperationContext,
+        operation_context: *PackageManager.OperationContext,
         kind: MarkKind,
         package: []const u8,
     ) !void {
@@ -83,7 +84,7 @@ pub fn dispatch(
     const mutates = !kind.isList() or action.? != .list;
     if (mutates and !invocation.globals.ui_mode) {
         const elevated_exit = elevation.relaunchIfNeeded(context, invocation.arguments) catch |err| {
-            try context.stderr.print("Unable to elevate mark: {t}\n", .{err});
+            try context.stderr.print("Could not obtain administrator privileges for package marking. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
             return 1;
         };
         if (elevated_exit) |exit_code| return exit_code;
@@ -118,7 +119,7 @@ fn runWithRunner(
     if (!invocation.globals.ui_mode and !invocation.globals.no_confirm and
         !try confirm(context, "Do you want to proceed with the operation?", true))
     {
-        try context.stdout.writeAll("Operation Cancelled.\n");
+        try context.stdout.writeAll("Operation cancelled.\n");
         return 0;
     }
     return executeReason(context, invocation, kind, runner);
@@ -130,14 +131,14 @@ fn executeList(
     kind: MarkKind,
     runner: anytype,
 ) anyerror!u8 {
-    var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
+    var operation_context = PackageManager.OperationContext.init(context.allocator, context.io);
     context.attachTransactionLog(&operation_context);
     defer operation_context.deinit();
     var packages = runner.list(context, &operation_context, kind) catch |err| {
         const message = try std.fmt.allocPrint(
             context.allocator,
-            "Unable to list {s}: {t}",
-            .{ directiveName(kind), err },
+            "Could not list {0f}: {1s}\n\nTechnical details: {2s}",
+            .{ diagnostics.safe(directiveName(kind)), diagnostics.cause(err), @errorName(err) },
         );
         defer context.allocator.free(message);
         return reportFailure(context, invocation, message);
@@ -175,7 +176,7 @@ fn executeMutation(
     action: ListAction,
     runner: anytype,
 ) anyerror!u8 {
-    var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
+    var operation_context = PackageManager.OperationContext.init(context.allocator, context.io);
     context.attachTransactionLog(&operation_context);
     defer operation_context.deinit();
     runner.mutate(
@@ -187,8 +188,8 @@ fn executeMutation(
     ) catch |err| {
         const message = try std.fmt.allocPrint(
             context.allocator,
-            "Unable to update {s}: {t}",
-            .{ directiveName(kind), err },
+            "Could not update {0f}: {1s}\n\nTechnical details: {2s}",
+            .{ diagnostics.safe(directiveName(kind)), diagnostics.cause(err), @errorName(err) },
         );
         defer context.allocator.free(message);
         return reportFailure(context, invocation, message);
@@ -212,7 +213,7 @@ fn executeReason(
     runner: anytype,
 ) anyerror!u8 {
     const package = invocation.positionals[0];
-    var operation_context = Zigalpm.OperationContext.init(context.allocator, context.io);
+    var operation_context = PackageManager.OperationContext.init(context.allocator, context.io);
     context.attachTransactionLog(&operation_context);
     defer operation_context.deinit();
 
@@ -226,13 +227,13 @@ fn executeReason(
     runner.reason(context, &operation_context, kind, package) catch |err| {
         const message = try std.fmt.allocPrint(
             context.allocator,
-            "Marking failed for {s}: {t}",
-            .{ package, err },
+            "Could not change the installation reason for {0f} to {3s}. {1s}\n\nTechnical details: {2s}",
+            .{ diagnostics.safe(package), diagnostics.cause(err), @errorName(err), @tagName(kind) },
         );
         defer context.allocator.free(message);
         if (invocation.globals.ui_mode) {
             try output.writeErrorFrame(context, message);
-            try output.writeAlpmInfoFrame(context, "TransactionFailed", "Marking failed for the package.");
+            try output.writeAlpmInfoFrame(context, "TransactionFailed", message);
             try ui_operation.flush(context);
             return 1;
         }
@@ -257,7 +258,7 @@ fn executeReason(
 fn validationMessage(invocation: *const parser.Invocation, kind: MarkKind) ?[]const u8 {
     if (!kind.isList()) {
         if (invocation.positionals.len == 0 or isBlank(invocation.positionals[0]))
-            return "No package specified.";
+            return "Specify at least one package name. See the command help for usage.";
         return null;
     }
 
@@ -270,7 +271,7 @@ fn validationMessage(invocation: *const parser.Invocation, kind: MarkKind) ?[]co
 
     const action = selectedListAction(invocation).?;
     if ((action == .add or action == .remove) and invocation.positionals.len == 0)
-        return "No packages specified.";
+        return "Specify at least one package name. See the command help for usage.";
     if ((action == .list or action == .clear) and invocation.positionals.len != 0)
         return "The --list and --clear operations do not accept package arguments.";
     for (invocation.positionals) |package| {
@@ -411,10 +412,10 @@ fn confirm(
 
 fn listReal(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     kind: MarkKind,
 ) !PackageList {
-    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = false, .operation_context = operation_context });
+    const manager = try PackageManager.Manager.init(context.allocator, context.environ, .{ .config_path = context.config_path, .use_root = false, .operation_context = operation_context });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
@@ -437,12 +438,12 @@ fn listReal(
 
 fn mutateReal(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     kind: MarkKind,
     action: ListAction,
     packages: []const []const u8,
 ) !void {
-    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
+    const manager = try PackageManager.Manager.init(context.allocator, context.environ, .{ .config_path = context.config_path, .use_root = true, .operation_context = operation_context });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
@@ -478,11 +479,11 @@ fn mutateReal(
 
 fn reasonReal(
     context: *runtime.RuntimeContext,
-    operation_context: *Zigalpm.OperationContext,
+    operation_context: *PackageManager.OperationContext,
     kind: MarkKind,
     package: []const u8,
 ) !void {
-    const manager = try Zigalpm.AlpmManager.init(context.allocator, context.environ, .{ .use_root = true, .operation_context = operation_context });
+    const manager = try PackageManager.Manager.init(context.allocator, context.environ, .{ .config_path = context.config_path, .use_root = true, .operation_context = operation_context });
     defer manager.deinit();
     manager.setOperationContext(operation_context);
     defer manager.setOperationContext(null);
@@ -568,7 +569,7 @@ test "mark validates list operations before running a backend" {
     tc.stdout.writer.end = 0;
     const missing_packages = try parser.parse(tc.arena.allocator(), &manifest, &.{ "mark", "hold", "--add" });
     try std.testing.expectEqual(@as(?u8, 1), try dispatchWithRunner(&tc.context, &missing_packages.dispatch, TestRunner{}));
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "No packages specified") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Specify at least one package name") != null);
 
     tc.stdout.writer.end = 0;
     const protected = try parser.parse(tc.arena.allocator(), &manifest, &.{ "mark", "hold", "--remove", "shelly" });
@@ -614,7 +615,7 @@ test "mark applies list mutations and confirms install reason changes" {
     const declined = try parser.parse(tc.arena.allocator(), &manifest, &.{ "mark", "explicit", "linux" });
     try std.testing.expectEqual(@as(?u8, 0), try dispatchWithRunner(&tc.context, &declined.dispatch, &capture));
     try std.testing.expectEqual(@as(usize, 0), capture.reason_calls);
-    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Operation Cancelled") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tc.stdout.writer.buffered(), "Operation cancelled.") != null);
 
     const dependency = try parser.parse(tc.arena.allocator(), &manifest, &.{
         "mark", "dependency", "linux", "--no-confirm",
@@ -628,7 +629,7 @@ const TestRunner = struct {
     fn list(
         _: TestRunner,
         _: *runtime.RuntimeContext,
-        _: *Zigalpm.OperationContext,
+        _: *PackageManager.OperationContext,
         _: MarkKind,
     ) !PackageList {
         return .{ .items = &.{ "linux", "mesa" } };
@@ -637,7 +638,7 @@ const TestRunner = struct {
     fn mutate(
         _: TestRunner,
         _: *runtime.RuntimeContext,
-        _: *Zigalpm.OperationContext,
+        _: *PackageManager.OperationContext,
         _: MarkKind,
         _: ListAction,
         _: []const []const u8,
@@ -646,7 +647,7 @@ const TestRunner = struct {
     fn reason(
         _: TestRunner,
         _: *runtime.RuntimeContext,
-        _: *Zigalpm.OperationContext,
+        _: *PackageManager.OperationContext,
         _: MarkKind,
         _: []const u8,
     ) !void {}
@@ -660,7 +661,7 @@ const TestCapture = struct {
     fn list(
         _: *TestCapture,
         _: *runtime.RuntimeContext,
-        _: *Zigalpm.OperationContext,
+        _: *PackageManager.OperationContext,
         _: MarkKind,
     ) !PackageList {
         return .{ .items = &.{} };
@@ -669,7 +670,7 @@ const TestCapture = struct {
     fn mutate(
         self: *TestCapture,
         _: *runtime.RuntimeContext,
-        _: *Zigalpm.OperationContext,
+        _: *PackageManager.OperationContext,
         kind: MarkKind,
         action: ListAction,
         _: []const []const u8,
@@ -681,7 +682,7 @@ const TestCapture = struct {
     fn reason(
         self: *TestCapture,
         _: *runtime.RuntimeContext,
-        _: *Zigalpm.OperationContext,
+        _: *PackageManager.OperationContext,
         kind: MarkKind,
         _: []const u8,
     ) !void {

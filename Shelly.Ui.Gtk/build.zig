@@ -4,9 +4,12 @@ const versionString = @import("build.zig.zon").version;
 
 const version = std.SemanticVersion.parse(versionString) catch @panic("Bad version");
 
+pub const AurBackend = enum { aur, atoll, both, none };
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const diagnostics = b.dependency("shelly_diagnostics", .{ .target = target, .optimize = optimize }).module("diagnostics");
 
     const gobject = b.dependency("gobject", .{
         .target = target,
@@ -22,6 +25,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    shelly_ui_gtk.addImport("diagnostics", diagnostics);
     shelly_ui_gtk.addImport("glib2", gobject.module("glib2"));
     shelly_ui_gtk.addImport("gobject2", gobject.module("gobject2"));
     shelly_ui_gtk.addImport("gio2", gobject.module("gio2"));
@@ -41,6 +45,62 @@ pub fn build(b: *std.Build) void {
             "flatpak-backend-package",
             "Package containing the Flatpak backend for this Shelly build",
         ) orelse "shelly-flatpak-backend",
+    );
+    // Optionally Allows for a Devario Based build
+    // This will contain long term items to support further enrichment to pkg's
+    options.addOption(
+        bool,
+        "devario",
+        b.option(
+            bool,
+            "devario",
+            "Build the Devario variant",
+        ) orelse false,
+    );
+    options.addOption(
+        bool,
+        "exclude_flatpak",
+        b.option(
+            bool,
+            "exclude-flatpak",
+            "Compile out the Flatpak page and its settings row",
+        ) orelse false,
+    );
+    options.addOption(
+        AurBackend,
+        "aur_backend",
+        b.option(
+            AurBackend,
+            "aur-backend",
+            "Which AUR provider to build: aur, atoll, both, or none",
+        ) orelse .both,
+    );
+    options.addOption(
+        bool,
+        "exclude_recommend",
+        b.option(
+            bool,
+            "exclude-recommend",
+            "Compile out the Recommended page and its settings row",
+        ) orelse false,
+    );
+    options.addOption(
+        bool,
+        "exclude_appimage",
+        b.option(
+            bool,
+            "exclude-appimage",
+            "Compile out the AppImage page and its settings rows",
+        ) orelse false,
+    );
+    options.addOption(
+        bool,
+        "exclude_shelly_search",
+        b.option(
+            bool,
+            "exclude-shelly-search",
+            "Compile out the Shelly Search page and its settings row",
+        ) orelse false,
     );
     options.addOption(
         bool,
@@ -64,6 +124,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    exe.root_module.addImport("diagnostics", diagnostics);
 
     exe.root_module.addImport("ShellyHttp", shelly_http.module("ShellyHttp"));
     b.installArtifact(exe);
@@ -80,6 +141,7 @@ pub fn build(b: *std.Build) void {
     gresource.addFileInput(b.path("src/style.css"));
     gresource.addFileInput(b.path("src/assets/icons/flatpak-symbolic.svg"));
     gresource.addFileInput(b.path("src/assets/icons/arch-symbolic.svg"));
+    gresource.addFileInput(b.path("src/assets/icons/atoll-shark-symbolic.svg"));
     gresource.addFileInput(b.path("src/assets/icons/update-symbolic.svg"));
     gresource.addFileInput(b.path("src/assets/icons/star-filled-rounded-symbolic.svg"));
     gresource.addFileInput(b.path("src/assets/icons/package-x-generic-symbolic.svg"));
@@ -93,6 +155,7 @@ pub fn build(b: *std.Build) void {
     gresource.addFileInput(b.path("src/ui/flatpak/flatpak_page.ui"));
     gresource.addFileInput(b.path("src/ui/appimage_page.ui"));
     gresource.addFileInput(b.path("src/ui/aur_page.ui"));
+    gresource.addFileInput(b.path("src/ui/atoll_aur_page.ui"));
     gresource.addFileInput(b.path("src/ui/search_page.ui"));
     gresource.addFileInput(b.path("src/ui/package_page.ui"));
     gresource.addFileInput(b.path("src/ui/update_page.ui"));
@@ -118,6 +181,7 @@ pub fn build(b: *std.Build) void {
     gresource.addFileInput(b.path("src/dialog/ui/polkit_warning.ui"));
     gresource.addFileInput(b.path("src/dialog/ui/aur_warning.ui"));
     gresource.addFileInput(b.path("src/ui/welcome.ui"));
+    gresource.addFileInput(b.path("src/devario/package_page.ui"));
     // Link the generated resource C into the exe.
     exe.root_module.addCSourceFile(.{ .file = resources_c });
     exe.root_module.link_libc = true;
@@ -148,8 +212,9 @@ pub fn build(b: *std.Build) void {
     const valgrind_step = b.step("valgrind", "Run the app under Valgrind (memcheck) to check for memory leaks");
     valgrind_step.dependOn(&valgrind_cmd.step);
 
-    const root_tests = b.addTest(.{ .root_module = shelly_ui_gtk });
-    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
+    const test_filters = b.option([]const []const u8, "test-filter", "Run tests whose names contain this text") orelse &.{};
+    const root_tests = b.addTest(.{ .root_module = shelly_ui_gtk, .filters = test_filters });
+    const exe_tests = b.addTest(.{ .root_module = exe.root_module, .filters = test_filters });
 
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&b.addRunArtifact(root_tests).step);

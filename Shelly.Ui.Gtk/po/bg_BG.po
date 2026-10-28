@@ -2,7 +2,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: shelly-ui 2.3.0.3\n"
 "Report-Msgid-Bugs-To: csnyder@seafoam-labs.org\n"
-"POT-Creation-Date: 2026-08-12 09:19-0400\n"
+"POT-Creation-Date: 2026-10-11 18:31-0300\n"
 "PO-Revision-Date: 2026-05-16 11:00+EST\n"
 "Last-Translator: momchil.nikolov@outlook.com\n"
 "Language-Team: Bulgarian (Bulgaria) momchil.nikolov@outlook.com\n"
@@ -16,6 +16,27 @@ msgstr ""
 
 msgid "Close"
 msgstr "Затвори"
+
+msgid "Enable AUR?"
+msgstr "Активиране на AUR?"
+
+msgid ""
+"The Arch User Repository contains build scripts that are known as PKGBUILDs. "
+"Those scripts are uploaded by users, and are not verified or vetted in any "
+"way. Only enable this feature if you are comfortable in verifying the build "
+"scripts."
+msgstr ""
+
+msgid ""
+"<a href=\"https://www.seafoam-labs.org/shelly-alpm/docs/aur-safety/\">AUR "
+"Safety Guide</a>"
+msgstr ""
+
+msgid "Enable"
+msgstr ""
+
+msgid "Cancel"
+msgstr "Отказ"
 
 msgid "Keep configuration"
 msgstr ""
@@ -32,10 +53,11 @@ msgstr ""
 msgid "Confirm"
 msgstr "Потвърди"
 
-msgid "Cancel"
-msgstr "Отказ"
+#| msgid "No description available."
+msgid "Permissions unavailable"
+msgstr ""
 
-msgid "Skip"
+msgid "Shelly could not read the permissions for this app."
 msgstr ""
 
 msgid "No special permissions requested"
@@ -72,6 +94,15 @@ msgid ""
 msgstr ""
 
 msgid "Review PKGBUILD"
+msgstr ""
+
+msgid "PKGBUILD"
+msgstr ""
+
+msgid "Retry"
+msgstr ""
+
+msgid "Skip"
 msgstr ""
 
 msgid "Search..."
@@ -124,7 +155,8 @@ msgstr ""
 msgid "e.g. owner/repo or https://..."
 msgstr ""
 
-msgid "Invalid format. Use owner/repo (e.g., seafoam-labs/shelly-alpm)"
+msgid ""
+"Enter the repository as owner/repo, for example seafoam-labs/shelly-alpm."
 msgstr ""
 
 msgid "Allow Prerelease"
@@ -136,6 +168,16 @@ msgstr "Път за инсталиране"
 msgid "Launch Flags"
 msgstr ""
 
+msgid "Environment Variables"
+msgstr ""
+
+msgid ""
+"One KEY=value per line. Remove a line to restore the normal environment."
+msgstr ""
+
+msgid "Save Environment"
+msgstr ""
+
 msgid "Save"
 msgstr "Запази"
 
@@ -145,13 +187,11 @@ msgstr "Синхронизирай"
 msgid "Remove"
 msgstr "Премахни"
 
-msgid "Information"
-msgstr ""
-
-msgid "Preview Pkgbuild"
-msgstr ""
-
 msgid "Search the AUR by name or keyword"
+msgstr ""
+
+#| msgid "Search..."
+msgid "Search By"
 msgstr ""
 
 msgid "Installed Only"
@@ -160,11 +200,25 @@ msgstr ""
 msgid "Show only installed packages"
 msgstr ""
 
+msgid "Previous page"
+msgstr ""
+
+msgid "Page 1 of 1"
+msgstr ""
+
+#| msgid "Default page"
+msgid "Next page"
+msgstr ""
+
 msgid "Additional Options"
 msgstr ""
 
 msgid "Install Selected"
 msgstr "Инсталирай избраните"
+
+#| msgid "Select File"
+msgid "Select"
+msgstr ""
 
 msgid "Name"
 msgstr "Име"
@@ -175,10 +229,10 @@ msgstr "Гласове"
 msgid "Popularity"
 msgstr "Популярност"
 
-msgid "Search the AUR"
+msgid "Loading the AUR index"
 msgstr ""
 
-msgid "The AUR has no browsable index type a package name to begin."
+msgid "Powered by Atoll."
 msgstr ""
 
 msgid "Run checks"
@@ -191,6 +245,18 @@ msgid "Hide Detail Pane"
 msgstr ""
 
 msgid "Hide the detail pane on the right"
+msgstr ""
+
+msgid "Information"
+msgstr ""
+
+msgid "Preview Pkgbuild"
+msgstr ""
+
+msgid "Search the AUR"
+msgstr ""
+
+msgid "The AUR has no browsable index. Type a package name to begin."
 msgstr ""
 
 msgid "Install a local Flatpak"
@@ -218,6 +284,9 @@ msgstr "потребителски"
 
 msgid "Install"
 msgstr "Инсталирай"
+
+msgid "No matching applications found"
+msgstr ""
 
 msgid "Loading Flatpak Data..."
 msgstr "Зареждане на Flatpak данни..."
@@ -312,6 +381,10 @@ msgstr ""
 msgid "Shelly"
 msgstr ""
 
+#| msgid "Install Local"
+msgid "Install Optional Deps"
+msgstr ""
+
 msgid "Reinstall"
 msgstr ""
 
@@ -352,6 +425,9 @@ msgid "Repository"
 msgstr "Хранилище"
 
 msgid "Install Date"
+msgstr ""
+
+msgid "No matching packages found"
 msgstr ""
 
 msgid "Had an issue loading your packages. Check if you have a db lock."
@@ -428,8 +504,8 @@ msgid "Search everywhere"
 msgstr ""
 
 msgid ""
-"Search standard repositories, the AUR and Flatpak at once. Type a name to "
-"begin."
+"Search the standard repositories, the AUR, and Flatpak all at once. Type a "
+"name to begin."
 msgstr ""
 
 msgid "General"
@@ -458,6 +534,12 @@ msgstr ""
 
 msgid "Use weekly schedule"
 msgstr "Използване на седмичен график"
+
+msgid "Run Tray as cron"
+msgstr ""
+
+msgid "Tray update with ui"
+msgstr ""
 
 msgid "Tray Check Interval (Hours)"
 msgstr "Интервал на проверка в трея (часове)"
@@ -541,11 +623,8 @@ msgstr "Без потвърждение"
 msgid "Enable Shelly Search"
 msgstr "Активиране на търсенето в Shelly"
 
-msgid "Enable Package Downgrade"
+msgid "Enable Atoll Powered AUR"
 msgstr ""
-
-msgid "Enable Webview Visualization (experimental)"
-msgstr "Активиране на визуализация чрез Webview (експериментално)"
 
 msgid "AppImage Install Path"
 msgstr ""
@@ -569,6 +648,9 @@ msgid "Sponsor"
 msgstr "Спонсор"
 
 msgid "Toggle output"
+msgstr ""
+
+msgid "Done"
 msgstr ""
 
 msgid "Available Updates"
@@ -595,7 +677,7 @@ msgstr ""
 msgid "Your system is up to date"
 msgstr ""
 
-msgid "Could not check for updates"
+msgid "Could not check for updates."
 msgstr ""
 
 msgid "Utilities"
@@ -718,19 +800,29 @@ msgstr ""
 msgid "Start Shelly"
 msgstr ""
 
-msgid "Filesystem"
+#| msgid "System"
+msgid "System files"
+msgstr ""
+
+msgid "Other folders"
+msgstr ""
+
+msgid "Running services"
+msgstr ""
+
+msgid "Other apps' data"
+msgstr ""
+
+msgid "Home folder"
+msgstr ""
+
+msgid "User folders"
+msgstr ""
+
+msgid "Persistent files"
 msgstr ""
 
 msgid "Devices"
-msgstr ""
-
-msgid "Sockets"
-msgstr ""
-
-msgid "Shared"
-msgstr ""
-
-msgid "Environment"
 msgstr ""
 
 msgid "Session bus"
@@ -739,7 +831,38 @@ msgstr ""
 msgid "System bus"
 msgstr ""
 
+#| msgid "Network"
+msgid "Network access"
+msgstr ""
+
+msgid "Display server"
+msgstr ""
+
+msgid "Sandbox features"
+msgstr ""
+
+msgid "Environment"
+msgstr ""
+
+msgid "Sound"
+msgstr ""
+
+msgid "Printing"
+msgstr ""
+
+msgid "Inter-process communication"
+msgstr ""
+
 msgid "Other"
+msgstr ""
+
+msgid "No network access"
+msgstr ""
+
+msgid "No device access"
+msgstr ""
+
+msgid "No access to system files"
 msgstr ""
 
 msgid "Review PKGBUILD changes for"
@@ -763,11 +886,11 @@ msgstr ""
 msgid "used in"
 msgstr ""
 
-msgid "Warning"
-msgstr ""
-
 msgid "Install Anyway"
 msgstr ""
+
+msgid "Unknown"
+msgstr "Неизвестен"
 
 msgid "package(s)"
 msgstr ""
@@ -775,10 +898,33 @@ msgstr ""
 msgid "to"
 msgstr ""
 
+msgid "removed size"
+msgstr ""
+
 msgid "download"
 msgstr ""
 
 msgid "net"
+msgstr ""
+
+msgid "Scanning PKGBUILD…"
+msgstr ""
+
+#| msgid "No description available."
+msgid "Security scan unavailable."
+msgstr ""
+
+msgid "Could not load the PKGBUILD preview."
+msgstr ""
+
+msgid ""
+"PKGBUILD changed. Close and reopen the preview to scan the current version."
+msgstr ""
+
+msgid "No related files."
+msgstr ""
+
+msgid "Previous"
 msgstr ""
 
 msgid "Dismiss"
@@ -805,15 +951,12 @@ msgstr ""
 msgid "Version ?"
 msgstr ""
 
-msgid "Invalid format. Use owner/repo (e.g. seafoam-labs/shelly-alpm)"
-msgstr ""
-
-msgid "Invalid URL. Must start with http:// or https://"
+msgid "Enter a download URL beginning with http:// or https://."
 msgstr ""
 
 msgid ""
-"Invalid Forgejo URL. Use http(s)://host/owner/repo or http(s)://host/owner/"
-"repo/releases"
+"Enter a Forgejo repository URL as http(s)://host/owner/repo or http(s)://"
+"host/owner/repo/releases."
 msgstr ""
 
 msgid "Choose an AppImage file"
@@ -822,7 +965,7 @@ msgstr ""
 msgid "AppImage files"
 msgstr ""
 
-msgid "Only .AppImage files can be installed"
+msgid "Only.AppImage files can be installed"
 msgstr ""
 
 msgid "Installing AppImage"
@@ -838,6 +981,14 @@ msgid "Syncing AppImages"
 msgstr ""
 
 msgid "Syncing AppImage"
+msgstr ""
+
+msgid ""
+"Use unique KEY=value lines. Keys must start with a letter or underscore and "
+"contain only letters, digits, or underscores."
+msgstr ""
+
+msgid "Saving AppImage environment"
 msgstr ""
 
 msgid "Saving update configuration"
@@ -858,7 +1009,70 @@ msgstr ""
 msgid "Operation completed successfully"
 msgstr ""
 
-msgid "Operation failed"
+msgid "Could not complete the requested operation."
+msgstr ""
+
+msgid "Discard environment changes?"
+msgstr ""
+
+msgid "Your environment changes have not been saved."
+msgstr ""
+
+msgid "Discard"
+msgstr ""
+
+msgid "No packages found"
+msgstr ""
+
+msgid "Try a shorter or more general keyword."
+msgstr ""
+
+msgid "Could not reach Atoll"
+msgstr ""
+
+msgid "Check your connection and try again."
+msgstr ""
+
+msgid "Flagged out of date"
+msgstr ""
+
+msgid "Installed"
+msgstr "Инсталиран"
+
+msgid "Remove Selected"
+msgstr "Премахни избраните"
+
+msgid "Select one or more packages"
+msgstr ""
+
+msgid "Package(s)"
+msgstr ""
+
+msgid "Page"
+msgstr ""
+
+msgid "of"
+msgstr ""
+
+msgid "Remove Packages"
+msgstr ""
+
+msgid "Remove the selected AUR packages?"
+msgstr ""
+
+msgid "Build from AUR"
+msgstr ""
+
+msgid "Build and install the selected packages? This may take a while."
+msgstr ""
+
+msgid "Build"
+msgstr ""
+
+msgid "Installing AUR packages"
+msgstr ""
+
+msgid "Removing AUR packages"
 msgstr ""
 
 msgid "Maintainer"
@@ -891,52 +1105,7 @@ msgstr ""
 msgid "The AUR has no browsable index — type a package name to begin."
 msgstr ""
 
-msgid "No packages found"
-msgstr ""
-
-msgid "Try a shorter or more general keyword."
-msgstr ""
-
-msgid "Could not reach the AUR"
-msgstr ""
-
-msgid "Check your connection and try again."
-msgstr ""
-
-msgid "Flagged out of date"
-msgstr ""
-
-msgid "Installed"
-msgstr "Инсталиран"
-
-msgid "Remove Selected"
-msgstr "Премахни избраните"
-
-msgid "Select one or more packages"
-msgstr ""
-
-msgid "Package(s)"
-msgstr ""
-
-msgid "Remove Packages"
-msgstr ""
-
-msgid "Remove the selected AUR packages?"
-msgstr ""
-
-msgid "Build from AUR"
-msgstr ""
-
-msgid "Build and install the selected packages? This may take a while."
-msgstr ""
-
-msgid "Build"
-msgstr ""
-
-msgid "Installing AUR packages"
-msgstr ""
-
-msgid "Removing AUR packages"
+msgid "Could not search the configured AUR service."
 msgstr ""
 
 msgid "Choose a Flatpak file"
@@ -945,13 +1114,13 @@ msgstr ""
 msgid "Flatpak files"
 msgstr ""
 
-msgid "Unsupported file type. Choose a .flatpak or .flatpakref file."
+msgid "Unsupported file type. Choose a.flatpak or.flatpakref file."
 msgstr ""
 
 msgid "Installing local flatpak"
 msgstr ""
 
-msgid "Installation failed."
+msgid "Could not install the selected packages."
 msgstr ""
 
 msgid "Installation complete."
@@ -969,6 +1138,15 @@ msgstr ""
 msgid "Installing flatpak"
 msgstr ""
 
+msgid "Remove this Flatpak?"
+msgstr ""
+
+msgid "Remove Flatpak"
+msgstr ""
+
+msgid "Removing Flatpak"
+msgstr ""
+
 msgid "Permissions"
 msgstr ""
 
@@ -980,9 +1158,6 @@ msgstr ""
 
 msgid "Unknown developer"
 msgstr ""
-
-msgid "Unknown"
-msgstr "Неизвестен"
 
 msgid "Version: Unknown"
 msgstr ""
@@ -1011,13 +1186,13 @@ msgstr "Изтегляне"
 msgid "No description available."
 msgstr "Няма налично описание."
 
-msgid "Unable to load screenshot"
+msgid "Could not load this application screenshot."
 msgstr ""
 
-msgid "Unable to download screenshot"
+msgid "Could not download this application screenshot."
 msgstr ""
 
-msgid "Unable to display screenshot"
+msgid "Could not display the downloaded application screenshot."
 msgstr ""
 
 msgid "Open link in browser"
@@ -1047,13 +1222,15 @@ msgstr ""
 msgid "Translate"
 msgstr ""
 
-msgid "Unable to allocate memory while loading Flatpak data."
+msgid ""
+"Could not load Flatpak applications because Shelly ran out of memory. Close "
+"other applications and try again."
 msgstr ""
 
-msgid "Unable to start the Flatpak data loader."
+msgid "Could not start loading Flatpak applications."
 msgstr ""
 
-msgid "Unable to load Flatpak applications."
+msgid "Could not load Flatpak applications from the selected remote."
 msgstr ""
 
 msgid "No Flatpak applications are available."
@@ -1110,24 +1287,12 @@ msgstr ""
 msgid "Adding Remote"
 msgstr ""
 
-msgid "Remove this Flatpak?"
-msgstr ""
-
-#| msgid "Flatpak"
-msgid "Remove Flatpak"
-msgstr ""
-
-msgid "Removing Flatpak"
-msgstr ""
-
 msgid "App ID"
 msgstr ""
 
-#| msgid "Remove"
 msgid "Remote"
 msgstr ""
 
-#| msgid "Development"
 msgid "Developer"
 msgstr ""
 
@@ -1149,7 +1314,6 @@ msgstr "Не"
 msgid "Keywords"
 msgstr ""
 
-#| msgid "e.g., flathub"
 msgid "Flathub"
 msgstr ""
 
@@ -1186,6 +1350,12 @@ msgstr ""
 msgid "Making Package Dependency"
 msgstr ""
 
+msgid "Select Optional Dependencies to Install"
+msgstr ""
+
+msgid "Installing optional dependencies"
+msgstr ""
+
 msgid "Package is already installed"
 msgstr "Пакетът вече е инсталиран"
 
@@ -1220,10 +1390,14 @@ msgstr ""
 msgid "Installing packages"
 msgstr ""
 
-msgid "Search failed"
+msgid ""
+"Search standard repositories, the AUR and Flatpak at once. Type a name to "
+"begin."
 msgstr ""
 
-#| msgid "Installation Path"
+msgid "Could not search the selected sources."
+msgstr ""
+
 msgid "Installation in progress"
 msgstr ""
 
@@ -1233,15 +1407,15 @@ msgstr ""
 msgid "Enable at least one source filter above."
 msgstr ""
 
-#| msgid "Install Local"
 msgid "Install Packages"
 msgstr ""
 
-#| msgid "Install Selected"
 msgid "Install the selected packages?"
 msgstr ""
 
-msgid "Failed to save settings"
+msgid ""
+"Could not save settings to the configured file. Your latest changes were not "
+"saved."
 msgstr ""
 
 msgid "Settings saved"
@@ -1253,16 +1427,16 @@ msgstr ""
 msgid "Installing AppImage support"
 msgstr ""
 
-msgid "Failed to start Flatpak support installation"
+msgid "Could not start installing Flatpak support."
 msgstr ""
 
-msgid "Failed to start AppImage support installation"
+msgid "Could not start installing AppImage support."
 msgstr ""
 
-msgid "Flatpak support installation failed"
+msgid "Could not install Flatpak support."
 msgstr ""
 
-msgid "AppImage support installation failed"
+msgid "Could not install AppImage support."
 msgstr ""
 
 msgid "Flatpak support enabled"
@@ -1277,8 +1451,8 @@ msgstr "Няма открити записи в changelog"
 msgid "No details for this release"
 msgstr "Няма детайли за тази версия"
 
-msgid "Failed to load changelog"
-msgstr "Неуспешно зареждане на changelog"
+msgid "Could not load the release notes."
+msgstr ""
 
 msgid "Changelog"
 msgstr ""
@@ -1298,36 +1472,24 @@ msgstr ""
 msgid "Tray enabled"
 msgstr ""
 
-msgid "Tray disabled, but autostart service remains"
+msgid ""
+"The tray is disabled, but its autostart service could not be removed. It may "
+"start again at the next login."
 msgstr ""
 
 msgid "Tray disabled"
 msgstr ""
 
-msgid "Failed to add systemd startup service"
+msgid "Could not enable the tray autostart service."
 msgstr ""
 
 msgid "Systemd startup service added."
 msgstr ""
 
-msgid "Failed to remove systemd startup service"
+msgid "Could not disable the tray autostart service."
 msgstr ""
 
 msgid "Systemd startup service removed."
-msgstr ""
-
-msgid "Enable AUR?"
-msgstr "Активиране на AUR?"
-
-msgid ""
-"The Arch User Repository (AUR) is a community-driven repository. Packages "
-"are user-produced and may contain risks. Do you want to enable it?"
-msgstr ""
-"Arch User Repository (AUR) е хранилище, управлявано от общността. Пакетите "
-"се създават от потребители и могат да съдържат рискове. Искате ли да го "
-"активирате?"
-
-msgid "Enable"
 msgstr ""
 
 msgid "AUR enabled"
@@ -1387,10 +1549,37 @@ msgstr "Търсене в Shelly"
 msgid "Update"
 msgstr ""
 
-msgid "Failed to start operation."
+msgid "Pending"
 msgstr ""
 
-msgid "Pending"
+msgid "Working"
+msgstr ""
+
+msgid "Upgraded"
+msgstr ""
+
+msgid "Downgraded"
+msgstr ""
+
+msgid "Reinstalled"
+msgstr ""
+
+msgid "Removed"
+msgstr ""
+
+msgid "Failed"
+msgstr ""
+
+msgid "Not processed"
+msgstr ""
+
+msgid "Interrupted"
+msgstr ""
+
+msgid "Cancelled"
+msgstr ""
+
+msgid "Could not start the requested operation."
 msgstr ""
 
 msgid "Synchronizing databases"
@@ -1435,13 +1624,13 @@ msgstr ""
 msgid "Checking disk space"
 msgstr ""
 
-msgid "Working"
+msgid "Transaction Completed"
 msgstr ""
 
-msgid "Done"
+msgid "Operation failed"
 msgstr ""
 
-msgid "Failed"
+msgid "Operation cancelled"
 msgstr ""
 
 msgid "Finished"
@@ -1450,7 +1639,23 @@ msgstr ""
 msgid "exit"
 msgstr ""
 
-msgid "Cancelled"
+msgid "Operation cancelled."
+msgstr ""
+
+msgid "All operations finished successfully."
+msgstr ""
+
+msgid ""
+"Permission to manage packages was not granted. Try again and approve the "
+"authorization request to continue."
+msgstr ""
+
+msgid ""
+"{package_one}-{version_one} conflicts with {package_two}-{version_two}. "
+"Remove {package_to_remove}?"
+msgstr ""
+
+msgid "Would you like to remove extra cache entries?"
 msgstr ""
 
 msgid "System package update"
@@ -1459,13 +1664,7 @@ msgstr ""
 msgid "AUR package update"
 msgstr ""
 
-msgid "Could not run shelly check-updates. Check the CLI output and try again."
-msgstr ""
-
 msgid "Update this package"
-msgstr ""
-
-msgid "of"
 msgstr ""
 
 msgid "updates included"
@@ -1483,9 +1682,6 @@ msgstr ""
 msgid "Database lock removed successfully"
 msgstr ""
 
-msgid "Failed to remove database lock"
-msgstr ""
-
 msgid "Fixing permissions"
 msgstr ""
 
@@ -1496,11 +1692,6 @@ msgid "Cleaning package cache"
 msgstr ""
 
 msgid "Welcome"
-msgstr ""
-
-msgid ""
-"The Arch User Repository is community-maintained. Packages are not "
-"officially vetted — only enable if you trust what you install."
 msgstr ""
 
 msgid "Enable Recommended?"
@@ -1514,8 +1705,17 @@ msgstr ""
 msgid "Installing Flatpak and AppImage support"
 msgstr ""
 
+msgid "Main menu"
+msgstr ""
+
 msgid "Settings"
 msgstr "Настройки"
+
+msgid "Expand sidebar"
+msgstr ""
+
+msgid "Collapse sidebar"
+msgstr ""
 
 msgid "Package"
 msgstr ""
