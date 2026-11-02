@@ -14,6 +14,7 @@ const translations = @import("helpers/translations.zig");
 const deep_link = @import("helpers/deep_link.zig");
 const tray_service = @import("services/tray_service.zig");
 const features = @import("services/build_features.zig");
+const options = @import("options");
 const IconDownloadService = @import("services/icon_fetcher.zig").downloadIconsInBackground;
 
 var did_activate: bool = false;
@@ -157,6 +158,23 @@ fn quitActivated(_: *gio.SimpleAction, _: ?*glib.Variant, app: *gtk.Application)
     app.as(gio.Application).quit();
 }
 
+fn aboutActivated(_: *gio.SimpleAction, _: ?*glib.Variant, app: *gtk.Application) callconv(.c) void {
+    const about = adw.AboutWindow.new();
+    adw.AboutWindow.setApplicationName(about, "Shelly");
+    adw.AboutWindow.setApplicationIcon(about, "shelly");
+    adw.AboutWindow.setDeveloperName(about, "Seafoam Labs");
+    adw.AboutWindow.setWebsite(about, "https://www.seafoam-labs.org");
+    adw.AboutWindow.setIssueUrl(about, "https://github.com/Seafoam-Labs/Shelly-ALPM/issues");
+    var version_buf: [64]u8 = undefined;
+    const version = std.fmt.bufPrintZ(&version_buf, "{d}.{d}.{d}", .{ options.version.major, options.version.minor, options.version.patch }) catch "3";
+    adw.AboutWindow.setVersion(about, version);
+    if (gtk.Application.getActiveWindow(app)) |parent| {
+        gtk.Window.setTransientFor(about.as(gtk.Window), parent);
+    }
+    gtk.Window.setModal(about.as(gtk.Window), 1);
+    gtk.Window.present(about.as(gtk.Window));
+}
+
 // The signal handlers take *adw.Application because the instance they are
 // connected to is one: zig-gobject types the callback on the instance's exact
 // type. Everything below wants the GtkApplication view, hence the upcast.
@@ -173,6 +191,18 @@ fn startup(app: *adw.Application, _: ?*anyopaque) callconv(.c) void {
         .{},
     );
     gtk_app.as(gio.ActionMap).addAction(quit_action.as(gio.Action));
+
+    const about_action = gio.SimpleAction.new("about", null);
+    defer about_action.unref();
+    _ = gio.SimpleAction.signals.activate.connect(
+        about_action,
+        *gtk.Application,
+        &aboutActivated,
+        gtk_app,
+        .{},
+    );
+    gtk_app.as(gio.ActionMap).addAction(about_action.as(gio.Action));
+
     const accels = [_:null]?[*:0]const u8{ "<Control>q", "<Control>w", null };
     gtk.Application.setAccelsForAction(gtk_app, "app.quit", &accels);
 }
@@ -296,4 +326,6 @@ test {
     _ = @import("models/search_result.zig");
     _ = @import("g_objects/search_result_object.zig");
     _ = @import("pages/transaction_page.zig");
+    _ = @import("pages/package_detail.zig");
+    _ = @import("helpers/package_browser.zig");
 }

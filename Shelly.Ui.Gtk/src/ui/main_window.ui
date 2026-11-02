@@ -1,45 +1,190 @@
-<?xml version="1.0" encoding="UTF-8" ?>
+<?xml version="1.0" encoding="UTF-8"?>
 <interface domain="shelly-ui">
- <template class="ShellyWindow" parent="GtkApplicationWindow">
-  <property name="title" translatable="yes">Shelly</property>
-  <property name="default-width">700</property>
-  <property name="default-height">450</property>
-  <child>
-    <object class="GtkOverlay" id="root_overlay">
-      <property name="hexpand">true</property>
-      <property name="vexpand">true</property>
-      <child>
-        <object class="GtkBox" id="shell_box">
-          <property name="hexpand">true</property>
-          <property name="vexpand">true</property>
-        </object>
-      </child>
-      <child type="overlay">
-        <object class="GtkBox" id="lockout_overlay">
-          <property name="visible">false</property>
-          <property name="hexpand">true</property>
-          <property name="vexpand">true</property>
-          <property name="halign">fill</property>
-          <property name="valign">fill</property>
-          <property name="accessible-role">dialog</property>
-          <accessibility>
-            <property name="modal">true</property>
-          </accessibility>
-          <style>
-            <class name="lockout-scrim"/>
-          </style>
-          <child>
-            <object class="GtkBox" id="lockout_content">
-              <property name="orientation">vertical</property>
-              <property name="halign">fill</property>
-              <property name="valign">fill</property>
-              <property name="hexpand">true</property>
-              <property name="vexpand">true</property>
-            </object>
-          </child>
-        </object>
-      </child>
-    </object>
-  </child>
-</template>
+  <requires lib="gtk" version="4.0"/>
+  <requires lib="adw" version="1.0"/>
+  <template class="ShellyWindow" parent="AdwApplicationWindow">
+    <property name="title" translatable="yes">Shelly</property>
+    <property name="default-width">1000</property>
+    <property name="default-height">700</property>
+    <property name="content">
+      <object class="AdwToolbarView" id="toolbar_view">
+        <property name="top-bar-style">flat</property>
+        <child type="top">
+          <object class="AdwHeaderBar" id="header_bar">
+            <child type="start">
+              <object class="GtkButton" id="header_back_button">
+                <property name="icon-name">go-previous-symbolic</property>
+                <property name="tooltip-text" translatable="yes">Back</property>
+                <property name="visible">false</property>
+                <accessibility>
+                  <property name="label" translatable="yes">Back</property>
+                </accessibility>
+                <style><class name="flat"/></style>
+              </object>
+            </child>
+            <child type="start">
+              <object class="GtkButton" id="header_search_button">
+                <property name="icon-name">edit-find-symbolic</property>
+                <property name="tooltip-text" translatable="yes">Search</property>
+                <property name="visible">false</property>
+                <accessibility>
+                  <property name="label" translatable="yes">Search</property>
+                </accessibility>
+                <style><class name="flat"/></style>
+              </object>
+            </child>
+            <property name="title-widget">
+              <object class="AdwViewSwitcher" id="view_switcher">
+                <property name="stack">primary_stack</property>
+                <property name="policy">wide</property>
+              </object>
+            </property>
+            <child type="end">
+              <object class="GtkMenuButton" id="main_menu_button">
+                <property name="icon-name">open-menu-symbolic</property>
+                <property name="tooltip-text" translatable="yes">Main menu</property>
+                <property name="popover">main_menu_popover</property>
+                <accessibility>
+                  <property name="label" translatable="yes">Main menu</property>
+                </accessibility>
+              </object>
+            </child>
+          </object>
+        </child>
+        <property name="content">
+          <object class="GtkOverlay" id="root_overlay">
+            <property name="hexpand">true</property>
+            <property name="vexpand">true</property>
+            <child>
+              <object class="GtkStack" id="content_stack">
+                <property name="hexpand">true</property>
+                <property name="vexpand">true</property>
+                <child>
+                  <object class="GtkStackPage">
+                    <property name="name">primary</property>
+                    <property name="child">
+                      <object class="AdwViewStack" id="primary_stack">
+                        <property name="hexpand">true</property>
+                        <property name="vexpand">true</property>
+                      </object>
+                    </property>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child type="overlay">
+              <object class="GtkRevealer" id="full_detail_overlay">
+                <property name="visible">false</property>
+                <property name="transition-type">none</property>
+                <property name="hexpand">true</property>
+                <property name="vexpand">true</property>
+                <property name="halign">fill</property>
+                <property name="valign">fill</property>
+                <child>
+                  <object class="GtkBox" id="full_detail_content">
+                    <property name="orientation">vertical</property>
+                    <property name="hexpand">true</property>
+                    <property name="vexpand">true</property>
+                    <property name="halign">fill</property>
+                    <property name="valign">fill</property>
+                    <style><class name="full-detail-background"/></style>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child type="overlay">
+              <object class="GtkBox" id="lockout_overlay">
+                <property name="visible">false</property>
+                <property name="hexpand">true</property>
+                <property name="vexpand">true</property>
+                <property name="halign">fill</property>
+                <property name="valign">fill</property>
+                <property name="accessible-role">dialog</property>
+                <accessibility>
+                  <property name="modal">true</property>
+                </accessibility>
+                <style>
+                  <class name="lockout-scrim"/>
+                </style>
+                <child>
+                  <object class="GtkBox" id="lockout_content">
+                    <property name="orientation">vertical</property>
+                    <property name="halign">fill</property>
+                    <property name="valign">fill</property>
+                    <property name="hexpand">true</property>
+                    <property name="vexpand">true</property>
+                  </object>
+                </child>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </property>
+  </template>
+
+  <object class="GtkPopover" id="main_menu_popover">
+    <property name="child">
+      <object class="GtkBox">
+        <property name="orientation">vertical</property>
+        <property name="spacing">4</property>
+        <property name="margin-top">6</property>
+        <property name="margin-bottom">6</property>
+        <property name="margin-start">6</property>
+        <property name="margin-end">6</property>
+        <child>
+          <object class="GtkButton" id="aur_menu_button">
+            <property name="label" translatable="yes">AUR</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="flatpak_menu_button">
+            <property name="label" translatable="yes">Flatpak</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="appimage_menu_button">
+            <property name="label" translatable="yes">AppImage</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="search_menu_button">
+            <property name="label" translatable="yes">Unified Search</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkSeparator">
+            <property name="orientation">horizontal</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="utilities_menu_button">
+            <property name="label" translatable="yes">Utilities</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="settings_menu_button">
+            <property name="label" translatable="yes">Settings</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+        <child>
+          <object class="GtkSeparator">
+            <property name="orientation">horizontal</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkButton" id="about_menu_button">
+            <property name="label" translatable="yes">About Shelly</property>
+            <style><class name="flat"/></style>
+          </object>
+        </child>
+      </object>
+    </property>
+  </object>
 </interface>

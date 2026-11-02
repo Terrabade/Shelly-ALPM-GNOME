@@ -2,8 +2,9 @@ const std = @import("std");
 const diagnostics = @import("diagnostics");
 const bindings = @import("Shelly_Ui_Gtk");
 const gtk = bindings.gtk;
-const glib = bindings.glib;
+const adw = bindings.adw;
 const gio = bindings.gio;
+const glib = bindings.glib;
 const gobject = bindings.gobject;
 const features = @import("services/build_features.zig");
 
@@ -22,9 +23,11 @@ const aur_title: [:0]const u8 = features.aur_source_name;
 const ShellySearchPage = if (features.builtWithShellySearch) @import("pages/search_page.zig").ShellySearchPage else void;
 const UpdatePage = @import("pages/update_page.zig").UpdatePage;
 const RecommendPage = if (features.builtWithRecommend) @import("pages/recommend_page.zig").RecommendPage else void;
+const RecommendSlot = if (features.builtWithRecommend) *RecommendPage else void;
 const WelcomePage = @import("pages/welcome.zig").WelcomePage;
 const SupportPage = @import("pages/support.zig");
 const SettingsPage = @import("pages/settings_page.zig").SettingsPage;
+const PackageDetail = @import("pages/package_detail.zig").PackageDetail;
 const UtilitiesPage = @import("pages/utilities_page.zig").UtilitiesPage;
 const TransactionPage = @import("pages/transaction_page.zig").TransactionPage;
 const TransactionRequest = @import("pages/transaction_page.zig").TransactionRequest;
@@ -32,7 +35,6 @@ const runtime = @import("services/runtime.zig");
 const ShellyCli = @import("services/shelly_cli.zig").ShellyCli;
 const AtollApiService = @import("services/atoll_api.zig").AtollApiService;
 const NavMode = @import("models/shelly_config.zig").NavMode;
-const ShellyTabs = @import("models/shelly_config.zig").ShellyTabs;
 const translations = @import("helpers/translations.zig");
 const a11y = @import("helpers/a11y.zig");
 const deep_link = @import("helpers/deep_link.zig");
@@ -42,38 +44,44 @@ const DBus = @import("services/dbus.zig").DBus;
 
 const NavButton = struct {
     button: *gtk.Button,
-    revealer: *gtk.Revealer,
-    stack: *gtk.Stack,
     name: [:0]const u8,
     window: *ShellyWindow,
-    is_rail: bool,
 };
 
 pub const ShellyWindow = extern struct {
     parent_instance: Parent,
 
-    // Deliberately GtkApplicationWindow, not AdwApplicationWindow: the latter has
-    // no titlebar area (it expects an AdwHeaderBar inside its content), which would
-    // leave the window with no top bar or window controls. Libadwaita styling,
-    // light/dark and accent colours all come from AdwApplication in main.zig.
-    pub const Parent = gtk.ApplicationWindow;
+    pub const Parent = adw.ApplicationWindow;
 
-    const ICON_SLOT: c_int = 24;
-    const LABEL_GAP: c_int = 8;
     const default_aur_base = "https://aur.archlinux.org";
 
     const Private = struct {
-        shell_box: *gtk.Box,
+        header_bar: *adw.HeaderBar,
+        view_switcher: *adw.ViewSwitcher,
+        content_stack: *gtk.Stack,
+        primary_stack: *adw.ViewStack,
+        explore_page: *PackagePage,
+        installed_page: *PackagePage,
+        recommend_page: RecommendSlot,
         lockout_overlay: *gtk.Box,
         lockout_content: *gtk.Box,
-        content_stack: *gtk.Stack,
-        rail: ?*gtk.Box,
-        topnav: ?*gtk.Box,
-        chevron_img: ?*gtk.Image,
+        full_detail_overlay: *gtk.Revealer,
+        full_detail_content: *gtk.Box,
+        full_detail_page: *PackageDetail,
+        header_back_button: *gtk.Button,
+        header_search_button: *gtk.Button,
+        settings_page: *SettingsPage,
+        settings_dialog: *adw.Dialog,
+        utilities_page: *UtilitiesPage,
+        utilities_dialog: *adw.Dialog,
+        aur_button: *gtk.Button,
+        flatpak_button: *gtk.Button,
+        appimage_button: *gtk.Button,
+        search_button: *gtk.Button,
+        utilities_button: *gtk.Button,
+        settings_button: *gtk.Button,
+        about_button: *gtk.Button,
         nav_buttons: std.ArrayListUnmanaged(*NavButton),
-        collapsed: bool,
-        nav_mode: NavMode,
-        pending_nav: NavMode,
         flatpak_page: FlatpakSlot,
         appimage_page: AppImageSlot,
         aur_slot_atoll: bool,
@@ -103,16 +111,10 @@ pub const ShellyWindow = extern struct {
     fn init(self: *ShellyWindow, _: *Class) callconv(.c) void {
         gtk.Widget.initTemplate(self.as(gtk.Widget));
         const p = self.private();
-        p.rail = null;
-        p.topnav = null;
-        p.chevron_img = null;
         p.nav_buttons = .empty;
-        p.collapsed = true;
-        p.nav_mode = .sidebar;
-        p.pending_nav = .sidebar;
         p.aur_slot_atoll = false;
-        build_shell(self);
-        populate_stack(self);
+        populateStack(self);
+        setupMenu(self);
         applyConfig(self);
         applyDefaultPage(self);
         showWelcomeIfFirstStart(self);
@@ -137,8 +139,11 @@ pub const ShellyWindow = extern struct {
         setNavEnabled(self, "flatpak", cfg.FlatPackEnabled);
         setNavEnabled(self, "appimage", cfg.AppImageEnabled);
         setNavEnabled(self, "search", cfg.ShellySearchEnabled);
-
-        self.changeNav(cfg.NavMode);
+        gtk.Widget.setVisible(
+            self.private().header_search_button.as(gtk.Widget),
+            @intFromBool(features.builtWithShellySearch and cfg.ShellySearchEnabled),
+        );
+        self.setSoftwareMode(cfg.SoftwareMode);
 
         if (cfg.WindowLastWidth > 0 and cfg.WindowLastHeight > 0) {
             gtk.Window.setDefaultSize(
@@ -146,6 +151,15 @@ pub const ShellyWindow = extern struct {
                 @intCast(cfg.WindowLastWidth),
                 @intCast(cfg.WindowLastHeight),
             );
+        }
+    }
+
+    pub fn setSoftwareMode(self: *ShellyWindow, enabled: bool) void {
+        const p = self.private();
+        if (!features.builtWithDevario) {
+            p.explore_page.setSoftwareMode(enabled);
+            p.installed_page.setSoftwareMode(enabled);
+            if (features.builtWithRecommend) p.recommend_page.setSoftwareMode(enabled);
         }
     }
 
@@ -180,8 +194,6 @@ pub const ShellyWindow = extern struct {
         if (status == .no_agent or status == .no_daemon) {
             const dialog = PolkitDialog.new(&on_polkit_close, self);
             self.showLockoutNamed(dialog.as(gtk.Widget), translations._("polkit is required"));
-            // Not focusClose(): mounting the lockout already focuses the dialog's
-            // only control, and a second focus move fires a second announcement.
         }
     }
 
@@ -190,441 +202,305 @@ pub const ShellyWindow = extern struct {
         self.hideLockout();
     }
 
+    fn primaryPageName(name: [:0]const u8) ?[:0]const u8 {
+        if (std.mem.eql(u8, name, "explore") or std.mem.eql(u8, name, "package") or std.mem.eql(u8, name, "recommend")) return "explore";
+        if (std.mem.eql(u8, name, "installed")) return "installed";
+        if (std.mem.eql(u8, name, "update") or std.mem.eql(u8, name, "updates")) return "update";
+        return null;
+    }
+
     fn canShowTopLevelPage(self: *ShellyWindow, name: [:0]const u8) bool {
         const p = self.private();
+        if (primaryPageName(name)) |primary_name| {
+            const child = adw.ViewStack.getChildByName(p.primary_stack, primary_name) orelse return false;
+            const page = adw.ViewStack.getPage(p.primary_stack, child);
+            return adw.ViewStackPage.getVisible(page) != 0;
+        }
 
-        const child = gtk.Stack.getChildByName(
-            p.content_stack,
-            name,
-        ) orelse return false;
-
+        const child = gtk.Stack.getChildByName(p.content_stack, name) orelse return false;
         const page = gtk.Stack.getPage(p.content_stack, child);
         return gtk.StackPage.getVisible(page) != 0;
     }
 
     fn showTopLevelPage(self: *ShellyWindow, name: [:0]const u8) bool {
-        if (!self.canShowTopLevelPage(name))
-            return false;
-
+        if (!self.canShowTopLevelPage(name)) return false;
         const p = self.private();
-        gtk.Stack.setVisibleChildName(p.content_stack, name);
-        sync_active_nav(self);
+        if (primaryPageName(name)) |primary_name| {
+            gtk.Stack.setVisibleChildName(p.content_stack, "primary");
+            adw.ViewStack.setVisibleChildName(p.primary_stack, primary_name);
+        } else {
+            gtk.Stack.setVisibleChildName(p.content_stack, name);
+        }
         return true;
     }
 
     fn setNavEnabled(self: *ShellyWindow, name: [:0]const u8, enabled: bool) void {
         const p = self.private();
-        const visible: c_int = @intFromBool(enabled);
-        var active_stack: ?*gtk.Stack = null;
+        if (std.mem.eql(u8, name, "recommend")) {
+            if (!features.builtWithDevario) p.explore_page.setRecommendationsEnabled(enabled);
+            return;
+        }
 
         for (p.nav_buttons.items) |nb| {
             if (!std.mem.eql(u8, nb.name, name)) continue;
-            gtk.Widget.setVisible(nb.button.as(gtk.Widget), visible);
-            active_stack = nb.stack;
-            if (gtk.Stack.getChildByName(nb.stack, name)) |child| {
-                const page = gtk.Stack.getPage(nb.stack, child);
-                gtk.StackPage.setVisible(page, visible);
-            }
+            gtk.Widget.setVisible(nb.button.as(gtk.Widget), @intFromBool(enabled));
         }
 
+        const child = gtk.Stack.getChildByName(p.content_stack, name) orelse return;
+        const page = gtk.Stack.getPage(p.content_stack, child);
+        gtk.StackPage.setVisible(page, @intFromBool(enabled));
         if (enabled) return;
 
-        const stack = active_stack orelse return;
-        const cn_opt = gtk.Stack.getVisibleChildName(stack);
-        const is_active = if (cn_opt) |cn| std.mem.eql(u8, std.mem.span(cn), name) else false;
-        if (!is_active) return;
-
-        gtk.Stack.setVisibleChildName(stack, "package");
-        for (p.nav_buttons.items) |n| {
-            if (std.mem.eql(u8, n.name, "package")) {
-                set_active_nav(self, n);
-                break;
-            }
+        const visible = gtk.Stack.getVisibleChildName(p.content_stack);
+        if (visible) |current| {
+            if (std.mem.eql(u8, std.mem.span(current), name)) _ = self.showTopLevelPage("explore");
         }
-    }
-
-    fn build_shell(self: *ShellyWindow) void {
-        const p = self.private();
-
-        const stack = gtk.Stack.new();
-        gtk.Widget.setHexpand(stack.as(gtk.Widget), 1);
-        gtk.Widget.setVexpand(stack.as(gtk.Widget), 1);
-        p.content_stack = stack;
-
-        _ = build_rail(self, stack);
-        _ = build_topnav(self, stack);
-
-        gtk.Box.append(p.shell_box, p.rail.?.as(gtk.Widget));
-        gtk.Box.append(p.shell_box, p.topnav.?.as(gtk.Widget));
-        gtk.Box.append(p.shell_box, stack.as(gtk.Widget));
-
-        applyNavMode(self, readNavMode());
-    }
-
-    fn readNavMode() NavMode {
-        const svc = runtime.config orelse return .sidebar;
-        const cfg = svc.get() catch return .sidebar;
-        return cfg.NavMode;
     }
 
     pub fn requestNav(self: *ShellyWindow, mode: NavMode) void {
-        self.private().pending_nav = mode;
-        _ = glib.idleAdd(&apply_pending_nav, self);
-    }
-
-    fn apply_pending_nav(data: ?*anyopaque) callconv(.c) c_int {
-        const self: *ShellyWindow = @ptrCast(@alignCast(data));
-        self.changeNav(self.private().pending_nav);
-        return 0;
+        _ = self;
+        _ = mode;
     }
 
     pub fn changeNav(self: *ShellyWindow, mode: NavMode) void {
-        if (self.private().nav_mode == mode) return;
-        applyNavMode(self, mode);
+        _ = self;
+        _ = mode;
     }
 
-    fn applyNavMode(self: *ShellyWindow, mode: NavMode) void {
+    fn setupMenu(self: *ShellyWindow) void {
         const p = self.private();
-        p.nav_mode = mode;
-
-        const sidebar = mode == .sidebar;
-        gtk.Orientable.setOrientation(
-            p.shell_box.as(gtk.Orientable),
-            if (sidebar) .horizontal else .vertical,
-        );
-        gtk.Widget.setVisible(p.rail.?.as(gtk.Widget), @intFromBool(sidebar));
-        gtk.Widget.setVisible(p.topnav.?.as(gtk.Widget), @intFromBool(!sidebar));
-
-        sync_active_nav(self);
-    }
-
-    fn build_rail(self: *ShellyWindow, stack: *gtk.Stack) *gtk.Box {
-        const p = self.private();
-        const rail = gtk.Box.new(.vertical, 6);
-        gtk.Widget.addCssClass(rail.as(gtk.Widget), "nav-rail");
-        gtk.Widget.setMarginTop(rail.as(gtk.Widget), 8);
-        gtk.Widget.setMarginBottom(rail.as(gtk.Widget), 8);
-        gtk.Widget.setMarginStart(rail.as(gtk.Widget), 6);
-        gtk.Widget.setMarginEnd(rail.as(gtk.Widget), 6);
-        p.rail = @ptrCast(rail.as(gobject.Object).ref());
-
-        const chevron = gtk.Button.new();
-        gtk.Widget.addCssClass(chevron.as(gtk.Widget), "flat");
-        const chevron_img = gtk.Image.newFromIconName(if (p.collapsed) "go-next-symbolic" else "go-previous-symbolic");
-        gtk.Widget.setSizeRequest(chevron_img.as(gtk.Widget), ICON_SLOT, -1);
-        gtk.Widget.setHalign(chevron_img.as(gtk.Widget), .center);
-        gtk.Button.setChild(chevron, chevron_img.as(gtk.Widget));
-        setChevronName(chevron, p.collapsed);
-        p.chevron_img = chevron_img;
-        _ = gtk.Button.signals.clicked.connect(chevron, *ShellyWindow, &on_chevron, self, .{});
-        gtk.Box.append(rail, chevron.as(gtk.Widget));
-
-        const items = gtk.Box.new(.vertical, 6);
-        gtk.Widget.setMarginTop(items.as(gtk.Widget), 4);
-        gtk.Widget.setMarginBottom(items.as(gtk.Widget), 4);
-        gtk.Box.append(rail, items.as(gtk.Widget));
-
-        if (features.builtWithRecommend) add_nav_button(self, items, stack, true, "recommend", RecommendPage.icon_name, translations._(RecommendPage.title));
-        add_nav_button(self, items, stack, true, "package", PackagePage.icon_name, translations._(PackagePage.title));
-        if (features.builtWithAur) add_nav_button(self, items, stack, true, "aur", aur_icon_name, translations._(aur_title));
-        if (features.builtWithFlatpak) add_nav_button(self, items, stack, true, "flatpak", FlatpakPage.icon_name, translations._(FlatpakPage.title));
-        if (features.builtWithAppImage) add_nav_button(self, items, stack, true, "appimage", AppImagePage.icon_name, translations._(AppImagePage.title));
-        if (features.builtWithShellySearch) add_nav_button(self, items, stack, true, "search", ShellySearchPage.icon_name, translations._(ShellySearchPage.title));
-        add_nav_button(self, items, stack, true, "update", UpdatePage.icon_name, translations._(UpdatePage.title));
-
-        const sep = gtk.Box.new(.horizontal, 0);
-        gtk.Widget.setVexpand(sep.as(gtk.Widget), 1);
-        gtk.Box.append(rail, sep.as(gtk.Widget));
-
-        const menu_button = gtk.MenuButton.new();
-        gtk.Widget.addCssClass(menu_button.as(gtk.Widget), "flat");
-        gtk.MenuButton.setIconName(menu_button, "open-menu-symbolic");
-        const menu_label = translations._("Main menu");
-        a11y.setName(menu_button.as(gtk.Widget), menu_label);
-        gtk.Widget.setTooltipText(menu_button.as(gtk.Widget), menu_label);
-        const popover = gtk.Popover.new();
-        const menu_box = gtk.Box.new(.vertical, 4);
-        const utils_btn = gtk.Button.newWithLabel(translations._("Utilities"));
-        gtk.Widget.addCssClass(utils_btn.as(gtk.Widget), "flat");
-        _ = gtk.Button.signals.clicked.connect(utils_btn, *ShellyWindow, &on_utilities, self, .{});
-        gtk.Box.append(menu_box, utils_btn.as(gtk.Widget));
-        const sp_btn = gtk.Button.newWithLabel(translations._("Settings"));
-        gtk.Widget.addCssClass(sp_btn.as(gtk.Widget), "flat");
-        _ = gtk.Button.signals.clicked.connect(sp_btn, *ShellyWindow, &on_settings, self, .{});
-        gtk.Box.append(menu_box, sp_btn.as(gtk.Widget));
-        gtk.Popover.setChild(popover, menu_box.as(gtk.Widget));
-        gtk.MenuButton.setPopover(menu_button, popover);
-        gtk.Box.append(rail, menu_button.as(gtk.Widget));
-        return rail;
-    }
-
-    fn build_topnav(self: *ShellyWindow, stack: *gtk.Stack) *gtk.Box {
-        const p = self.private();
-        const bar = gtk.Box.new(.horizontal, 4);
-        gtk.Widget.addCssClass(bar.as(gtk.Widget), "nav-topbar");
-        gtk.Widget.setHexpand(bar.as(gtk.Widget), 1);
-        gtk.Widget.setMarginTop(bar.as(gtk.Widget), 6);
-        gtk.Widget.setMarginBottom(bar.as(gtk.Widget), 6);
-        gtk.Widget.setMarginStart(bar.as(gtk.Widget), 6);
-        gtk.Widget.setMarginEnd(bar.as(gtk.Widget), 6);
-        p.topnav = @ptrCast(bar.as(gobject.Object).ref());
-
-        const left_spacer = gtk.Box.new(.horizontal, 0);
-        gtk.Widget.setHexpand(left_spacer.as(gtk.Widget), 1);
-        gtk.Box.append(bar, left_spacer.as(gtk.Widget));
-
-        const items = gtk.Box.new(.horizontal, 0);
-        gtk.Box.append(bar, items.as(gtk.Widget));
-
-        if (features.builtWithRecommend) add_nav_button(self, items, stack, false, "recommend", RecommendPage.icon_name, translations._(RecommendPage.title));
-        add_nav_button(self, items, stack, false, "package", PackagePage.icon_name, translations._(PackagePage.title));
-        if (features.builtWithAur) add_nav_button(self, items, stack, false, "aur", aur_icon_name, translations._(aur_title));
-        if (features.builtWithFlatpak) add_nav_button(self, items, stack, false, "flatpak", FlatpakPage.icon_name, translations._(FlatpakPage.title));
-        if (features.builtWithAppImage) add_nav_button(self, items, stack, false, "appimage", AppImagePage.icon_name, translations._(AppImagePage.title));
-        if (features.builtWithShellySearch) add_nav_button(self, items, stack, false, "search", ShellySearchPage.icon_name, translations._(ShellySearchPage.title));
-        add_nav_button(self, items, stack, false, "update", UpdatePage.icon_name, translations._(UpdatePage.title));
-
-        const right_spacer = gtk.Box.new(.horizontal, 0);
-        gtk.Widget.setHexpand(right_spacer.as(gtk.Widget), 1);
-        gtk.Box.append(bar, right_spacer.as(gtk.Widget));
-
-        const menu_button = gtk.MenuButton.new();
-        gtk.Widget.addCssClass(menu_button.as(gtk.Widget), "flat");
-        gtk.MenuButton.setIconName(menu_button, "view-more-symbolic");
-        const menu_label = translations._("Main menu");
-        a11y.setName(menu_button.as(gtk.Widget), menu_label);
-        gtk.Widget.setTooltipText(menu_button.as(gtk.Widget), menu_label);
-        const popover = gtk.Popover.new();
-        const menu_box = gtk.Box.new(.vertical, 4);
-        const utils_btn = gtk.Button.newWithLabel(translations._("Utilities"));
-        gtk.Widget.addCssClass(utils_btn.as(gtk.Widget), "flat");
-        _ = gtk.Button.signals.clicked.connect(utils_btn, *ShellyWindow, &on_utilities, self, .{});
-        gtk.Box.append(menu_box, utils_btn.as(gtk.Widget));
-        const sp_btn = gtk.Button.newWithLabel(translations._("Settings"));
-        gtk.Widget.addCssClass(sp_btn.as(gtk.Widget), "flat");
-        _ = gtk.Button.signals.clicked.connect(sp_btn, *ShellyWindow, &on_settings, self, .{});
-        gtk.Box.append(menu_box, sp_btn.as(gtk.Widget));
-        gtk.Popover.setChild(popover, menu_box.as(gtk.Widget));
-        gtk.MenuButton.setPopover(menu_button, popover);
-        gtk.Box.append(bar, menu_button.as(gtk.Widget));
-
-        return bar;
-    }
-
-    fn on_chevron(chevron: *gtk.Button, self: *ShellyWindow) callconv(.c) void {
-        const p = self.private();
-        p.collapsed = !p.collapsed;
-
-        if (p.chevron_img) |img| {
-            gtk.Image.setFromIconName(img, if (p.collapsed) "go-next-symbolic" else "go-previous-symbolic");
-        }
-        setChevronName(chevron, p.collapsed);
-
-        for (p.nav_buttons.items) |nb| {
-            if (!nb.is_rail) continue;
-            gtk.Revealer.setRevealChild(nb.revealer, @intFromBool(!p.collapsed));
-        }
-    }
-
-    /// The chevron's icon is its only content and its meaning flips with the rail's
-    /// state, so the name is rewritten wherever `collapsed` changes. Roles cannot
-    /// follow: a role is fixed when the widget is constructed.
-    fn setChevronName(chevron: *gtk.Button, collapsed: bool) void {
-        const label = if (collapsed)
-            translations._("Expand sidebar")
-        else
-            translations._("Collapse sidebar");
-        a11y.setName(chevron.as(gtk.Widget), label);
-        gtk.Widget.setTooltipText(chevron.as(gtk.Widget), label);
-    }
-
-    fn add_nav_button(self: *ShellyWindow, parent_box: *gtk.Box, stack: *gtk.Stack, is_rail: bool, name: [:0]const u8, icon: [:0]const u8, text: [:0]const u8) void {
-        const p = self.private();
-        const box = gtk.Box.new(.horizontal, 0);
-        const img = gtk.Image.newFromIconName(icon);
-
-        gtk.Widget.setSizeRequest(img.as(gtk.Widget), ICON_SLOT, -1);
-        gtk.Widget.setHalign(img.as(gtk.Widget), .center);
-        gtk.Box.append(box, img.as(gtk.Widget));
-
-        const label = gtk.Label.new(text);
-        gtk.Widget.setMarginStart(label.as(gtk.Widget), LABEL_GAP);
-        gtk.Widget.setHalign(label.as(gtk.Widget), .start);
-
-        const revealer = gtk.Revealer.new();
-        if (is_rail) {
-            gtk.Revealer.setTransitionType(revealer, .slide_right);
-            gtk.Revealer.setRevealChild(revealer, @intFromBool(!p.collapsed));
+        if (features.builtWithAur) {
+            addNavButton(self, p.aur_button, "aur");
         } else {
-            gtk.Revealer.setTransitionType(revealer, .none);
-            gtk.Revealer.setRevealChild(revealer, 1);
+            gtk.Widget.setVisible(p.aur_button.as(gtk.Widget), 0);
         }
-        gtk.Revealer.setChild(revealer, label.as(gtk.Widget));
-        gtk.Box.append(box, revealer.as(gtk.Widget));
+        if (features.builtWithFlatpak) {
+            addNavButton(self, p.flatpak_button, "flatpak");
+        } else {
+            gtk.Widget.setVisible(p.flatpak_button.as(gtk.Widget), 0);
+        }
+        if (features.builtWithAppImage) {
+            addNavButton(self, p.appimage_button, "appimage");
+        } else {
+            gtk.Widget.setVisible(p.appimage_button.as(gtk.Widget), 0);
+        }
+        if (features.builtWithShellySearch) {
+            addNavButton(self, p.search_button, "search");
+        } else {
+            gtk.Widget.setVisible(p.search_button.as(gtk.Widget), 0);
+        }
+        gtk.Widget.setVisible(p.header_search_button.as(gtk.Widget), @intFromBool(features.builtWithShellySearch));
+        _ = gtk.Button.signals.clicked.connect(p.utilities_button, *ShellyWindow, &onUtilitiesClicked, self, .{});
+        _ = gtk.Button.signals.clicked.connect(p.settings_button, *ShellyWindow, &onSettingsClicked, self, .{});
+        _ = gtk.Button.signals.clicked.connect(p.header_back_button, *ShellyWindow, &onHeaderBackClicked, self, .{});
+        _ = gtk.Button.signals.clicked.connect(p.header_search_button, *ShellyWindow, &onSearchHeaderClicked, self, .{});
+        _ = gtk.Button.signals.clicked.connect(p.settings_button, *ShellyWindow, &onSettingsClicked, self, .{});
+        _ = gtk.Button.signals.clicked.connect(p.about_button, *ShellyWindow, &onAbout, self, .{});
+    }
 
-        const btn = gtk.Button.new();
-        gtk.Button.setChild(btn, box.as(gtk.Widget));
-        gtk.Widget.addCssClass(btn.as(gtk.Widget), "flat");
-        gtk.Widget.addCssClass(btn.as(gtk.Widget), "nav-btn");
-        // In the collapsed rail the label sits inside a hidden revealer, so it is
-        // absent from the accessible tree and the button reads as a bare "button".
-        a11y.setName(btn.as(gtk.Widget), text);
+    pub fn showFullPackageDetail(
+        self: *ShellyWindow,
+        name: []const u8,
+        is_installed: bool,
+        icon_path: ?[:0]const u8,
+    ) void {
+        const p = self.private();
+        p.full_detail_page.showPackage(name, is_installed, icon_path);
+        p.full_detail_page.setInternalBackVisible(false);
+        gtk.Widget.setVisible(p.header_back_button.as(gtk.Widget), 1);
+        gtk.Widget.setVisible(p.full_detail_overlay.as(gtk.Widget), 1);
+        gtk.Revealer.setRevealChild(p.full_detail_overlay, 1);
+    }
 
+    fn onFullDetailBack(context: ?*anyopaque) void {
+        const self: *ShellyWindow = @ptrCast(@alignCast(context orelse return));
+        hideFullDetail(self);
+    }
+
+    fn onHeaderBackClicked(_: *gtk.Button, self: *ShellyWindow) callconv(.c) void {
+        const p = self.private();
+        if (!p.full_detail_page.goBack()) hideFullDetail(self);
+    }
+
+    fn hideFullDetail(self: *ShellyWindow) void {
+        const p = self.private();
+        gtk.Widget.setVisible(p.header_back_button.as(gtk.Widget), 0);
+        gtk.Revealer.setRevealChild(p.full_detail_overlay, 0);
+        gtk.Widget.setVisible(p.full_detail_overlay.as(gtk.Widget), 0);
+    }
+
+    fn onSearchHeaderClicked(_: *gtk.Button, self: *ShellyWindow) callconv(.c) void {
+        _ = self.showTopLevelPage("search");
+    }
+
+    pub fn presentSettings(self: *ShellyWindow) void {
+        const p = self.private();
+        adw.Dialog.present(p.settings_dialog, self.as(gtk.Widget));
+    }
+
+    fn onSettingsPresentOnce(user_data: ?*anyopaque) callconv(.c) void {
+        const self: *ShellyWindow = @ptrCast(@alignCast(user_data orelse return));
+        self.presentSettings();
+    }
+
+    fn onSettingsClicked(_: *gtk.Button, self: *ShellyWindow) callconv(.c) void {
+        popdownMenu(self.private().settings_button);
+        _ = glib.idleAddOnce(&onSettingsPresentOnce, self);
+    }
+
+    pub fn presentUtilities(self: *ShellyWindow) void {
+        const p = self.private();
+        adw.Dialog.present(p.utilities_dialog, self.as(gtk.Widget));
+    }
+
+    fn onUtilitiesPresentOnce(user_data: ?*anyopaque) callconv(.c) void {
+        const self: *ShellyWindow = @ptrCast(@alignCast(user_data orelse return));
+        self.presentUtilities();
+    }
+
+    fn onUtilitiesClicked(_: *gtk.Button, self: *ShellyWindow) callconv(.c) void {
+        popdownMenu(self.private().utilities_button);
+        _ = glib.idleAddOnce(&onUtilitiesPresentOnce, self);
+    }
+
+    fn addNavButton(self: *ShellyWindow, button: *gtk.Button, name: [:0]const u8) void {
         const nb = std.heap.c_allocator.create(NavButton) catch unreachable;
-        nb.* = .{
-            .button = btn,
-            .revealer = revealer,
-            .stack = stack,
-            .name = name,
-            .window = self,
-            .is_rail = is_rail,
-        };
-        p.nav_buttons.append(std.heap.c_allocator, nb) catch unreachable;
-        _ = gtk.Button.signals.clicked.connect(btn, *NavButton, &on_nav_click, nb, .{});
-
-        gtk.Box.append(parent_box, btn.as(gtk.Widget));
+        nb.* = .{ .button = button, .name = name, .window = self };
+        self.private().nav_buttons.append(std.heap.c_allocator, nb) catch unreachable;
+        _ = gtk.Button.signals.clicked.connect(button, *NavButton, &onNavClick, nb, .{});
     }
 
-    fn on_nav_click(_: *gtk.Button, nb: *NavButton) callconv(.c) void {
-        gtk.Stack.setVisibleChildName(nb.stack, nb.name);
-        set_active_nav(nb.window, nb);
-    }
-
-    fn set_active_nav(self: *ShellyWindow, active: *NavButton) void {
-        const p = self.private();
-        for (p.nav_buttons.items) |nb| {
-            if (std.mem.eql(u8, nb.name, active.name)) {
-                gtk.Widget.addCssClass(nb.button.as(gtk.Widget), "nav-selected");
-            } else {
-                gtk.Widget.removeCssClass(nb.button.as(gtk.Widget), "nav-selected");
-            }
+    fn popdownMenu(button: *gtk.Button) void {
+        if (gtk.Widget.getAncestor(button.as(gtk.Widget), gtk.Popover.getGObjectType())) |popover| {
+            gtk.Popover.popdown(@ptrCast(@alignCast(popover)));
         }
     }
 
-    fn sync_active_nav(self: *ShellyWindow) void {
-        if (self.activeNavButton()) |nb| set_active_nav(self, nb);
+    fn onNavClick(button: *gtk.Button, nb: *NavButton) callconv(.c) void {
+        _ = nb.window.showTopLevelPage(nb.name);
+        popdownMenu(button);
     }
 
-    /// The button for the page the content stack is showing, in the layout the user
-    /// can see: only the rail or the top bar is visible at a time, and focus cannot
-    /// land on a control inside the hidden one, so `hideLockout` must not hand the
-    /// keyboard to it. Falls back to the first button of that layout when the visible
-    /// child is not a nav page (a transaction, for instance).
-    fn activeNavButton(self: *ShellyWindow) ?*NavButton {
-        const p = self.private();
-        const current_name: []const u8 = blk: {
-            const cn_opt = gtk.Stack.getVisibleChildName(p.content_stack);
-            break :blk if (cn_opt) |cn| std.mem.span(cn) else "";
-        };
-        const want_rail = p.nav_mode == .sidebar;
-        var fallback: ?*NavButton = null;
-        for (p.nav_buttons.items) |nb| {
-            if (nb.is_rail != want_rail) continue;
-            if (fallback == null) fallback = nb;
-            if (std.mem.eql(u8, nb.name, current_name)) return nb;
+    fn onAbout(button: *gtk.Button, self: *ShellyWindow) callconv(.c) void {
+        if (gtk.Window.getApplication(self.as(gtk.Window))) |app| {
+            gio.ActionGroup.activateAction(app.as(gio.ActionGroup), "about", null);
         }
-        return fallback;
-    }
-
-    fn tabStackName(tab: ShellyTabs) ?[:0]const u8 {
-        return switch (tab) {
-            .packages => "package",
-            .aur => "aur",
-            .flatpak => "flatpak",
-            .app_image => "appimage",
-            .recommend => "recommend",
-            .update => "update",
-            .shelly_search => "search",
-        };
+        popdownMenu(button);
     }
 
     pub fn applyDefaultPage(self: *ShellyWindow) void {
-        const p = self.private();
         const svc = runtime.config orelse {
-            sync_active_nav(self);
+            _ = self.showTopLevelPage("explore");
             return;
         };
         const cfg = svc.get() catch {
-            sync_active_nav(self);
+            _ = self.showTopLevelPage("explore");
             return;
         };
 
-        if (tabStackName(cfg.DefaultPageDropDown)) |name| {
-            if (gtk.Stack.getChildByName(p.content_stack, name)) |child| {
-                const page = gtk.Stack.getPage(p.content_stack, child);
-                if (gtk.StackPage.getVisible(page) != 0) {
-                    gtk.Stack.setVisibleChildName(p.content_stack, name);
+        switch (cfg.DefaultPageDropDown) {
+            .packages, .recommend => {
+                _ = self.showTopLevelPage("explore");
+                if (!features.builtWithDevario) {
+                    if (cfg.RecommendedEnabled) {
+                        self.private().explore_page.showRecommended();
+                    } else {
+                        self.private().explore_page.showPackageBrowser();
+                    }
                 }
-            }
+            },
+            .update => _ = self.showTopLevelPage("update"),
+            .aur => _ = self.showTopLevelPage("aur"),
+            .flatpak => _ = self.showTopLevelPage("flatpak"),
+            .app_image => _ = self.showTopLevelPage("appimage"),
+            .shelly_search => _ = self.showTopLevelPage("search"),
         }
-        sync_active_nav(self);
     }
 
-    fn on_settings(btn: *gtk.Button, self: *ShellyWindow) callconv(.c) void {
+    fn populateStack(self: *ShellyWindow) void {
         const p = self.private();
-        gtk.Stack.setVisibleChildName(p.content_stack, "settings");
-        if (gtk.Widget.getAncestor(btn.as(gtk.Widget), gtk.Popover.getGObjectType())) |pop| {
-            gtk.Popover.popdown(@ptrCast(@alignCast(pop)));
+        const primary = p.primary_stack;
+        const auxiliary = p.content_stack;
+
+        const full_detail = PackageDetail.new();
+        p.full_detail_page = full_detail;
+        gtk.Widget.setHexpand(full_detail.as(gtk.Widget), 1);
+        gtk.Widget.setVexpand(full_detail.as(gtk.Widget), 1);
+        gtk.Widget.setHalign(full_detail.as(gtk.Widget), .fill);
+        gtk.Widget.setValign(full_detail.as(gtk.Widget), .fill);
+        full_detail.setBackHandler(self, &onFullDetailBack);
+        full_detail.setInternalBackVisible(false);
+        gtk.Box.append(p.full_detail_content, full_detail.as(gtk.Widget));
+
+        const explore = PackagePage.new();
+        p.explore_page = explore;
+        if (!features.builtWithDevario and features.builtWithRecommend) {
+            const recommended = RecommendPage.new();
+            p.recommend_page = recommended;
+            explore.setRecommendWidget(recommended.as(gtk.Widget));
         }
-    }
+        _ = adw.ViewStack.addTitledWithIcon(primary, explore.as(gtk.Widget), "explore", translations._("Explore"), "globe-symbolic");
 
-    fn on_utilities(btn: *gtk.Button, self: *ShellyWindow) callconv(.c) void {
-        const p = self.private();
-        gtk.Stack.setVisibleChildName(p.content_stack, "utilities");
-        if (gtk.Widget.getAncestor(btn.as(gtk.Widget), gtk.Popover.getGObjectType())) |pop| {
-            gtk.Popover.popdown(@ptrCast(@alignCast(pop)));
-        }
-    }
+        const installed = if (features.builtWithDevario) PackagePage.new() else PackagePage.newInstalled();
+        p.installed_page = installed;
+        _ = adw.ViewStack.addTitledWithIcon(primary, installed.as(gtk.Widget), "installed", translations._("Installed"), "system-software-install-symbolic");
 
-    fn populate_stack(self: *ShellyWindow) void {
-        const stack = self.private().content_stack;
-
-        if (features.builtWithRecommend) {
-            const rp = RecommendPage.new();
-            const rp_page = gtk.Stack.addTitled(stack, rp.as(gtk.Widget), "recommend", translations._(RecommendPage.title));
-            gtk.StackPage.setIconName(rp_page, RecommendPage.icon_name);
-        }
-
-        const pp = PackagePage.new();
-        const pp_page = gtk.Stack.addTitled(stack, pp.as(gtk.Widget), "package", translations._("Package"));
-        gtk.StackPage.setIconName(pp_page, PackagePage.icon_name);
+        const updates = UpdatePage.new();
+        _ = adw.ViewStack.addTitledWithIcon(primary, updates.as(gtk.Widget), "update", translations._("Updates"), UpdatePage.icon_name);
 
         if (features.builtWithFlatpak) {
-            const fp = FlatpakPage.new();
-            self.private().flatpak_page = fp;
-            const fp_page = gtk.Stack.addTitled(stack, fp.as(gtk.Widget), "flatpak", translations._("Flatpak"));
-            gtk.StackPage.setIconName(fp_page, FlatpakPage.icon_name);
+            const page = FlatpakPage.new();
+            p.flatpak_page = page;
+            const stack_page = gtk.Stack.addTitled(auxiliary, page.as(gtk.Widget), "flatpak", translations._("Flatpak"));
+            gtk.StackPage.setIconName(stack_page, FlatpakPage.icon_name);
         }
 
         if (features.builtWithAppImage) {
-            const ai = AppImagePage.new();
-            self.private().appimage_page = ai;
-            const ai_page = gtk.Stack.addTitled(stack, ai.as(gtk.Widget), "appimage", translations._("AppImage"));
-            gtk.StackPage.setIconName(ai_page, AppImagePage.icon_name);
+            const page = AppImagePage.new();
+            p.appimage_page = page;
+            const stack_page = gtk.Stack.addTitled(auxiliary, page.as(gtk.Widget), "appimage", translations._("AppImage"));
+            gtk.StackPage.setIconName(stack_page, AppImagePage.icon_name);
         }
 
         if (features.builtWithAur) {
-            const au_page = gtk.Stack.addTitled(stack, aurSlotWidget(self), "aur", translations._(aur_title));
-            gtk.StackPage.setIconName(au_page, aur_icon_name);
+            const stack_page = gtk.Stack.addTitled(auxiliary, aurSlotWidget(self), "aur", translations._(aur_title));
+            gtk.StackPage.setIconName(stack_page, aur_icon_name);
         }
 
         if (features.builtWithShellySearch) {
-            const ss = ShellySearchPage.new();
-            const ss_page = gtk.Stack.addTitled(stack, ss.as(gtk.Widget), "search", translations._(ShellySearchPage.title));
-            gtk.StackPage.setIconName(ss_page, ShellySearchPage.icon_name);
+            const page = ShellySearchPage.new();
+            const stack_page = gtk.Stack.addTitled(auxiliary, page.as(gtk.Widget), "search", translations._(ShellySearchPage.title));
+            gtk.StackPage.setIconName(stack_page, ShellySearchPage.icon_name);
         }
 
-        const up = UpdatePage.new();
-        const up_page = gtk.Stack.addTitled(stack, up.as(gtk.Widget), "update", translations._("Update"));
-        gtk.StackPage.setIconName(up_page, UpdatePage.icon_name);
+        const settings = SettingsPage.new();
+        p.settings_page = settings;
+        p.settings_dialog = adw.Dialog.new();
+        const settings_switcher = gtk.StackSwitcher.new();
+        gtk.StackSwitcher.setStack(settings_switcher, settings.settingsStack());
+        const settings_toolbar = adw.ToolbarView.new();
+        const settings_header = adw.HeaderBar.new();
+        adw.HeaderBar.setTitleWidget(settings_header, settings_switcher.as(gtk.Widget));
+        adw.ToolbarView.addTopBar(settings_toolbar, settings_header.as(gtk.Widget));
+        adw.ToolbarView.setContent(settings_toolbar, settings.as(gtk.Widget));
+        adw.Dialog.setChild(p.settings_dialog, settings_toolbar.as(gtk.Widget));
+        adw.Dialog.setContentWidth(p.settings_dialog, 760);
+        adw.Dialog.setContentHeight(p.settings_dialog, 640);
 
-        const sp = SettingsPage.new();
-        const sp_page = gtk.Stack.addTitled(stack, sp.as(gtk.Widget), "settings", translations._("Settings"));
-        gtk.StackPage.setIconName(sp_page, SettingsPage.icon_name);
+        const utilities = UtilitiesPage.new();
+        p.utilities_page = utilities;
+        p.utilities_dialog = adw.Dialog.new();
+        adw.Dialog.setTitle(p.utilities_dialog, translations._("Utilities"));
+        const utilities_toolbar = adw.ToolbarView.new();
+        const utilities_header = adw.HeaderBar.new();
+        adw.ToolbarView.addTopBar(utilities_toolbar, utilities_header.as(gtk.Widget));
+        adw.ToolbarView.setContent(utilities_toolbar, utilities.as(gtk.Widget));
+        adw.Dialog.setChild(p.utilities_dialog, utilities_toolbar.as(gtk.Widget));
+        adw.Dialog.setContentWidth(p.utilities_dialog, 720);
+        adw.Dialog.setContentHeight(p.utilities_dialog, 560);
 
-        const up_utils = UtilitiesPage.new();
-        const up_utils_page = gtk.Stack.addTitled(stack, up_utils.as(gtk.Widget), "utilities", translations._("Utilities"));
-        gtk.StackPage.setIconName(up_utils_page, UtilitiesPage.icon_name);
+        gtk.Stack.setVisibleChildName(auxiliary, "primary");
+        adw.ViewStack.setVisibleChildName(primary, "explore");
     }
 
     fn aurSlotWidget(self: *ShellyWindow) *gtk.Widget {
@@ -665,58 +541,43 @@ pub const ShellyWindow = extern struct {
         const p = self.private();
         const stack = p.content_stack;
 
-        const was_visible = if (gtk.Stack.getVisibleChildName(stack)) |cn|
-            std.mem.eql(u8, std.mem.span(cn), "aur")
+        const was_visible = if (gtk.Stack.getVisibleChildName(stack)) |name|
+            std.mem.eql(u8, std.mem.span(name), "aur")
         else
             false;
 
-        if (gtk.Stack.getChildByName(stack, "aur")) |child| {
-            gtk.Stack.remove(stack, child);
-        }
+        if (gtk.Stack.getChildByName(stack, "aur")) |child| gtk.Stack.remove(stack, child);
 
-        const widget: *gtk.Widget = newAurSlotWidget(use_atoll);
-
-        const page = gtk.Stack.addTitled(stack, widget, "aur", translations._(aur_title));
+        const page = gtk.Stack.addTitled(stack, newAurSlotWidget(use_atoll), "aur", translations._(aur_title));
         gtk.StackPage.setIconName(page, aur_icon_name);
         p.aur_slot_atoll = use_atoll;
 
-        if (was_visible) {
-            gtk.Stack.setVisibleChildName(stack, "aur");
-            sync_active_nav(self);
-        }
+        if (was_visible) gtk.Stack.setVisibleChildName(stack, "aur");
     }
 
     pub fn showLockout(self: *ShellyWindow, content: *gtk.Widget) void {
         self.mountLockout(content, "");
     }
 
-    /// `name` becomes the accessible name of the overlay, which is a modal dialog,
-    /// so an AT can say which lockout is up instead of only that something is.
     pub fn showLockoutNamed(self: *ShellyWindow, content: *gtk.Widget, name: []const u8) void {
         self.mountLockout(content, name);
     }
 
     fn mountLockout(self: *ShellyWindow, content: *gtk.Widget, name: []const u8) void {
         const p = self.private();
-        while (gtk.Widget.getFirstChild(p.lockout_content.as(gtk.Widget))) |c| {
-            gtk.Box.remove(p.lockout_content, c);
+        while (gtk.Widget.getFirstChild(p.lockout_content.as(gtk.Widget))) |child| {
+            gtk.Box.remove(p.lockout_content, child);
         }
         gtk.Box.append(p.lockout_content, content);
-        // The overlay is reused by every lockout, so a name left over from the
-        // previous one would be a lie: clear it when the caller has none.
         a11y.setName(p.lockout_overlay.as(gtk.Widget), name);
 
         gtk.Widget.setSensitive(p.content_stack.as(gtk.Widget), 0);
-        if (p.rail) |r| gtk.Widget.setSensitive(r.as(gtk.Widget), 0);
-        if (p.topnav) |t| gtk.Widget.setSensitive(t.as(gtk.Widget), 0);
-
+        gtk.Widget.setSensitive(p.header_bar.as(gtk.Widget), 0);
         gtk.Widget.setVisible(p.lockout_overlay.as(gtk.Widget), 1);
 
-        if (gobject.ext.cast(ConfirmDialog, content)) |dlg| {
-            dlg.focusConfirm();
+        if (gobject.ext.cast(ConfirmDialog, content)) |dialog| {
+            dialog.focusConfirm();
         } else {
-            // grabFocus on the container does not delegate to its children, so
-            // nothing inside the lockout would take focus at all.
             _ = a11y.focusFirst(content);
         }
     }
@@ -724,39 +585,34 @@ pub const ShellyWindow = extern struct {
     pub fn hideLockout(self: *ShellyWindow) void {
         const p = self.private();
         gtk.Widget.setVisible(p.lockout_overlay.as(gtk.Widget), 0);
-
         gtk.Widget.setSensitive(p.content_stack.as(gtk.Widget), 1);
-        if (p.rail) |r| gtk.Widget.setSensitive(r.as(gtk.Widget), 1);
-        if (p.topnav) |t| gtk.Widget.setSensitive(t.as(gtk.Widget), 1);
+        gtk.Widget.setSensitive(p.header_bar.as(gtk.Widget), 1);
 
-        while (gtk.Widget.getFirstChild(p.lockout_content.as(gtk.Widget))) |c| {
-            gtk.Box.remove(p.lockout_content, c);
+        while (gtk.Widget.getFirstChild(p.lockout_content.as(gtk.Widget))) |child| {
+            gtk.Box.remove(p.lockout_content, child);
         }
 
-        // Focus may well be on a widget that has just been removed from the tree,
-        // which leaves the keyboard nowhere. Set it last: an insensitive widget
-        // rejects focus, and moving into content that is about to be discarded
-        // would fire a focus event for a page the user has already left.
-        if (self.activeNavButton()) |nb| {
-            _ = gtk.Widget.grabFocus(nb.button.as(gtk.Widget));
+        const visible = gtk.Stack.getVisibleChildName(p.content_stack);
+        if (visible) |name| {
+            if (std.mem.eql(u8, std.mem.span(name), "primary")) {
+                _ = a11y.focusFirst(p.view_switcher.as(gtk.Widget));
+            } else if (gtk.Stack.getVisibleChild(p.content_stack)) |child| {
+                _ = a11y.focusFirst(child);
+            }
         }
     }
 
     pub fn startTransaction(self: *ShellyWindow, request: TransactionRequest) void {
-        const tp = TransactionPage.new();
-        self.showLockout(tp.as(gtk.Widget));
-        tp.run(request);
+        const page = TransactionPage.new();
+        self.showLockout(page.as(gtk.Widget));
+        page.run(request);
     }
 
     pub fn openFlatpakApp(self: *ShellyWindow, app_id: [:0]const u8) bool {
         if (features.builtWithFlatpak) {
             const p = self.private();
-
-            if (gtk.Widget.getVisible(p.lockout_overlay.as(gtk.Widget)) != 0)
-                return false;
-
-            if (!self.canShowTopLevelPage("flatpak"))
-                return false;
+            if (gtk.Widget.getVisible(p.lockout_overlay.as(gtk.Widget)) != 0) return false;
+            if (!self.canShowTopLevelPage("flatpak")) return false;
             p.flatpak_page.openApp(app_id);
             return self.showTopLevelPage("flatpak");
         }
@@ -766,13 +622,8 @@ pub const ShellyWindow = extern struct {
     pub fn openFlatpakLocalFile(self: *ShellyWindow, path: [:0]const u8) bool {
         if (features.builtWithFlatpak) {
             const p = self.private();
-
-            if (gtk.Widget.getVisible(p.lockout_overlay.as(gtk.Widget)) != 0)
-                return false;
-
-            if (!self.canShowTopLevelPage("flatpak"))
-                return false;
-
+            if (gtk.Widget.getVisible(p.lockout_overlay.as(gtk.Widget)) != 0) return false;
+            if (!self.canShowTopLevelPage("flatpak")) return false;
             p.flatpak_page.openLocalFile(path);
             return self.showTopLevelPage("flatpak");
         }
@@ -782,13 +633,8 @@ pub const ShellyWindow = extern struct {
     pub fn openAppImageLocalFile(self: *ShellyWindow, path: [:0]const u8) bool {
         if (features.builtWithAppImage) {
             const p = self.private();
-
-            if (gtk.Widget.getVisible(p.lockout_overlay.as(gtk.Widget)) != 0)
-                return false;
-
-            if (!self.canShowTopLevelPage("appimage"))
-                return false;
-
+            if (gtk.Widget.getVisible(p.lockout_overlay.as(gtk.Widget)) != 0) return false;
+            if (!self.canShowTopLevelPage("appimage")) return false;
             p.appimage_page.openLocalFile(path);
             return self.showTopLevelPage("appimage");
         }
@@ -798,23 +644,17 @@ pub const ShellyWindow = extern struct {
     pub fn navigateTo(self: *ShellyWindow, target: deep_link.PageTarget) bool {
         return switch (target) {
             .updates => self.showTopLevelPage("update"),
-
             .flatpak_install => blk: {
                 if (features.builtWithFlatpak) {
-                    if (!self.canShowTopLevelPage("flatpak"))
-                        break :blk false;
-
+                    if (!self.canShowTopLevelPage("flatpak")) break :blk false;
                     self.private().flatpak_page.navigateTo(.install);
                     break :blk self.showTopLevelPage("flatpak");
                 }
                 break :blk false;
             },
-
             .flatpak_remove => blk: {
                 if (features.builtWithFlatpak) {
-                    if (!self.canShowTopLevelPage("flatpak"))
-                        break :blk false;
-
+                    if (!self.canShowTopLevelPage("flatpak")) break :blk false;
                     self.private().flatpak_page.navigateTo(.remove);
                     break :blk self.showTopLevelPage("flatpak");
                 }
@@ -824,8 +664,23 @@ pub const ShellyWindow = extern struct {
     }
 
     const template_children = .{
+        .{ "header_bar", @offsetOf(Private, "header_bar") },
+        .{ "view_switcher", @offsetOf(Private, "view_switcher") },
+        .{ "content_stack", @offsetOf(Private, "content_stack") },
+        .{ "primary_stack", @offsetOf(Private, "primary_stack") },
         .{ "lockout_overlay", @offsetOf(Private, "lockout_overlay") },
         .{ "lockout_content", @offsetOf(Private, "lockout_content") },
+        .{ "full_detail_overlay", @offsetOf(Private, "full_detail_overlay") },
+        .{ "full_detail_content", @offsetOf(Private, "full_detail_content") },
+        .{ "header_back_button", @offsetOf(Private, "header_back_button") },
+        .{ "header_search_button", @offsetOf(Private, "header_search_button") },
+        .{ "aur_menu_button", @offsetOf(Private, "aur_button") },
+        .{ "flatpak_menu_button", @offsetOf(Private, "flatpak_button") },
+        .{ "appimage_menu_button", @offsetOf(Private, "appimage_button") },
+        .{ "search_menu_button", @offsetOf(Private, "search_button") },
+        .{ "utilities_menu_button", @offsetOf(Private, "utilities_button") },
+        .{ "settings_menu_button", @offsetOf(Private, "settings_button") },
+        .{ "about_menu_button", @offsetOf(Private, "about_button") },
     };
 
     pub const Class = extern struct {
@@ -834,16 +689,10 @@ pub const ShellyWindow = extern struct {
         pub const Instance = ShellyWindow;
 
         fn init(class: *Class) callconv(.c) void {
-            const wc = gobject.ext.as(gtk.Widget.Class, class);
-            gtk.Widget.Class.setTemplateFromResource(wc, "/com/shellyorg/shelly/ui/main_window.ui");
-            gtk.Widget.Class.bindTemplateChildFull(
-                wc,
-                "shell_box",
-                @intFromBool(false),
-                @as(c_long, @intCast(Private.offset)) + @as(c_long, @intCast(@offsetOf(Private, "shell_box"))),
-            );
-            inline for (template_children) |c| {
-                SupportPage.bindChild(class, Private.offset, c[0], c[1]);
+            const widget_class = gobject.ext.as(gtk.Widget.Class, class);
+            gtk.Widget.Class.setTemplateFromResource(widget_class, "/com/shellyorg/shelly/ui/main_window.ui");
+            inline for (template_children) |child| {
+                SupportPage.bindChild(class, Private.offset, child[0], child[1]);
             }
             gobject.Object.virtual_methods.finalize.implement(class, &finalize);
         }
@@ -855,12 +704,8 @@ pub const ShellyWindow = extern struct {
 
     fn finalize(self: *ShellyWindow) callconv(.c) void {
         const p = self.private();
-        for (p.nav_buttons.items) |nb| {
-            std.heap.c_allocator.destroy(nb);
-        }
+        for (p.nav_buttons.items) |button| std.heap.c_allocator.destroy(button);
         p.nav_buttons.deinit(std.heap.c_allocator);
-        if (p.rail) |rail| rail.as(gobject.Object).unref();
-        if (p.topnav) |topnav| topnav.as(gobject.Object).unref();
         gobject.Object.virtual_methods.finalize.call(Class.parent, self.as(Parent));
     }
 };

@@ -6,6 +6,7 @@ pub const PackageReason = enum(i32) { Explicit = 0, Dependency = 1, Unknown = 2 
 pub const ReverseDependencyOptions = struct {
     required_by: bool = false,
     optional_for: bool = false,
+    files: bool = false,
 };
 
 pub const SigLevel = packed struct(u32) {
@@ -137,6 +138,7 @@ pub const OwnedPackage = struct {
     conflicts_value: [][:0]u8,
     required_by_value: [][:0]u8,
     optional_for_value: [][:0]u8,
+    files_value: [][:0]u8 = &.{},
     build_date_value: i64,
     install_date_value: ?i64,
 
@@ -195,6 +197,7 @@ pub const OwnedPackage = struct {
         freeStrings(allocator, self.conflicts_value);
         freeStrings(allocator, self.required_by_value);
         freeStrings(allocator, self.optional_for_value);
+        freeStrings(allocator, self.files_value);
         self.* = undefined;
     }
 
@@ -281,6 +284,10 @@ pub const OwnedPackage = struct {
 
     pub fn optional_for(self: OwnedPackage) []const [:0]u8 {
         return self.optional_for_value;
+    }
+
+    pub fn files(self: OwnedPackage) []const [:0]u8 {
+        return self.files_value;
     }
 
     pub fn build_date(self: OwnedPackage) i64 {

@@ -25,6 +25,12 @@ const a11y = @import("../helpers/a11y.zig");
 
 const Event = @import("../services/shelly_operation.zig").Event;
 const PackageDetail = @import("package_detail.zig").PackageDetail;
+const RecommendPage = @import("recommend_page.zig").RecommendPage;
+const package_browser = @import("../helpers/package_browser.zig");
+const SidebarMode = package_browser.SidebarMode;
+const sidebarModeAllowed = package_browser.sidebarModeAllowed;
+const matchesCategory = package_browser.matchesCategory;
+const sortStrings = package_browser.sortStrings;
 
 pub const PackagePage = extern struct {
     parent_instance: Parent,
@@ -50,7 +56,11 @@ pub const PackagePage = extern struct {
         list_store: *gio.ListStore,
         loading_overlay: *gtk.Box,
         filter: *gtk.CustomFilter,
-        grouping_selection: *gtk.DropDown,
+        sidebar_box: *gtk.Box,
+        sidebar_mode_selection: *gtk.DropDown,
+        sidebar_list: *gtk.ListBox,
+        content_stack: *gtk.Stack,
+        installed_only_check: *gtk.CheckButton,
         loading_spinner: *gtk.Spinner,
         error_label: *gtk.Label,
         search_entry: *gtk.SearchEntry,
@@ -71,6 +81,20 @@ pub const PackagePage = extern struct {
         arena: ?*std.heap.ArenaAllocator,
         selected_group: [64]u8,
         selected_group_len: usize,
+        selected_category: [256]u8,
+        selected_category_len: usize,
+        selected_repository: [128]u8,
+        selected_repository_len: usize,
+        categories: []const RecommendCategory,
+        groups: []const []const u8,
+        repositories: []const []const u8,
+        browser_data_generation: u64,
+        sidebar_mode: SidebarMode,
+        recommend_widget: ?*gtk.Widget,
+        recommendations_enabled: bool,
+        updating_sidebar: bool,
+        software_mode: bool,
+        installed_only_fixed: bool,
         generation: u64,
         show_installed_only: bool,
         show_explicit_only: bool,
@@ -96,6 +120,8 @@ pub const PackagePage = extern struct {
         page: *Self,
         packages: []Package,
         groups: []const []const u8,
+        repositories: []const []const u8,
+        categories: []const RecommendCategory,
         arena: *std.heap.ArenaAllocator,
         generation: u64,
         index: usize = 0,
@@ -111,6 +137,88 @@ pub const PackagePage = extern struct {
 
     pub fn new() *Self {
         return gobject.ext.newInstance(Self, .{});
+    }
+
+    pub fn newInstalled() *Self {
+        const self = new();
+        const p = self.priv();
+        p.show_installed_only = true;
+        p.installed_only_fixed = true;
+        gtk.CheckButton.setActive(p.installed_only_check, 1);
+        gtk.Widget.setVisible(p.installed_only_check.as(gtk.Widget), 0);
+        gtk.ColumnViewColumn.setVisible(p.install_date_column, 1);
+        gtk.Filter.changed(p.filter.as(gtk.Filter), .different);
+        return self;
+    }
+
+    pub fn setRecommendWidget(self: *Self, widget: *gtk.Widget) void {
+        const p = self.priv();
+        if (p.recommend_widget != null) return;
+        p.recommend_widget = widget;
+        if (gobject.ext.cast(RecommendPage, widget)) |recommend_page|
+            recommend_page.setOpenHandler(self, &onRecommendOpen);
+        _ = gtk.Stack.addNamed(p.content_stack, widget, "recommendations");
+        self.showRecommended();
+    }
+
+    fn onRecommendOpen(ctx: ?*anyopaque, name: []const u8, installed: bool) void {
+        const self: *Self = @ptrCast(@alignCast(ctx orelse return));
+        const p = self.priv();
+        // The card name lives in the RecommendPage arena. Changing the visible
+        // page can unmap that page and free the arena before the lookup ends.
+        const owned_name = std.heap.c_allocator.dupe(u8, name) catch return;
+        defer std.heap.c_allocator.free(owned_name);
+        const icon = p.resolver.resolve(owned_name);
+        const icon_path: ?[:0]const u8 = if (icon) |value|
+            (if (value.len == 0) null else value)
+        else
+            null;
+
+        if (gtk.Widget.getAncestor(self.as(gtk.Widget), ShellyWindow.getGObjectType())) |ancestor| {
+            const win: *ShellyWindow = @ptrCast(@alignCast(ancestor));
+            win.showFullPackageDetail(owned_name, installed, icon_path);
+            return;
+        }
+
+        self.showPackageBrowser();
+        p.detail.showPackage(owned_name, installed, icon_path);
+        gtk.Revealer.setRevealChild(p.detail_revealer, 1);
+    }
+
+    pub fn setRecommendationsEnabled(self: *Self, enabled: bool) void {
+        const p = self.priv();
+        p.recommendations_enabled = enabled;
+        if (!enabled) self.showPackageBrowser() else self.rebuildSidebar();
+    }
+
+    pub fn setSoftwareMode(self: *Self, enabled: bool) void {
+        const p = self.priv();
+        if (p.software_mode == enabled) return;
+        p.software_mode = enabled;
+        if (enabled) p.sidebar_mode = .categories;
+        p.updating_sidebar = true;
+        gtk.DropDown.setSelected(p.sidebar_mode_selection, @intFromEnum(p.sidebar_mode));
+        p.updating_sidebar = false;
+        gtk.ColumnViewColumn.setVisible(p.version_column, @intFromBool(!enabled));
+        gtk.Widget.setVisible(p.sidebar_mode_selection.as(gtk.Widget), @intFromBool(!enabled));
+        self.rebuildSidebar();
+    }
+
+    pub fn showRecommended(self: *Self) void {
+        const p = self.priv();
+        if (p.recommend_widget == null or !p.recommendations_enabled) return;
+        p.sidebar_mode = .categories;
+        p.updating_sidebar = true;
+        gtk.DropDown.setSelected(p.sidebar_mode_selection, @intFromEnum(SidebarMode.categories));
+        p.updating_sidebar = false;
+        gtk.Stack.setVisibleChildName(p.content_stack, "recommendations");
+        self.rebuildSidebar();
+    }
+
+    pub fn showPackageBrowser(self: *Self) void {
+        const p = self.priv();
+        gtk.Stack.setVisibleChildName(p.content_stack, "browser");
+        self.rebuildSidebar();
     }
 
     pub fn as(self: *Self, comptime T: type) *T {
@@ -130,12 +238,28 @@ pub const PackagePage = extern struct {
         p.generation = 0;
         p.show_installed_only = false;
         p.show_explicit_only = false;
+        p.show_depends_only = false;
         p.show_hidden = false;
         p.show_detail_pane = false;
+        p.selected_group_len = 0;
+        p.selected_category_len = 0;
+        p.selected_repository_len = 0;
+        p.categories = &.{};
+        p.groups = &.{};
+        p.repositories = &.{};
+        p.browser_data_generation = 0;
+        p.sidebar_mode = .categories;
+        p.recommend_widget = null;
+        p.recommendations_enabled = true;
+        p.updating_sidebar = false;
+        p.software_mode = false;
+        p.installed_only_fixed = false;
+        p.search_len = 0;
         p.check_map_grid = .empty;
         p.check_map_column = .empty;
 
         const detail = PackageDetail.new();
+        detail.setBackHandler(self, &onDetailBack);
         p.detail = detail;
         gtk.Revealer.setChild(p.detail_revealer, detail.as(gtk.Widget));
 
@@ -176,7 +300,7 @@ pub const PackagePage = extern struct {
 
         _ = gtk.SearchEntry.signals.search_changed.connect(p.search_entry, *Self, &on_search_changed, self, .{});
 
-        _ = gobject.Object.signals.notify.connect(p.grouping_selection.as(gobject.Object), *Self, &on_group_notify, self, .{ .detail = "selected" });
+        setupSidebar(self);
         _ = gobject.Object.signals.notify.connect(p.selection.as(gobject.Object), *Self, &on_selection_changed, self, .{ .detail = "selected" });
 
         _ = gtk.GridView.signals.activate.connect(p.grid_view, *Self, &on_grid_activated, self, .{});
@@ -213,6 +337,182 @@ pub const PackagePage = extern struct {
 
     fn onFocusSearch(_: *gio.SimpleAction, _: ?*glib.Variant, self: *Self) callconv(.c) void {
         _ = gtk.Widget.grabFocus(self.priv().search_entry.as(gtk.Widget));
+    }
+
+    fn setupSidebar(self: *Self) void {
+        const p = self.priv();
+        const modes = gtk.StringList.new(null);
+        gtk.StringList.append(modes, translations._("Categories"));
+        gtk.StringList.append(modes, translations._("Groups"));
+        gtk.StringList.append(modes, translations._("Repositories"));
+        gtk.DropDown.setModel(p.sidebar_mode_selection, modes.as(gio.ListModel));
+        modes.as(gobject.Object).unref();
+        gtk.DropDown.setSelected(p.sidebar_mode_selection, @intFromEnum(p.sidebar_mode));
+
+        _ = gobject.Object.signals.notify.connect(p.sidebar_mode_selection.as(gobject.Object), *Self, &onSidebarModeNotify, self, .{ .detail = "selected" });
+        _ = gtk.ListBox.signals.row_selected.connect(p.sidebar_list, *Self, &onSidebarRowSelected, self, .{});
+        self.rebuildSidebar();
+    }
+
+    fn hasRecommendedRow(self: *Self) bool {
+        const p = self.priv();
+        return p.recommend_widget != null and p.recommendations_enabled;
+    }
+
+    fn clearSelectedFilters(self: *Self) void {
+        const p = self.priv();
+        p.selected_group_len = 0;
+        p.selected_category_len = 0;
+        p.selected_repository_len = 0;
+    }
+
+    fn setSelectedValue(buffer: []u8, len: *usize, value: []const u8) void {
+        const copy_len = @min(buffer.len, value.len);
+        @memcpy(buffer[0..copy_len], value[0..copy_len]);
+        len.* = copy_len;
+    }
+
+    fn appendSidebarRow(self: *Self, text: [:0]const u8) void {
+        const p = self.priv();
+        const row = gtk.ListBoxRow.new();
+        const label = gtk.Label.new(text);
+        gtk.Label.setXalign(label, 0);
+        gtk.Label.setEllipsize(label, .end);
+        gtk.Widget.setMarginStart(label.as(gtk.Widget), 8);
+        gtk.Widget.setMarginEnd(label.as(gtk.Widget), 8);
+        gtk.Widget.setMarginTop(label.as(gtk.Widget), 6);
+        gtk.Widget.setMarginBottom(label.as(gtk.Widget), 6);
+        gtk.ListBoxRow.setChild(row, label.as(gtk.Widget));
+        gtk.ListBox.insert(p.sidebar_list, row.as(gtk.Widget), -1);
+    }
+
+    fn sidebarTargetIndex(self: *Self) c_int {
+        const p = self.priv();
+        switch (p.sidebar_mode) {
+            .categories => {
+                const recommended_rows: c_int = @intFromBool(self.hasRecommendedRow());
+                if (recommended_rows == 1) {
+                    const visible = gtk.Stack.getVisibleChildName(p.content_stack);
+                    if (visible) |name| {
+                        if (std.mem.eql(u8, std.mem.span(name), "recommendations")) return 0;
+                    }
+                }
+                if (p.selected_category_len > 0) {
+                    const selected = p.selected_category[0..p.selected_category_len];
+                    for (p.categories, 0..) |category, i| {
+                        if (std.mem.eql(u8, category.name, selected)) return recommended_rows + 1 + @as(c_int, @intCast(i));
+                    }
+                }
+                return recommended_rows;
+            },
+            .groups => {
+                if (p.selected_group_len > 0) {
+                    const selected = p.selected_group[0..p.selected_group_len];
+                    for (p.groups, 0..) |group, i| {
+                        if (std.mem.eql(u8, group, selected)) return 1 + @as(c_int, @intCast(i));
+                    }
+                }
+                return 0;
+            },
+            .repositories => {
+                if (p.selected_repository_len > 0) {
+                    const selected = p.selected_repository[0..p.selected_repository_len];
+                    for (p.repositories, 0..) |repository, i| {
+                        if (std.mem.eql(u8, repository, selected)) return 1 + @as(c_int, @intCast(i));
+                    }
+                }
+                return 0;
+            },
+        }
+    }
+
+    fn rebuildSidebar(self: *Self) void {
+        const p = self.priv();
+        p.updating_sidebar = true;
+        gtk.ListBox.removeAll(p.sidebar_list);
+
+        switch (p.sidebar_mode) {
+            .categories => {
+                if (self.hasRecommendedRow()) self.appendSidebarRow(translations._("Recommended"));
+                self.appendSidebarRow(translations._("All packages"));
+                for (p.categories) |category| {
+                    var buf: [256]u8 = undefined;
+                    self.appendSidebarRow(c_string.cstr(&buf, category.name));
+                }
+            },
+            .groups => {
+                self.appendSidebarRow(translations._("All groups"));
+                for (p.groups) |group| {
+                    var buf: [128]u8 = undefined;
+                    self.appendSidebarRow(c_string.cstr(&buf, group));
+                }
+            },
+            .repositories => {
+                self.appendSidebarRow(translations._("All repositories"));
+                for (p.repositories) |repository| {
+                    var buf: [128]u8 = undefined;
+                    self.appendSidebarRow(c_string.cstr(&buf, repository));
+                }
+            },
+        }
+
+        p.updating_sidebar = false;
+        const target = self.sidebarTargetIndex();
+        if (gtk.ListBox.getRowAtIndex(p.sidebar_list, target)) |row| {
+            gtk.ListBox.selectRow(p.sidebar_list, row);
+        }
+    }
+
+    fn onSidebarModeNotify(_: *gobject.Object, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
+        const p = self.priv();
+        if (p.updating_sidebar) return;
+        const selected = gtk.DropDown.getSelected(p.sidebar_mode_selection);
+        if (selected == std.math.maxInt(u32) or selected > @intFromEnum(SidebarMode.repositories)) return;
+        const mode: SidebarMode = @enumFromInt(@as(std.meta.Tag(SidebarMode), @intCast(selected)));
+        if (!sidebarModeAllowed(mode, p.software_mode)) return;
+        p.sidebar_mode = mode;
+        self.clearSelectedFilters();
+        gtk.Stack.setVisibleChildName(p.content_stack, "browser");
+        self.rebuildSidebar();
+    }
+
+    fn onSidebarRowSelected(_: *gtk.ListBox, row: ?*gtk.ListBoxRow, self: *Self) callconv(.c) void {
+        const p = self.priv();
+        if (p.updating_sidebar) return;
+        const selected_row = row orelse return;
+        const index = gtk.ListBoxRow.getIndex(selected_row);
+        if (index < 0) return;
+
+        self.clearSelectedFilters();
+        switch (p.sidebar_mode) {
+            .categories => {
+                const recommended_rows: c_int = @intFromBool(self.hasRecommendedRow());
+                if (recommended_rows == 1 and index == 0) {
+                    gtk.Stack.setVisibleChildName(p.content_stack, "recommendations");
+                } else {
+                    gtk.Stack.setVisibleChildName(p.content_stack, "browser");
+                    const category_index = index - recommended_rows - 1;
+                    if (category_index >= 0 and category_index < p.categories.len) {
+                        const category = p.categories[@intCast(category_index)];
+                        setSelectedValue(&p.selected_category, &p.selected_category_len, category.name);
+                    }
+                }
+            },
+            .groups => {
+                gtk.Stack.setVisibleChildName(p.content_stack, "browser");
+                if (index > 0 and index - 1 < p.groups.len) {
+                    setSelectedValue(&p.selected_group, &p.selected_group_len, p.groups[@intCast(index - 1)]);
+                }
+            },
+            .repositories => {
+                gtk.Stack.setVisibleChildName(p.content_stack, "browser");
+                if (index > 0 and index - 1 < p.repositories.len) {
+                    setSelectedValue(&p.selected_repository, &p.selected_repository_len, p.repositories[@intCast(index - 1)]);
+                }
+            },
+        }
+        gtk.Filter.changed(p.filter.as(gtk.Filter), .different);
+        self.update_no_results();
     }
 
     fn attachSorter(column: *gtk.ColumnViewColumn, sorter: *gtk.Sorter) void {
@@ -401,6 +701,13 @@ pub const PackagePage = extern struct {
         gtk.Widget.setHalign(label.as(gtk.Widget), gtk.Align.start);
         gtk.Label.setEllipsize(label, .end);
         gtk.ColumnViewCell.setChild(cell, label.as(gtk.Widget));
+    }
+
+    fn onDetailBack(context: ?*anyopaque) void {
+        const self: *Self = @ptrCast(@alignCast(context orelse return));
+        const p = self.priv();
+        gtk.SingleSelection.setSelected(p.selection, gtk.INVALID_LIST_POSITION);
+        gtk.Revealer.setRevealChild(p.detail_revealer, 0);
     }
 
     fn on_check_toggled(check: *gtk.CheckButton, _: ?*anyopaque) callconv(.c) void {
@@ -600,6 +907,9 @@ pub const PackagePage = extern struct {
 
         const new_state = !pkg.isSelected();
         pkg.setSelected(new_state);
+        const path = p.resolver.resolve(pkg.getName());
+        p.detail.showPackage(pkg.getName(), pkg.isInstalled(), path);
+        gtk.Revealer.setRevealChild(p.detail_revealer, 1);
 
         if (p.check_map_grid.get(pkg)) |check| {
             set_sync_active(check, new_state);
@@ -623,16 +933,32 @@ pub const PackagePage = extern struct {
 
         const pkg = gobject.ext.cast(PackageObject, item) orelse return 0;
 
-        if (p.selected_group_len > 0) {
-            const group = p.selected_group[0..p.selected_group_len];
-            var found = false;
-            for (pkg.getGroups()) |g| {
-                if (std.mem.eql(u8, g, group)) {
-                    found = true;
-                    break;
+        switch (p.sidebar_mode) {
+            .categories => {
+                if (p.selected_category_len > 0) {
+                    const category = p.selected_category[0..p.selected_category_len];
+                    if (!matchesCategory(p.categories, category, pkg.getName())) return 0;
                 }
-            }
-            if (!found) return 0;
+            },
+            .groups => {
+                if (p.selected_group_len > 0) {
+                    const group = p.selected_group[0..p.selected_group_len];
+                    var found = false;
+                    for (pkg.getGroups()) |g| {
+                        if (std.mem.eql(u8, g, group)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) return 0;
+                }
+            },
+            .repositories => {
+                if (p.selected_repository_len > 0) {
+                    const repository = p.selected_repository[0..p.selected_repository_len];
+                    if (!std.mem.eql(u8, pkg.getRepository(), repository)) return 0;
+                }
+            },
         }
 
         if (p.show_installed_only and !pkg.isInstalled()) return 0;
@@ -706,26 +1032,6 @@ pub const PackagePage = extern struct {
         gtk.Revealer.setRevealChild(p.detail_revealer, 1);
     }
 
-    fn on_group_notify(_: *gobject.Object, _: *gobject.ParamSpec, self: *Self) callconv(.c) void {
-        const p = self.priv();
-
-        const idx = gtk.DropDown.getSelected(p.grouping_selection);
-
-        if (idx == 0 or idx == std.math.maxInt(u32)) {
-            p.selected_group_len = 0;
-        } else {
-            const model = gtk.DropDown.getModel(p.grouping_selection) orelse return;
-            const obj = gio.ListModel.getObject(model, idx) orelse return;
-            const so = gobject.ext.cast(gtk.StringObject, obj) orelse return;
-            const s = std.mem.span(gtk.StringObject.getString(so));
-            const len = @min(s.len, p.selected_group.len);
-            @memcpy(p.selected_group[0..len], s[0..len]);
-            p.selected_group_len = len;
-        }
-
-        gtk.Filter.changed(p.filter.as(gtk.Filter), .different);
-    }
-
     pub fn onMap(self: *Self) void {
         const p = self.priv();
         if (p.loaded) return;
@@ -735,6 +1041,9 @@ pub const PackagePage = extern struct {
         show_loading(self);
         self.update_selection_ui();
         _ = gtk.Widget.grabFocus(p.search_entry.as(gtk.Widget));
+        if (runtime.shellyIconsEnabled() and !p.resolver.loaded) {
+            p.resolver.load(runtime.io, runtime.environ_map) catch {};
+        }
         const thread = std.Thread.spawn(.{}, load_worker, .{ self, p.generation, p.show_hidden }) catch return;
         gtk.Widget.setVisible(p.no_results_overlay.as(gtk.Widget), 0);
         thread.detach();
@@ -763,6 +1072,7 @@ pub const PackagePage = extern struct {
         gtk.ToggleButton.setActive(p.list_view_button, @intFromBool(!use_grid));
         gtk.Widget.setVisible(p.detail_grid_hbox.as(gtk.Widget), @intFromBool(use_grid));
         gtk.Widget.setVisible(p.detail_hbox.as(gtk.Widget), @intFromBool(!use_grid));
+        self.setSoftwareMode(cfg.SoftwareMode);
     }
 
     fn updateConfigField(
@@ -796,6 +1106,10 @@ pub const PackagePage = extern struct {
             std.heap.c_allocator.destroy(a);
             p.arena = null;
         }
+        p.categories = &.{};
+        p.groups = &.{};
+        p.repositories = &.{};
+        p.browser_data_generation = p.generation;
 
         p.resolver.deinit();
         p.resolver = IconResolver.init(std.heap.c_allocator);
@@ -807,13 +1121,10 @@ pub const PackagePage = extern struct {
         const arena_ptr = std.heap.c_allocator.create(std.heap.ArenaAllocator) catch return;
         arena_ptr.* = std.heap.ArenaAllocator.init(std.heap.c_allocator);
         const alloc = arena_ptr.allocator();
-        const p = page.priv();
-        if (runtime.shellyIconsEnabled() and !p.resolver.loaded) {
-            p.resolver.load(runtime.io, runtime.environ_map) catch {};
-        }
         var threaded: std.Io.Threaded = .init(alloc, .{});
         defer threaded.deinit();
 
+        const categories = recommendations.load(alloc, threaded.io(), runtime.environ_map);
         const cli = ShellyCli{ .allocator = alloc, .io = threaded.io() };
         const parsed = cli.get_packages(show_hidden) catch |err| {
             std.debug.print("Could not load the standard-package list. {0s}\n\nTechnical details: {1s}\n", .{ diagnostics.cause(err), @errorName(err) });
@@ -857,20 +1168,30 @@ pub const PackagePage = extern struct {
         }
 
         var set: std.StringHashMapUnmanaged(void) = .empty;
+        var repository_set: std.StringHashMapUnmanaged(void) = .empty;
         for (all.items) |pkg| {
             for (pkg.Groups) |g| set.put(alloc, g, {}) catch {};
+            if (pkg.Repository.len > 0) repository_set.put(alloc, pkg.Repository, {}) catch {};
         }
         var list: std.ArrayListUnmanaged([]const u8) = .empty;
         var it = set.keyIterator();
         while (it.next()) |k| list.append(alloc, k.*) catch {};
+        sortStrings(list.items);
 
-        post_result(page, all.items, list.items, arena_ptr, generation);
+        var repository_list: std.ArrayListUnmanaged([]const u8) = .empty;
+        var repository_it = repository_set.keyIterator();
+        while (repository_it.next()) |k| repository_list.append(alloc, k.*) catch {};
+        sortStrings(repository_list.items);
+
+        post_result(page, all.items, list.items, repository_list.items, categories, arena_ptr, generation);
     }
 
     fn post_result(
         page: *Self,
         packages: []Package,
         groups: []const []const u8,
+        repositories: []const []const u8,
+        categories: []const RecommendCategory,
         arena: *std.heap.ArenaAllocator,
         generation: u64,
     ) void {
@@ -883,6 +1204,8 @@ pub const PackagePage = extern struct {
             .page = page,
             .packages = packages,
             .groups = groups,
+            .repositories = repositories,
+            .categories = categories,
             .arena = arena,
             .generation = generation,
         };
@@ -893,6 +1216,11 @@ pub const PackagePage = extern struct {
         const result: *LoadResult = @ptrCast(@alignCast(data.?));
         const p = result.page.priv();
         if (result.generation != p.generation) {
+            if (p.browser_data_generation == result.generation) {
+                p.categories = &.{};
+                p.groups = &.{};
+                p.repositories = &.{};
+            }
             result.arena.deinit();
             std.heap.c_allocator.destroy(result.arena);
             std.heap.c_allocator.destroy(result);
@@ -905,15 +1233,16 @@ pub const PackagePage = extern struct {
             p.check_map_grid.clearAndFree(std.heap.c_allocator);
             p.check_map_column.clearAndFree(std.heap.c_allocator);
 
-            const strings = gtk.StringList.new(null);
-            gtk.StringList.append(strings, "Any");
-            for (result.groups) |g| {
-                var buf: [128]u8 = undefined;
-                gtk.StringList.append(strings, c_string.cstr(&buf, g));
+            p.categories = result.categories;
+            p.groups = result.groups;
+            p.repositories = result.repositories;
+            p.browser_data_generation = result.generation;
+            if (p.arena) |old_arena| {
+                old_arena.deinit();
+                std.heap.c_allocator.destroy(old_arena);
+                p.arena = null;
             }
-            gtk.DropDown.setModel(p.grouping_selection, strings.as(gio.ListModel));
-            strings.as(gobject.Object).unref();
-            gtk.DropDown.setSelected(p.grouping_selection, 0);
+            result.page.rebuildSidebar();
         }
 
         const batch_size = 500;
@@ -933,11 +1262,8 @@ pub const PackagePage = extern struct {
         if (result.index < result.packages.len) return 1;
 
         const page = result.page;
-        result.arena.deinit();
-        std.heap.c_allocator.destroy(result.arena);
+        p.arena = result.arena;
         std.heap.c_allocator.destroy(result);
-
-        _ = gtk.SelectionModel.selectItem(p.selection.as(gtk.SelectionModel), 0, 1);
 
         hide_loading(page);
 
@@ -977,7 +1303,11 @@ pub const PackagePage = extern struct {
         .{ "detail_grid_hbox", @offsetOf(Private, "detail_grid_hbox") },
         .{ "grid_view_button", @offsetOf(Private, "grid_view_button") },
         .{ "list_view_button", @offsetOf(Private, "list_view_button") },
-        .{ "grouping_selection", @offsetOf(Private, "grouping_selection") },
+        .{ "sidebar_box", @offsetOf(Private, "sidebar_box") },
+        .{ "sidebar_mode_selection", @offsetOf(Private, "sidebar_mode_selection") },
+        .{ "sidebar_list", @offsetOf(Private, "sidebar_list") },
+        .{ "package_content_stack", @offsetOf(Private, "content_stack") },
+        .{ "installed_only_check", @offsetOf(Private, "installed_only_check") },
         .{ "detail_revealer", @offsetOf(Private, "detail_revealer") },
         .{ "install_button", @offsetOf(Private, "install_button") },
         .{ "cart_label", @offsetOf(Private, "cart_label") },
@@ -1176,7 +1506,12 @@ pub const PackagePage = extern struct {
 
     fn on_installed_only_toggled(check: *gtk.CheckButton, self: *Self) callconv(.c) void {
         const p = self.priv();
-        p.show_installed_only = gtk.CheckButton.getActive(check) != 0;
+        if (p.installed_only_fixed) {
+            p.show_installed_only = true;
+            gtk.CheckButton.setActive(check, 1);
+        } else {
+            p.show_installed_only = gtk.CheckButton.getActive(check) != 0;
+        }
         gtk.ColumnViewColumn.setVisible(p.install_date_column, @intFromBool(p.show_installed_only));
         gtk.Filter.changed(p.filter.as(gtk.Filter), .different);
     }
@@ -1333,6 +1668,10 @@ pub const PackagePage = extern struct {
     fn reload(self: *Self) void {
         const p = self.priv();
         p.generation += 1;
+        p.categories = &.{};
+        p.groups = &.{};
+        p.repositories = &.{};
+        p.browser_data_generation = p.generation;
         show_loading(self);
         const thread = std.Thread.spawn(.{}, load_worker, .{ self, p.generation, p.show_hidden }) catch return;
         thread.detach();

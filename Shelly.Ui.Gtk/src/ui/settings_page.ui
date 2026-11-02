@@ -16,12 +16,6 @@
             <property name="margin-bottom">20</property>
             <property name="spacing">15</property>
             <child>
-              <object class="GtkStackSwitcher">
-                <property name="stack">settings_stack</property>
-                <property name="halign">center</property>
-              </object>
-            </child>
-            <child>
               <object class="GtkStack" id="settings_stack">
                 <property name="transition-type">slide-left-right</property>
                 <!-- General page -->
@@ -45,6 +39,123 @@
                             <property name="vexpand">true</property>
                             <property name="halign">center</property>
                             <property name="width-request">600</property>
+                            <child>
+                              <object class="AdwPreferencesGroup">
+                                <property name="title" translatable="yes">Software</property>
+                                <property name="description" translatable="yes">Browse applications and manage the package cache</property>
+                                <child>
+                                  <object class="GtkBox">
+                                    <property name="orientation">horizontal</property>
+                                    <property name="spacing">12</property>
+                                    <property name="margin-top">12</property>
+                                    <property name="margin-bottom">12</property>
+                                    <property name="margin-start">12</property>
+                                    <property name="margin-end">12</property>
+                                    <child>
+                                      <object class="GtkBox">
+                                        <property name="orientation">vertical</property>
+                                        <property name="hexpand">True</property>
+                                        <property name="valign">center</property>
+                                        <child>
+                                          <object class="GtkLabel">
+                                            <property name="label" translatable="yes">Software mode</property>
+                                            <property name="xalign">0</property>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkLabel">
+                                            <property name="label" translatable="yes">Show application categories and hide package versions</property>
+                                            <property name="xalign">0</property>
+                                            <property name="wrap">True</property>
+                                            <style><class name="dim-label"/><class name="caption"/></style>
+                                          </object>
+                                        </child>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkSwitch" id="software_mode_switch">
+                                        <property name="valign">center</property>
+                                        <accessibility>
+                                          <property name="label" translatable="yes">Software mode</property>
+                                        </accessibility>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkBox">
+                                    <property name="orientation">horizontal</property>
+                                    <property name="spacing">12</property>
+                                    <property name="margin-top">12</property>
+                                    <property name="margin-bottom">12</property>
+                                    <property name="margin-start">12</property>
+                                    <property name="margin-end">12</property>
+                                    <child>
+                                      <object class="GtkBox">
+                                        <property name="orientation">vertical</property>
+                                        <property name="hexpand">True</property>
+                                        <property name="valign">center</property>
+                                        <child>
+                                          <object class="GtkLabel">
+                                            <property name="label" translatable="yes">Cached package versions</property>
+                                            <property name="xalign">0</property>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkLabel">
+                                            <property name="label" translatable="yes">Versions of each package to retain when cleaning</property>
+                                            <property name="xalign">0</property>
+                                            <property name="wrap">True</property>
+                                            <style><class name="dim-label"/><class name="caption"/></style>
+                                          </object>
+                                        </child>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkSpinButton" id="cache_keep_spin">
+                                        <property name="valign">center</property>
+                                        <property name="numeric">True</property>
+                                        <accessibility>
+                                          <property name="label" translatable="yes">Cached package versions</property>
+                                        </accessibility>
+                                        <property name="adjustment">
+                                          <object class="GtkAdjustment">
+                                            <property name="lower">0</property>
+                                            <property name="upper">10</property>
+                                            <property name="step-increment">1</property>
+                                            <property name="page-increment">1</property>
+                                            <property name="value">3</property>
+                                          </object>
+                                        </property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkBox">
+                                    <property name="orientation">horizontal</property>
+                                    <property name="spacing">12</property>
+                                    <property name="margin-top">12</property>
+                                    <property name="margin-bottom">12</property>
+                                    <property name="margin-start">12</property>
+                                    <property name="margin-end">12</property>
+                                    <child>
+                                      <object class="GtkLabel">
+                                        <property name="label" translatable="yes">Remove old packages from the cache</property>
+                                        <property name="hexpand">True</property>
+                                        <property name="xalign">0</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkButton" id="clean_cache_button">
+                                        <property name="label" translatable="yes">Clean cache</property>
+                                        <property name="valign">center</property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                </child>
+                              </object>
+                            </child>
                             <child>
                               <object class="GtkBox">
                                 <property name="orientation">horizontal</property>
@@ -521,6 +632,7 @@
                             </child>
                             <child>
                               <object class="GtkBox">
+                                <property name="visible">false</property>
                                 <property name="orientation">horizontal</property>
                                 <property name="spacing">12</property>
                                 <child>
@@ -680,15 +792,6 @@
               <object class="GtkBox">
                 <property name="orientation">horizontal</property>
                 <property name="spacing">10</property>
-                <child>
-                  <object class="GtkButton" id="save_button">
-                    <property name="label" translatable="yes">Save</property>
-                    <property name="halign">start</property>
-                    <style>
-                      <class name="suggested-action"/>
-                    </style>
-                  </object>
-                </child>
                 <child>
                   <object class="GtkButton" id="changelog_button">
                     <property name="label" translatable="yes">View Changelog</property>

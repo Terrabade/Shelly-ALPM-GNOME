@@ -29,7 +29,10 @@ pub const PackageDetail = extern struct {
         description_label: *gtk.Label,
         spec_box: *gtk.Box,
         sections_box: *gtk.Box,
+        files_box: *gtk.Box,
 
+        install_action: *gio.SimpleAction,
+        remove_action: *gio.SimpleAction,
         reinstall_action: *gio.SimpleAction,
         add_ignore_action: *gio.SimpleAction,
         add_hold_action: *gio.SimpleAction,
@@ -40,7 +43,13 @@ pub const PackageDetail = extern struct {
         current_package: ?Package,
 
         back_button: *gtk.Button,
+        internal_back_visible: bool,
         actions_button: *gtk.MenuButton,
+        install_button: *gtk.Button,
+        remove_button: *gtk.Button,
+        reinstall_button: *gtk.Button,
+        back_callback: ?*const fn (?*anyopaque) void,
+        back_context: ?*anyopaque,
 
         debounce_source: c_uint,
         base_installed: bool,
@@ -76,9 +85,14 @@ pub const PackageDetail = extern struct {
         p.debounce_source = 0;
         p.pending_len = 0;
         p.current_package = null;
+        p.back_callback = null;
+        p.back_context = null;
+        p.internal_back_visible = true;
 
         const group = gio.SimpleActionGroup.new();
 
+        p.install_action = addAction(self, group, "install", &onInstall);
+        p.remove_action = addAction(self, group, "remove", &onRemove);
         p.reinstall_action = addAction(self, group, "reinstall", &onReinstall);
         p.add_ignore_action = addAction(self, group, "addignore", &onAddIgnore);
         p.add_hold_action = addAction(self, group, "addhold", &onAddHold);
@@ -106,6 +120,32 @@ pub const PackageDetail = extern struct {
 
     pub fn new() *Self {
         return gobject.ext.newInstance(Self, .{});
+    }
+
+    pub fn setBackHandler(self: *Self, context: ?*anyopaque, callback: ?*const fn (?*anyopaque) void) void {
+        const p = self.priv();
+        p.back_context = context;
+        p.back_callback = callback;
+        updateNav(self);
+    }
+
+    pub fn setInternalBackVisible(self: *Self, visible: bool) void {
+        const p = self.priv();
+        p.internal_back_visible = visible;
+        updateNav(self);
+    }
+
+    pub fn goBack(self: *Self) bool {
+        const p = self.priv();
+        if (p.nav_stack.items.len > 0) {
+            onBackClicked(p.back_button, self);
+            return true;
+        }
+        if (p.back_callback) |callback| {
+            callback(p.back_context);
+            return true;
+        }
+        return false;
     }
 
     pub fn showPackage(self: *Self, name: []const u8, is_installed: bool, icon_path: ?[:0]const u8) void {
@@ -136,16 +176,26 @@ pub const PackageDetail = extern struct {
         gtk.Label.setLabel(p.description_label, translations._("Loading..."));
         clearBox(p.spec_box);
         clearBox(p.sections_box);
-        gio.SimpleAction.setEnabled(p.reinstall_action, @intFromBool(is_installed));
-        gio.SimpleAction.setEnabled(p.add_explicit_action, @intFromBool(is_installed));
-        gio.SimpleAction.setEnabled(p.mark_dependency_action, @intFromBool(is_installed));
-        gio.SimpleAction.setEnabled(p.add_hold_action, @intFromBool(is_installed));
-        gio.SimpleAction.setEnabled(p.install_opt_deps_action, 0);
+        clearBox(p.files_box);
+        updateActionStates(p, is_installed);
         if (p.debounce_source != 0) {
             _ = glib.Source.remove(p.debounce_source);
             p.debounce_source = 0;
         }
         p.debounce_source = glib.timeoutAdd(150, &onDebounce, self);
+    }
+
+    fn updateActionStates(p: *Private, is_installed: bool) void {
+        gio.SimpleAction.setEnabled(p.install_action, @intFromBool(!is_installed));
+        gio.SimpleAction.setEnabled(p.remove_action, @intFromBool(is_installed));
+        gio.SimpleAction.setEnabled(p.reinstall_action, @intFromBool(is_installed));
+        gtk.Widget.setSensitive(p.install_button.as(gtk.Widget), @intFromBool(!is_installed));
+        gtk.Widget.setSensitive(p.remove_button.as(gtk.Widget), @intFromBool(is_installed));
+        gtk.Widget.setSensitive(p.reinstall_button.as(gtk.Widget), @intFromBool(is_installed));
+        gio.SimpleAction.setEnabled(p.add_explicit_action, @intFromBool(is_installed));
+        gio.SimpleAction.setEnabled(p.mark_dependency_action, @intFromBool(is_installed));
+        gio.SimpleAction.setEnabled(p.add_hold_action, @intFromBool(is_installed));
+        gio.SimpleAction.setEnabled(p.install_opt_deps_action, 0);
     }
 
     fn onDebounce(data: ?*anyopaque) callconv(.c) c_int {
@@ -222,6 +272,14 @@ pub const PackageDetail = extern struct {
         return 0;
     }
 
+    fn installReasonLabel(reason: []const u8) []const u8 {
+        if (std.mem.eql(u8, reason, "Explicit")) return translations._("Explicit");
+        if (std.mem.eql(u8, reason, "Dependency")) return translations._("Dependency");
+        if (std.mem.eql(u8, reason, "Unknown")) return translations._("Unknown");
+        if (std.mem.eql(u8, reason, "Not Installed")) return translations._("Not Installed");
+        return reason;
+    }
+
     fn populate(self: *Self, package: Package) void {
         const p = self.priv();
         var buf: [512]u8 = undefined;
@@ -237,17 +295,20 @@ pub const PackageDetail = extern struct {
         addSpecRow(p.spec_box, translations._("Version"), package.Version);
         addSpecRow(p.spec_box, translations._("Repository"), package.Repository);
         addSpecRow(p.spec_box, translations._("Installed Size"), SizeConverter.convert_null_term(&sbuf, package.InstalledSize));
-        if (package.DownloadSize > 0) addSpecSize(p.spec_box, translations._("Download Size"), package.DownloadSize);
+        if (package.DownloadSize > 0 or !package.Installed) addSpecSize(p.spec_box, translations._("Download Size"), package.DownloadSize);
         if (package.BuildDate.len > 0) addSpecRow(p.spec_box, translations._("Build Date"), package.BuildDate);
-        if (package.InstallReason.len > 0) addSpecRow(p.spec_box, translations._("Install Reason"), package.InstallReason);
+        if (package.InstallDate) |date| if (date.len > 0) addSpecRow(p.spec_box, translations._("Install Date"), date);
+        if (package.InstallReason.len > 0) addSpecRow(p.spec_box, translations._("Install Reason"), installReasonLabel(package.InstallReason));
 
         if (package.Url) |u| if (u.len > 0) addUrlSpecRow(p.spec_box, translations._("URL"), u);
 
         clearBox(p.sections_box);
         const alloc = (p.arena orelse return).allocator();
 
+        addSpecList(p.spec_box, alloc, translations._("Groups"), package.Groups);
         addSpecList(p.spec_box, alloc, translations._("Licenses"), package.Licenses);
         addSpecList(p.spec_box, alloc, translations._("Provides"), package.Provides);
+        addSpecList(p.spec_box, alloc, translations._("Replaces"), package.Replaces);
         addSpecList(p.spec_box, alloc, translations._("Conflicts"), package.Conflicts);
 
         addListSection(p.sections_box, self, translations._("Depends"), package.Depends, null);
@@ -259,6 +320,38 @@ pub const PackageDetail = extern struct {
             package.OptDependsInstalled,
         );
         addListSection(p.sections_box, self, translations._("Required By"), package.RequiredBy, null);
+        addListSection(p.sections_box, self, translations._("Optional For"), package.OptionalFor, null);
+        addFiles(p.files_box, package, p.base_installed);
+    }
+
+    fn addFiles(box: *gtk.Box, package: Package, installed: bool) void {
+        if (package.PackageFile) |root| {
+            for (root.Files) |file| {
+                if (file.Name.len == 0) continue;
+                var buf: [4096]u8 = undefined;
+                const path = c_string.cstr(&buf, file.Name);
+                const label = gtk.Label.new(path);
+                gtk.Widget.setHalign(label.as(gtk.Widget), .start);
+                gtk.Widget.setMarginTop(label.as(gtk.Widget), 4);
+                gtk.Widget.setMarginBottom(label.as(gtk.Widget), 4);
+                gtk.Label.setXalign(label, 0);
+                gtk.Label.setEllipsize(label, .middle);
+                gtk.Label.setSelectable(label, 1);
+                gtk.Widget.setTooltipText(label.as(gtk.Widget), path);
+                gtk.Widget.addCssClass(label.as(gtk.Widget), "monospace");
+                gtk.Box.append(box, label.as(gtk.Widget));
+            }
+        }
+        if (gtk.Widget.getFirstChild(box.as(gtk.Widget)) != null) return;
+        const message = if (installed)
+            translations._("No files are recorded for this package.")
+        else
+            translations._("File information is available for installed packages.");
+        const label = gtk.Label.new(message);
+        gtk.Label.setWrap(label, 1);
+        gtk.Label.setXalign(label, 0);
+        gtk.Widget.addCssClass(label.as(gtk.Widget), "dim-label");
+        gtk.Box.append(box, label.as(gtk.Widget));
     }
 
     fn addSpecRow(box: *gtk.Box, label: []const u8, value: []const u8) void {
@@ -356,9 +449,13 @@ pub const PackageDetail = extern struct {
 
         var buf: [64]u8 = undefined;
         const header = std.fmt.bufPrintZ(&buf, "{s} ({d})", .{ title, items.len }) catch translations._("Section");
-        const expander = gtk.Expander.new(header);
-        gtk.Expander.setExpanded(expander, 0);
-        gtk.Widget.addCssClass(expander.as(gtk.Widget), "spec-expander");
+        const header_label = gtk.Label.new(header);
+        gtk.Widget.setHalign(header_label.as(gtk.Widget), .start);
+        gtk.Widget.addCssClass(header_label.as(gtk.Widget), "spec-section-title");
+
+        const section = gtk.Box.new(.vertical, 0);
+        gtk.Widget.addCssClass(section.as(gtk.Widget), "spec-expander");
+        gtk.Box.append(section, header_label.as(gtk.Widget));
 
         const list = gtk.Box.new(.vertical, 0);
         gtk.Widget.setMarginStart(list.as(gtk.Widget), 8);
@@ -418,12 +515,12 @@ pub const PackageDetail = extern struct {
             gtk.ScrolledWindow.setMinContentHeight(scroll, 200);
             gtk.ScrolledWindow.setMaxContentHeight(scroll, 300);
             gtk.ScrolledWindow.setPropagateNaturalHeight(scroll, 0);
-            gtk.Expander.setChild(expander, scroll.as(gtk.Widget));
+            gtk.Box.append(section, scroll.as(gtk.Widget));
         } else {
-            gtk.Expander.setChild(expander, list.as(gtk.Widget));
+            gtk.Box.append(section, list.as(gtk.Widget));
         }
 
-        gtk.Box.append(box, expander.as(gtk.Widget));
+        gtk.Box.append(box, section.as(gtk.Widget));
     }
 
     fn appendInstalledIndicator(row: *gtk.Box, installed: bool) void {
@@ -462,7 +559,11 @@ pub const PackageDetail = extern struct {
 
     fn onBackClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
         const p = self.priv();
-        const prev = p.nav_stack.pop() orelse return;
+        if (p.nav_stack.items.len == 0) {
+            if (p.back_callback) |callback| callback(p.back_context);
+            return;
+        }
+        const prev = p.nav_stack.pop().?;
         defer std.heap.c_allocator.free(prev);
 
         const at_root_after = p.nav_stack.items.len == 0;
@@ -474,7 +575,7 @@ pub const PackageDetail = extern struct {
     fn updateNav(self: *Self) void {
         const p = self.priv();
         const at_root = p.nav_stack.items.len == 0;
-        gtk.Widget.setVisible(p.back_button.as(gtk.Widget), @intFromBool(!at_root));
+        gtk.Widget.setVisible(p.back_button.as(gtk.Widget), @intFromBool(p.internal_back_visible and (!at_root or p.back_callback != null)));
         gtk.Widget.setVisible(p.actions_button.as(gtk.Widget), @intFromBool(at_root));
     }
 
@@ -502,6 +603,46 @@ pub const PackageDetail = extern struct {
         var buf: [32]u8 = undefined;
         const formatted = SizeConverter.convert_null_term(&buf, bytes);
         addSpecRow(box, label, formatted);
+    }
+
+    fn onInstall(_: *gio.SimpleAction, _: ?*glib.Variant, self: *Self) callconv(.c) void {
+        const p = self.priv();
+        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer argv.deinit(std.heap.c_allocator);
+        argv.append(std.heap.c_allocator, "install") catch return;
+        argv.append(std.heap.c_allocator, "standard") catch return;
+        argv.append(std.heap.c_allocator, p.pending_name[0..p.pending_len]) catch return;
+
+        if (support.getWindow(ShellyWindow, self)) |win| {
+            win.startTransaction(.{
+                .title = translations._("Installing package"),
+                .argv = argv.items,
+                .packages = &.{&p.pending_name},
+                .on_complete = &onActionComplete,
+                .privileged = true,
+                .ctx = self,
+            });
+        }
+    }
+
+    fn onRemove(_: *gio.SimpleAction, _: ?*glib.Variant, self: *Self) callconv(.c) void {
+        const p = self.priv();
+        var argv: std.ArrayListUnmanaged([]const u8) = .empty;
+        defer argv.deinit(std.heap.c_allocator);
+        argv.append(std.heap.c_allocator, "remove") catch return;
+        argv.append(std.heap.c_allocator, "standard") catch return;
+        argv.append(std.heap.c_allocator, p.pending_name[0..p.pending_len]) catch return;
+
+        if (support.getWindow(ShellyWindow, self)) |win| {
+            win.startTransaction(.{
+                .title = translations._("Removing package"),
+                .argv = argv.items,
+                .packages = &.{&p.pending_name},
+                .on_complete = &onActionComplete,
+                .privileged = true,
+                .ctx = self,
+            });
+        }
     }
 
     fn onReinstall(_: *gio.SimpleAction, _: ?*glib.Variant, self: *Self) callconv(.c) void {
@@ -717,9 +858,13 @@ pub const PackageDetail = extern struct {
         .{ "description_label", @offsetOf(Private, "description_label") },
         .{ "spec_box", @offsetOf(Private, "spec_box") },
         .{ "sections_box", @offsetOf(Private, "sections_box") },
+        .{ "files_box", @offsetOf(Private, "files_box") },
         .{ "content_box", @offsetOf(Private, "content_box") },
         .{ "back_button", @offsetOf(Private, "back_button") },
         .{ "actions_button", @offsetOf(Private, "actions_button") },
+        .{ "install_button", @offsetOf(Private, "install_button") },
+        .{ "remove_button", @offsetOf(Private, "remove_button") },
+        .{ "reinstall_button", @offsetOf(Private, "reinstall_button") },
     };
 
     pub const Class = extern struct {
@@ -737,3 +882,70 @@ pub const PackageDetail = extern struct {
         }
     };
 };
+
+fn testActionEnabled(action: *gio.SimpleAction) bool {
+    var value = gobject.ext.Value.new(c_int);
+    defer value.unset();
+    action.as(gobject.Object).getProperty("enabled", &value);
+    return gobject.ext.Value.get(&value, c_int) != 0;
+}
+
+test "package detail renders package files and installation actions" {
+    try @import("../helpers/gtk_test.zig").requireDisplay();
+
+    const detail = PackageDetail.new();
+    _ = detail.as(gobject.Object).refSink();
+    defer detail.as(gobject.Object).unref();
+    const p = detail.priv();
+    const arena = try std.heap.c_allocator.create(std.heap.ArenaAllocator);
+    arena.* = std.heap.ArenaAllocator.init(std.heap.c_allocator);
+    p.arena = arena;
+
+    const package = try std.json.parseFromSliceLeaky(
+        Package,
+        arena.allocator(),
+        "{\"Name\":\"demo\",\"Version\":\"1.0\",\"Description\":\"Demo package\",\"Installed\":true,\"PackageFile\":{\"Name\":\"\",\"Files\":[{\"Name\":\"usr/bin/demo\",\"Files\":[]},{\"Name\":\"usr/share/demo/config.toml\",\"Files\":[]}]}}",
+        .{},
+    );
+
+    p.base_installed = true;
+    PackageDetail.updateActionStates(p, true);
+    PackageDetail.populate(detail, package);
+    try std.testing.expect(!testActionEnabled(p.install_action));
+    try std.testing.expect(testActionEnabled(p.remove_action));
+    try std.testing.expect(testActionEnabled(p.reinstall_action));
+    try std.testing.expect(gtk.Widget.getSensitive(p.install_button.as(gtk.Widget)) == 0);
+    try std.testing.expect(gtk.Widget.getSensitive(p.remove_button.as(gtk.Widget)) != 0);
+    try std.testing.expect(gtk.Widget.getSensitive(p.reinstall_button.as(gtk.Widget)) != 0);
+
+    const first_file = gtk.Widget.getFirstChild(p.files_box.as(gtk.Widget)) orelse return error.MissingFileRow;
+    const first_label = gobject.ext.cast(gtk.Label, first_file) orelse return error.MissingFileLabel;
+    try std.testing.expectEqualStrings("usr/bin/demo", std.mem.span(gtk.Label.getLabel(first_label)));
+    const second_file = gtk.Widget.getNextSibling(first_file) orelse return error.MissingFileRow;
+    const second_label = gobject.ext.cast(gtk.Label, second_file) orelse return error.MissingFileLabel;
+    try std.testing.expectEqualStrings("usr/share/demo/config.toml", std.mem.span(gtk.Label.getLabel(second_label)));
+
+    p.base_installed = false;
+    PackageDetail.updateActionStates(p, false);
+    PackageDetail.populate(detail, package);
+    try std.testing.expect(testActionEnabled(p.install_action));
+    try std.testing.expect(!testActionEnabled(p.remove_action));
+    try std.testing.expect(!testActionEnabled(p.reinstall_action));
+    try std.testing.expect(gtk.Widget.getSensitive(p.install_button.as(gtk.Widget)) != 0);
+    try std.testing.expect(gtk.Widget.getSensitive(p.remove_button.as(gtk.Widget)) == 0);
+    try std.testing.expect(gtk.Widget.getSensitive(p.reinstall_button.as(gtk.Widget)) == 0);
+
+    const BackContext = struct {
+        called: bool = false,
+        fn back(raw: ?*anyopaque) void {
+            const context: *@This() = @ptrCast(@alignCast(raw.?));
+            context.called = true;
+        }
+    };
+    var context = BackContext{};
+    PackageDetail.setBackHandler(detail, &context, BackContext.back);
+    PackageDetail.updateNav(detail);
+    try std.testing.expect(gtk.Widget.getVisible(p.back_button.as(gtk.Widget)) != 0);
+    PackageDetail.onBackClicked(p.back_button, detail);
+    try std.testing.expect(context.called);
+}

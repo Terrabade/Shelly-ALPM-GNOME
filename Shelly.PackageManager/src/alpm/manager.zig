@@ -233,7 +233,7 @@ pub const Manager = struct {
         }) {
             .libalpm => |value| if (comptime selection.libalpm_enabled) blk: {
                 const package = try value.get_single_installed_package(package_name) orelse break :blk null;
-                break :blk try libalpm.OwnedPackage.initWithReverseDependencies(self.allocator, package, .{ .required_by = true, .optional_for = true });
+                break :blk try libalpm.OwnedPackage.initWithReverseDependencies(self.allocator, package, .{ .required_by = true, .optional_for = true, .files = true });
             } else unreachable,
             .rlpm => |value| value.get_single_installed_package(package_name) catch |err| return mapTransaction(err),
         };

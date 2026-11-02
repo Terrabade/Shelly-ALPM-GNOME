@@ -74,7 +74,8 @@ paru -Rns shelly
 
 - **Modern-CLI**: Provides a command-line interface for advanced users and automation, with a focus on ease of use.
 - **Native Arch Integration**: Configurable libalpm or RLPM backend, retaining CachyOS extensions.
-- **Native Wayland Support**: Front end built using GTK4.
+- **Native Wayland Support**: Front end built using GTK4 and Libadwaita, with Explore, Installed and Updates views, category, group and repository filters, and a package view with files, dependencies and management actions.
+- **Software Mode**: Hides package versions and focuses the browser on application categories.
 - **Package Management**: Supports searching and filtering for, installing, updating, and removing packages.
 - **Repository Management**: Synchronizes with official repositories to keep package lists up to date.
 - **AUR Support**: Integration with the Arch User Repository for a wider range of software.
@@ -444,6 +445,20 @@ scripts/test-flatpak-separation.sh
 
 The backend ABI, memory ownership, discovery rules, and version-bump procedure
 are documented in [docs/flatpak-backend-abi.md](docs/flatpak-backend-abi.md).
+
+### Local user install
+
+For a local preview without changing system packages:
+
+```bash
+(cd Shelly.Cli.Zig && zig build install --prefix ~/.local)
+(cd Shelly.Ui.Gtk && zig build install --prefix ~/.local)
+```
+
+Both components build with Zig 0.16 and install under the chosen `--prefix`
+(`~/.local` by default). GTK UI translations require `msgfmt`. Note that
+`~/.local/bin` must appear earlier in `PATH` than the system-wide Shelly
+binary to run the local preview.
 
 ## License
 
