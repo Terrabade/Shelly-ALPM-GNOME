@@ -193,7 +193,7 @@ pub const Manager = struct {
         return result.toOwnedSlice(self.allocator);
     }
     fn snapshot(self: *Manager, ref: rlpm.PackageRef, options: types.ReverseDependencyOptions) !types.OwnedPackage {
-        const package = try self.owner.packageMetadata(self.io(), ref, .{});
+        const package = try self.owner.packageMetadata(self.io(), ref, .{ .files = options.files });
         var result = try owned(self.allocator, package);
         errdefer result.deinit(self.allocator);
         inline for (.{ "required_by", "optional_for" }) |field| if (@field(options, field)) {
@@ -216,7 +216,7 @@ pub const Manager = struct {
     pub fn get_single_installed_package(self: *Manager, name: [:0]const u8) !?types.OwnedPackage {
         try self.checkCancelled();
         const ref = try self.owner.queryPackage(self.io(), self.owner.localDatabase().?, name) orelse return null;
-        return try self.snapshot(ref, .{ .required_by = true, .optional_for = true });
+        return try self.snapshot(ref, .{ .required_by = true, .optional_for = true, .files = true });
     }
     pub fn get_available_packages(self: *Manager) ![]types.OwnedPackage {
         var result: std.ArrayList(types.OwnedPackage) = .empty;
@@ -965,5 +965,8 @@ fn owned(a: std.mem.Allocator, package: *const rlpm.Package) !types.OwnedPackage
         }
         @field(result, field ++ "_value") = values;
     }
+    result.files_value = try a.alloc([:0]u8, package.files.len);
+    for (result.files_value) |*value| value.* = @constCast("");
+    for (package.files, result.files_value) |file, *value| value.* = try a.dupeZ(u8, file.name);
     return result;
 }

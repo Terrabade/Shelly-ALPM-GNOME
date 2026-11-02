@@ -47,6 +47,7 @@ pub const StandardPackage = struct {
     installed_size: i64 = 0,
     required_by: []const []const u8 = &.{},
     optional_for: []const []const u8 = &.{},
+    files: []const []const u8 = &.{},
 };
 
 const LocalPackage = struct {
@@ -354,6 +355,13 @@ fn runStandard(
                     manager,
                     package.optional_depends,
                 );
+                const wanted_z = try context.allocator.dupeZ(u8, wanted);
+                defer context.allocator.free(wanted_z);
+                if (try manager.get_single_installed_package(wanted_z)) |value| {
+                    var installed_package = value;
+                    defer installed_package.deinit(context.allocator);
+                    pkg.files = try copySentinelStrings(context.allocator, installed_package.files());
+                }
                 return .{ .mode = .detail, .detail = pkg };
             }
         }
@@ -985,7 +993,25 @@ fn writeStandardPackageJsonWith(json: *std.json.Stringify, package: StandardPack
     try field(json, "OptDepends", package.optional_depends);
     try field(json, "OptDependsInstalled", package.optional_depends_installed);
     try field(json, "Conflicts", package.conflicts);
-    try field(json, "PackageFile", null);
+    try json.objectField("PackageFile");
+    if (package.files.len == 0) {
+        try json.write(null);
+    } else {
+        try json.beginObject();
+        try field(json, "Name", "");
+        try json.objectField("Files");
+        try json.beginArray();
+        for (package.files) |file_name| {
+            try json.beginObject();
+            try field(json, "Name", file_name);
+            try json.objectField("Files");
+            try json.beginArray();
+            try json.endArray();
+            try json.endObject();
+        }
+        try json.endArray();
+        try json.endObject();
+    }
     try field(json, "InstallReason", package.install_reason);
     try json.objectField("InstallDate");
     if (package.install_date) |seconds| {
@@ -1148,6 +1174,7 @@ fn copyStandardPackage(
         .installed_size = package.install_size(),
         .required_by = try copySentinelStrings(allocator, package.required_by()),
         .optional_for = try copySentinelStrings(allocator, package.optional_for()),
+        .files = try copySentinelStrings(allocator, package.files()),
     };
 }
 
@@ -1542,6 +1569,33 @@ test "standard package detail serializes optional dependency installation state"
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"PackageBase\":\"editor-suite\"") != null);
     try std.testing.expectEqualStrings("plugins>=1:2", optionalDependencyExpression("plugins>=1:2: Plugin support"));
     try std.testing.expectEqualStrings("spellcheck", optionalDependencyExpression("spellcheck: Spell checking"));
+}
+
+test "standard package detail serializes owned files for the GTK contract" {
+    var output_buffer = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer output_buffer.deinit();
+    try writeStandardPackageJson(&output_buffer.writer, .{
+        .name = "editor",
+        .version = "1.0",
+        .files = &.{ "usr/bin/editor", "usr/share/editor/config.toml" },
+    });
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, output_buffer.writer.buffered(), .{});
+    defer parsed.deinit();
+    const root = parsed.value.object.get("PackageFile").?.object;
+    try std.testing.expectEqualStrings("", root.get("Name").?.string);
+    const files = root.get("Files").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), files.len);
+    try std.testing.expectEqualStrings("usr/bin/editor", files[0].object.get("Name").?.string);
+    try std.testing.expectEqual(@as(usize, 0), files[0].object.get("Files").?.array.items.len);
+    try std.testing.expectEqualStrings("usr/share/editor/config.toml", files[1].object.get("Name").?.string);
+
+    var empty_buffer = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer empty_buffer.deinit();
+    try writeStandardPackageJson(&empty_buffer.writer, .{ .name = "editor", .version = "1.0" });
+    const empty = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, empty_buffer.writer.buffered(), .{});
+    defer empty.deinit();
+    try std.testing.expect(empty.value.object.get("PackageFile").? == .null);
 }
 
 test "AUR standard merge and Flatpak paging are serialized without subprocesses" {

@@ -364,6 +364,11 @@ pub const libalpm = struct {
             else
                 try allocator.alloc([:0]u8, 0);
             errdefer freeStrings(allocator, optional_for_value);
+            const files_value = if (reverse_dependencies.files)
+                try dupeFileNames(allocator, package.files())
+            else
+                try allocator.alloc([:0]u8, 0);
+            errdefer freeStrings(allocator, files_value);
 
             const architecture_value = try dupeOptional(allocator, str(alpm.alpm_pkg_get_arch(package.ptr)));
             return .{
@@ -387,6 +392,7 @@ pub const libalpm = struct {
                 .conflicts_value = conflicts_value,
                 .required_by_value = required_by_value,
                 .optional_for_value = optional_for_value,
+                .files_value = files_value,
                 .build_date_value = if (package.build_date()) |date| date.unix() else 0,
                 .install_date_value = if (package.install_date()) |date| date.unix() else null,
             };
@@ -405,6 +411,24 @@ pub const libalpm = struct {
             }
             while (iterator.next()) |value| {
                 const owned = try allocator.dupeZ(u8, value);
+                values.append(allocator, owned) catch |err| {
+                    allocator.free(owned);
+                    return err;
+                };
+            }
+            return values.toOwnedSlice(allocator);
+        }
+
+        fn dupeFileNames(allocator: std.mem.Allocator, list: AlpmFileList) std.mem.Allocator.Error![][:0]u8 {
+            var iterator = list.files();
+            var values: std.ArrayList([:0]u8) = .empty;
+            errdefer {
+                for (values.items) |value| allocator.free(value);
+                values.deinit(allocator);
+            }
+            while (iterator.next()) |file| {
+                const name = file.name() orelse continue;
+                const owned = try allocator.dupeZ(u8, name);
                 values.append(allocator, owned) catch |err| {
                     allocator.free(owned);
                     return err;
