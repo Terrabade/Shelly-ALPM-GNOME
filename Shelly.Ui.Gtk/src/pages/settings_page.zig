@@ -52,6 +52,9 @@ pub const ShellySettingsPage = extern struct {
         settings_stack: *gtk.Stack,
 
         // General
+        software_mode_switch: *gtk.Switch,
+        cache_keep_spin: *gtk.SpinButton,
+        clean_cache_button: *gtk.Button,
         aur_switch: *gtk.Switch,
         aur_row_label: *gtk.Label,
         language_drop: *gtk.DropDown,
@@ -103,7 +106,6 @@ pub const ShellySettingsPage = extern struct {
         appimage_install_path_button: *gtk.Button,
 
         // Bottom action bar
-        save_button: *gtk.Button,
         changelog_button: *gtk.Button,
         version_label: *gtk.Label,
         github_link: *gtk.LinkButton,
@@ -154,8 +156,8 @@ pub const ShellySettingsPage = extern struct {
 
         populateDropdowns(p);
 
-        _ = gtk.Button.signals.clicked.connect(p.save_button, *Self, &onSaveClicked, self, .{});
         _ = gtk.Button.signals.clicked.connect(p.changelog_button, *Self, &onChangelogClicked, self, .{});
+        _ = gtk.Button.signals.clicked.connect(p.clean_cache_button, *Self, &onCacheClean, self, .{});
 
         _ = gtk.Button.signals.clicked.connect(p.tray_icon_button, *Self, &onPickTrayIcon, self, .{});
         _ = gtk.Button.signals.clicked.connect(p.tray_icon_clear_button, *Self, &onClearTrayIcon, self, .{});
@@ -229,6 +231,7 @@ pub const ShellySettingsPage = extern struct {
         );
 
         const autosave_switches = .{
+            p.software_mode_switch,
             p.recommended_switch,
             p.shelly_icons_switch,
             p.symbolic_tray_switch,
@@ -290,7 +293,7 @@ pub const ShellySettingsPage = extern struct {
             _ = gtk.CheckButton.signals.toggled.connect(c, *Self, &onAutosaveToggled, self, .{});
         }
 
-        const spins = .{ p.tray_interval_spin, p.update_hour_spin, p.update_minute_spin };
+        const spins = .{ p.cache_keep_spin, p.tray_interval_spin, p.update_hour_spin, p.update_minute_spin };
         inline for (spins) |s| {
             _ = gtk.SpinButton.signals.value_changed.connect(s, *Self, &onAutosaveValueChanged, self, .{});
         }
@@ -341,13 +344,8 @@ pub const ShellySettingsPage = extern struct {
         }
     }
 
-    fn onSaveClicked(_: *gtk.Button, self: *Self) callconv(.c) void {
-        self.save() catch |err| {
-            std.log.err("Could not save settings to the configured file. {0s} Your latest changes were not saved.\n\nTechnical details: {1s}", .{ diagnostics.cause(err), @errorName(err) });
-            self.priv().toast.show(.@"error", translations._("Could not save settings to the configured file. Your latest changes were not saved."));
-            return;
-        };
-        self.priv().toast.show(.success, translations._("Settings saved"));
+    pub fn settingsStack(self: *Self) *gtk.Stack {
+        return self.priv().settings_stack;
     }
 
     fn applyIconsToggle(previous: bool, current: bool) void {
@@ -676,6 +674,40 @@ pub const ShellySettingsPage = extern struct {
             .flatpak => translations._("Flatpak support enabled"),
             .appimage => translations._("AppImage support enabled"),
         };
+    }
+
+    fn onCacheClean(_: *gtk.Button, self: *Self) callconv(.c) void {
+        self.save() catch {
+            self.priv().toast.show(.@"error", translations._("Could not save settings to the configured file. Your latest changes were not saved."));
+            return;
+        };
+        const p = self.priv();
+        const keep = gtk.SpinButton.getValueAsInt(p.cache_keep_spin);
+        var keep_buf: [16]u8 = undefined;
+        const keep_str = std.fmt.bufPrint(&keep_buf, "{d}", .{keep}) catch return;
+        const argv = ShellyCommands.clean_cache(std.heap.c_allocator, keep_str) catch return;
+        defer std.heap.c_allocator.free(argv);
+        const win = support.getWindow(ShellyWindow, self) orelse return;
+        gtk.Widget.setSensitive(p.clean_cache_button.as(gtk.Widget), 0);
+        win.startTransaction(.{
+            .title = translations._("Cleaning package cache"),
+            .argv = argv,
+            .packages = &.{},
+            .on_complete = &onCacheCleanComplete,
+            .privileged = true,
+            .ctx = self,
+        });
+    }
+
+    fn onCacheCleanComplete(ctx: *anyopaque, success: bool) void {
+        const self: *Self = @ptrCast(@alignCast(ctx));
+        const p = self.priv();
+        gtk.Widget.setSensitive(p.clean_cache_button.as(gtk.Widget), 1);
+        if (success) {
+            p.toast.show(.success, translations._("Package cache cleaned"));
+        } else {
+            p.toast.show(.@"error", translations._("Could not clean the package cache."));
+        }
     }
 
     fn onAutosaveToggled(_: *gtk.CheckButton, self: *Self) callconv(.c) void {
@@ -1088,6 +1120,9 @@ pub const ShellySettingsPage = extern struct {
         .{ "settings_stack", @offsetOf(Private, "settings_stack") },
 
         // General
+        .{ "software_mode_switch", @offsetOf(Private, "software_mode_switch") },
+        .{ "cache_keep_spin", @offsetOf(Private, "cache_keep_spin") },
+        .{ "clean_cache_button", @offsetOf(Private, "clean_cache_button") },
         .{ "aur_switch", @offsetOf(Private, "aur_switch") },
         .{ "aur_row_label", @offsetOf(Private, "aur_row_label") },
         .{ "language_drop", @offsetOf(Private, "language_drop") },
@@ -1137,7 +1172,6 @@ pub const ShellySettingsPage = extern struct {
         .{ "appimage_install_path_button", @offsetOf(Private, "appimage_install_path_button") },
 
         // Bottom action bar
-        .{ "save_button", @offsetOf(Private, "save_button") },
         .{ "changelog_button", @offsetOf(Private, "changelog_button") },
         .{ "version_label", @offsetOf(Private, "version_label") },
         .{ "github_link", @offsetOf(Private, "github_link") },
@@ -1357,6 +1391,7 @@ fn persistFeatureEnabled(
 }
 
 fn applyConfig(p: *ShellySettingsPage.Private, cfg: *ShellyConfig) void {
+    applySoftwarePreferences(p, cfg);
     setSwitch(p.aur_switch, cfg.AurEnabled);
     setSwitch(p.flatpak_switch, cfg.FlatPackEnabled);
     setSwitch(p.recommended_switch, cfg.RecommendedEnabled);
@@ -1400,6 +1435,11 @@ fn applyConfig(p: *ShellySettingsPage.Private, cfg: *ShellyConfig) void {
     applyAppImageInstallPath(p);
 }
 
+fn applySoftwarePreferences(p: *ShellySettingsPage.Private, cfg: *const ShellyConfig) void {
+    setSwitch(p.software_mode_switch, cfg.SoftwareMode);
+    gtk.SpinButton.setValue(p.cache_keep_spin, @floatFromInt(cfg.CacheKeepVersions));
+}
+
 fn applyAppImageInstallPath(p: *ShellySettingsPage.Private) void {
     const allocator = std.heap.c_allocator;
     var resolver = CliConfigResolver.init(allocator, runtime.io, runtime.environ_map) catch {
@@ -1437,6 +1477,8 @@ fn collectIntoConfig(p: *ShellySettingsPage.Private, allocator: std.mem.Allocato
     cfg.Culture = language_entries[gtk.DropDown.getSelected(p.language_drop)].value;
 
     cfg.AurEnabled = getSwitch(p.aur_switch);
+    cfg.SoftwareMode = getSwitch(p.software_mode_switch);
+    cfg.CacheKeepVersions = gtk.SpinButton.getValueAsInt(p.cache_keep_spin);
     cfg.FlatPackEnabled = getSwitch(p.flatpak_switch);
     cfg.RecommendedEnabled = getSwitch(p.recommended_switch);
     cfg.AppImageEnabled = getSwitch(p.appimage_switch);
@@ -1476,6 +1518,24 @@ fn collectIntoConfig(p: *ShellySettingsPage.Private, allocator: std.mem.Allocato
     cfg.ShellySearchEnabled = getSwitch(p.shelly_search_switch);
     cfg.AtollAurEnabled = getSwitch(p.atoll_aur_switch);
     cfg.PackageManagementRemoveConfigs = getSwitch(p.remove_cache_switch);
+}
+
+test "settings render software mode and shared cache preferences" {
+    try @import("../helpers/gtk_test.zig").requireDisplay();
+
+    const page = SettingsPage.new();
+    _ = page.as(gobject.Object).refSink();
+    defer page.as(gobject.Object).unref();
+    const p = page.priv();
+    var cfg = ShellyConfig{};
+    cfg.SoftwareMode = true;
+    cfg.CacheKeepVersions = 5;
+
+    applySoftwarePreferences(p, &cfg);
+
+    try std.testing.expect(gtk.Switch.getActive(p.software_mode_switch) != 0);
+    try std.testing.expectEqual(@as(c_int, 5), gtk.SpinButton.getValueAsInt(p.cache_keep_spin));
+    try std.testing.expect(gtk.Widget.getSensitive(p.clean_cache_button.as(gtk.Widget)) != 0);
 }
 
 test "Flatpak support uses libflatpak and the configured companion backend" {

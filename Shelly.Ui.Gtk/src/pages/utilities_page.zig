@@ -6,6 +6,7 @@ const gobject = bindings.gobject;
 const glib = bindings.glib;
 const ShellyCommands = @import("../services/shelly_operation.zig").ShellyCommands;
 const ShellyCli = @import("../services/shelly_cli.zig").ShellyCli;
+const runtime = @import("../services/runtime.zig");
 const support = @import("support.zig");
 const ShellyWindow = @import("../shelly_window.zig").ShellyWindow;
 const Toast = @import("../helpers/custom_ui_comps/toast.zig").Toast;
@@ -74,7 +75,11 @@ pub const ShellyUtilitiesPage = extern struct {
         p.toast = toast;
     }
 
-    pub fn onMap(_: *Self) void {}
+    pub fn onMap(self: *Self) void {
+        const svc = runtime.config orelse return;
+        const cfg = svc.get() catch return;
+        gtk.SpinButton.setValue(self.priv().cache_keep_spin, @floatFromInt(cfg.CacheKeepVersions));
+    }
 
     pub fn onUnmap(_: *Self) void {}
 
@@ -150,6 +155,17 @@ pub const ShellyUtilitiesPage = extern struct {
 
     fn on_clean_cache(_: *gtk.Button, self: *Self) callconv(.c) void {
         const keep: usize = @intCast(gtk.SpinButton.getValueAsInt(self.priv().cache_keep_spin));
+
+        if (runtime.config) |svc| {
+            const cfg = svc.get() catch return;
+            var updated = cfg.*;
+            updated.CacheKeepVersions = @intCast(keep);
+            svc.set(updated) catch return;
+            svc.save() catch {
+                self.priv().toast.show(.@"error", translations._("Could not save the cache retention setting."));
+                return;
+            };
+        }
 
         var keep_buf: [16]u8 = undefined;
         const keep_str = std.fmt.bufPrint(&keep_buf, "{d}", .{keep}) catch return;

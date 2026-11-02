@@ -2,6 +2,10 @@
   background-color: alpha(black, 0.6);
 }
 
+.full-detail-background {
+  background-color: @theme_bg_color;
+}
+
 .welcome-screen {
   background-color: @theme_bg_color;
 }
@@ -153,24 +157,10 @@
     margin-left: 0;
 }
 
-.spec-expander > box {
-    padding-left: 0;
-    margin-left: 0;
-}
-
-.spec-expander title {
-    padding-left: 0;
-}
-
-.spec-expander label {
+.spec-section-title {
     font-size: 15px;
     font-weight: bold;
-}
-
-.spec-expander arrow {
-    margin-left: 0;
-    padding-left: 0;
-    min-width: 16px;
+    margin-bottom: 4px;
 }
 
 .drop-zone {

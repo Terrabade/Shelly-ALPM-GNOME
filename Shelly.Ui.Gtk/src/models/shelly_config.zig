@@ -42,7 +42,7 @@ pub const ShellyConfig = struct {
     FlatPackEnabled: bool = false,
     RecommendedEnabled: bool = true,
     ShellyIconsEnabled: bool = true,
-    ShellySearchEnabled: bool = false,
+    ShellySearchEnabled: bool = true,
 
     // Window & View
     DefaultPageDropDown: ShellyTabs = .packages,
@@ -53,6 +53,8 @@ pub const ShellyConfig = struct {
 
     // Package Page
     PackageInstallView: ViewType = .grid,
+    SoftwareMode: bool = false,
+    CacheKeepVersions: i32 = 3,
 
     PackageManagementCascadeDelete: bool = true,
     PackageManagementRemoveConfigs: bool = false,

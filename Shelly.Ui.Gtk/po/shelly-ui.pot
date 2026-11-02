@@ -5,7 +5,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Shelly-ALPM / Shelly: GTK\n"
 "Report-Msgid-Bugs-To: csnyder@seafoam-labs.org\n"
-"POT-Creation-Date: 2026-10-11 18:31-0300\n"
+"POT-Creation-Date: 2026-11-02 08:32+0100\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -379,10 +379,31 @@ msgstr ""
 msgid "Shelly"
 msgstr ""
 
-msgid "Install Optional Deps"
+msgid "Main menu"
 msgstr ""
 
-msgid "Reinstall"
+msgid "AUR"
+msgstr ""
+
+msgid "Flatpak"
+msgstr ""
+
+msgid "AppImage"
+msgstr ""
+
+msgid "Unified Search"
+msgstr ""
+
+msgid "Utilities"
+msgstr ""
+
+msgid "Settings"
+msgstr ""
+
+msgid "About Shelly"
+msgstr ""
+
+msgid "Install Optional Deps"
 msgstr ""
 
 msgid "Add Ignore"
@@ -397,10 +418,31 @@ msgstr ""
 msgid "Mark Dependency"
 msgstr ""
 
+msgid "Explicit"
+msgstr ""
+
+msgid "Dependency"
+msgstr ""
+
+msgid "Not Installed"
+msgstr ""
+
 msgid "Package actions"
 msgstr ""
 
-msgid "Package Group Filter"
+msgid "Reinstall"
+msgstr ""
+
+msgid "Details"
+msgstr ""
+
+msgid "Dependencies"
+msgstr ""
+
+msgid "Files"
+msgstr ""
+
+msgid "Choose how to browse packages"
 msgstr ""
 
 msgid "Selected Packages"
@@ -480,13 +522,7 @@ msgstr ""
 msgid "Show results from the configured ALPM sync databases"
 msgstr ""
 
-msgid "AUR"
-msgstr ""
-
 msgid "Show results from the Arch User Repository"
-msgstr ""
-
-msgid "Flatpak"
 msgstr ""
 
 msgid "Show results from the configured Flatpak remotes"
@@ -504,6 +540,30 @@ msgid ""
 msgstr ""
 
 msgid "General"
+msgstr ""
+
+msgid "Software"
+msgstr ""
+
+msgid "Browse applications and manage the package cache"
+msgstr ""
+
+msgid "Software mode"
+msgstr ""
+
+msgid "Show application categories and hide package versions"
+msgstr ""
+
+msgid "Cached package versions"
+msgstr ""
+
+msgid "Versions of each package to retain when cleaning"
+msgstr ""
+
+msgid "Remove old packages from the cache"
+msgstr ""
+
+msgid "Clean cache"
 msgstr ""
 
 msgid "Enable AUR"
@@ -675,9 +735,6 @@ msgstr ""
 msgid "Could not check for updates."
 msgstr ""
 
-msgid "Utilities"
-msgstr ""
-
 msgid "Maintenance and repair tools for your Shelly installation."
 msgstr ""
 
@@ -715,13 +772,16 @@ msgid "Clean Package Cache"
 msgstr ""
 
 msgid ""
-"Removes old cached package versions, keeping the selected number per package."
+"Keeps the selected number of repository package versions and clears the "
+"entire Shelly cache, including AUR sources and build directories."
 msgstr ""
 
 msgid "Keep"
 msgstr ""
 
-msgid "Number of cached versions to keep per package"
+msgid ""
+"Number of repository package versions to keep; the Shelly cache is cleared "
+"completely"
 msgstr ""
 
 msgid "Welcome to Shelly v3"
@@ -744,9 +804,6 @@ msgid "Arch User Repository community packages"
 msgstr ""
 
 msgid "Sandboxed universal Linux applications"
-msgstr ""
-
-msgid "AppImage"
 msgstr ""
 
 msgid "Portable self-contained application bundles"
@@ -791,6 +848,20 @@ msgid "Next"
 msgstr ""
 
 msgid "Start Shelly"
+msgstr ""
+
+msgid "Enable Atoll?"
+msgstr ""
+
+msgid ""
+"Atoll contains build scripts that are known as PKGBUILDs. Those scripts are "
+"uploaded by users, and are not verified or vetted in any way. Only enable "
+"this feature if you are comfortable in verifying the build scripts."
+msgstr ""
+
+msgid ""
+"<a href=\"https://www.seafoam-labs.org/shelly-alpm/docs/aur-safety/\">Atoll "
+"Safety Guide</a>"
 msgstr ""
 
 msgid "System files"
@@ -1316,13 +1387,34 @@ msgstr ""
 msgid "Install Reason"
 msgstr ""
 
+msgid "Groups"
+msgstr ""
+
 msgid "Provides"
+msgstr ""
+
+msgid "Replaces"
 msgstr ""
 
 msgid "Conflicts"
 msgstr ""
 
 msgid "Required By"
+msgstr ""
+
+msgid "Optional For"
+msgstr ""
+
+msgid "No files are recorded for this package."
+msgstr ""
+
+msgid "File information is available for installed packages."
+msgstr ""
+
+msgid "Installing package"
+msgstr ""
+
+msgid "Removing package"
 msgstr ""
 
 msgid "Reinstalling package"
@@ -1344,6 +1436,18 @@ msgid "Select Optional Dependencies to Install"
 msgstr ""
 
 msgid "Installing optional dependencies"
+msgstr ""
+
+msgid "Repositories"
+msgstr ""
+
+msgid "All packages"
+msgstr ""
+
+msgid "All groups"
+msgstr ""
+
+msgid "All repositories"
 msgstr ""
 
 msgid "Package is already installed"
@@ -1380,6 +1484,17 @@ msgstr ""
 msgid "Installing packages"
 msgstr ""
 
+msgid "Search standard repositories, Atoll and Flatpak"
+msgstr ""
+
+msgid "Show results from Atoll"
+msgstr ""
+
+msgid ""
+"Search the standard repositories, Atoll, and Flatpak all at once. Type a "
+"name to begin."
+msgstr ""
+
 msgid ""
 "Search standard repositories, the AUR and Flatpak at once. Type a name to "
 "begin."
@@ -1401,6 +1516,9 @@ msgid "Install Packages"
 msgstr ""
 
 msgid "Install the selected packages?"
+msgstr ""
+
+msgid "Enable Atoll"
 msgstr ""
 
 msgid ""
@@ -1433,6 +1551,15 @@ msgid "Flatpak support enabled"
 msgstr ""
 
 msgid "AppImage support enabled"
+msgstr ""
+
+msgid "Cleaning package cache"
+msgstr ""
+
+msgid "Package cache cleaned"
+msgstr ""
+
+msgid "Could not clean the package cache."
 msgstr ""
 
 msgid "No changelog entries found"
@@ -1678,7 +1805,7 @@ msgstr ""
 msgid "Purifying packages"
 msgstr ""
 
-msgid "Cleaning package cache"
+msgid "Could not save the cache retention setting."
 msgstr ""
 
 msgid "Welcome"
@@ -1695,17 +1822,8 @@ msgstr ""
 msgid "Installing Flatpak and AppImage support"
 msgstr ""
 
-msgid "Main menu"
+msgid "Explore"
 msgstr ""
 
-msgid "Settings"
-msgstr ""
-
-msgid "Expand sidebar"
-msgstr ""
-
-msgid "Collapse sidebar"
-msgstr ""
-
-msgid "Package"
+msgid "Updates"
 msgstr ""

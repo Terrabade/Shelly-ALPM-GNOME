@@ -25,6 +25,8 @@ pub const RecommendPage = extern struct {
     pub const icon_name: [:0]const u8 = "star-filled-rounded-symbolic";
     const resource_path = "/com/shellyorg/shelly/ui/recommend_page.ui";
 
+    pub const OpenHandler = *const fn (?*anyopaque, []const u8, bool) void;
+
     const Private = struct {
         header_box: *gtk.Box,
         refresh_button: *gtk.Button,
@@ -35,11 +37,14 @@ pub const RecommendPage = extern struct {
         content_box: *gtk.Box,
         empty_page: *gtk.Box,
 
+        open_ctx: ?*anyopaque = null,
+        open_handler: ?OpenHandler = null,
         resolver: IconResolver,
         arena: ?*std.heap.ArenaAllocator,
         generation: u64,
         loaded: bool,
         loading: bool,
+        software_mode: bool,
 
         var offset: c_int = 0;
     };
@@ -68,6 +73,19 @@ pub const RecommendPage = extern struct {
         return gobject.ext.newInstance(Self, .{});
     }
 
+    pub fn setSoftwareMode(self: *Self, enabled: bool) void {
+        const p = self.priv();
+        if (p.software_mode == enabled) return;
+        p.software_mode = enabled;
+        if (p.loaded) triggerReload(self, false);
+    }
+
+    pub fn setOpenHandler(self: *Self, ctx: ?*anyopaque, handler: ?OpenHandler) void {
+        const p = self.priv();
+        p.open_ctx = ctx;
+        p.open_handler = handler;
+    }
+
     pub fn as(self: *Self, comptime T: type) *T {
         return gobject.ext.as(T, self);
     }
@@ -83,6 +101,7 @@ pub const RecommendPage = extern struct {
         p.loading = false;
         p.arena = null;
         p.generation = 0;
+        p.software_mode = false;
         p.resolver = IconResolver.init(std.heap.c_allocator);
 
         support.connectLifecycle(Self, self);
@@ -119,11 +138,6 @@ pub const RecommendPage = extern struct {
         const arena_ptr = std.heap.c_allocator.create(std.heap.ArenaAllocator) catch return;
         arena_ptr.* = std.heap.ArenaAllocator.init(std.heap.c_allocator);
         const alloc = arena_ptr.allocator();
-
-        const p = page.priv();
-        if (runtime.shellyIconsEnabled() and !p.resolver.loaded) {
-            p.resolver.load(runtime.io, runtime.environ_map) catch {};
-        }
 
         var threaded: std.Io.Threaded = .init(alloc, .{});
         defer threaded.deinit();
@@ -298,12 +312,14 @@ pub const RecommendPage = extern struct {
         gtk.Widget.addCssClass(title_label.as(gtk.Widget), "title-4");
         gtk.Box.append(title_box, title_label.as(gtk.Widget));
 
-        var vbuf: [128]u8 = undefined;
-        const version_label = gtk.Label.new(c_string.cstr(&vbuf, pkg.Version));
-        gtk.Widget.setHalign(version_label.as(gtk.Widget), .start);
-        gtk.Widget.setValign(version_label.as(gtk.Widget), .center);
-        gtk.Widget.addCssClass(version_label.as(gtk.Widget), "caption");
-        gtk.Box.append(title_box, version_label.as(gtk.Widget));
+        if (!p.software_mode) {
+            var vbuf: [128]u8 = undefined;
+            const version_label = gtk.Label.new(c_string.cstr(&vbuf, pkg.Version));
+            gtk.Widget.setHalign(version_label.as(gtk.Widget), .start);
+            gtk.Widget.setValign(version_label.as(gtk.Widget), .center);
+            gtk.Widget.addCssClass(version_label.as(gtk.Widget), "caption");
+            gtk.Box.append(title_box, version_label.as(gtk.Widget));
+        }
 
         const installed_check = gtk.Image.newFromIconName("object-select-symbolic");
         gtk.Widget.setVisible(installed_check.as(gtk.Widget), @intFromBool(pkg.Installed));
@@ -326,12 +342,24 @@ pub const RecommendPage = extern struct {
             gtk.Box.append(text_box, desc_label.as(gtk.Widget));
         }
 
-        gtk.Box.append(content, text_box.as(gtk.Widget));
-
         const name: [:0]const u8 = if (p.arena) |a|
             a.allocator().dupeSentinel(u8, pkg.Name, 0) catch ""
         else
             "";
+
+        if (p.open_handler) |_| {
+            const click = gtk.GestureClick.new();
+            _ = gtk.GestureClick.signals.pressed.connect(click, *Self, &onCardPressed, self, .{});
+            gtk.Widget.addController(text_box.as(gtk.Widget), click.as(gtk.EventController));
+        }
+        gobject.Object.setData(text_box.as(gobject.Object), "pkg-name", @ptrCast(@constCast(name.ptr)));
+        gobject.Object.setData(
+            text_box.as(gobject.Object),
+            "pkg-installed",
+            @ptrFromInt(@intFromBool(pkg.Installed)),
+        );
+
+        gtk.Box.append(content, text_box.as(gtk.Widget));
 
         const remove_button = gtk.Button.newFromIconName("edit-delete-symbolic");
         gtk.Widget.setVisible(remove_button.as(gtk.Widget), @intFromBool(pkg.Installed));
@@ -360,6 +388,23 @@ pub const RecommendPage = extern struct {
         gtk.Widget.addCssClass(frame.as(gtk.Widget), "card");
 
         return frame.as(gtk.Widget);
+    }
+
+    fn onCardPressed(
+        gesture: *gtk.GestureClick,
+        _: c_int,
+        _: f64,
+        _: f64,
+        self: *Self,
+    ) callconv(.c) void {
+        const p = self.priv();
+        const handler = p.open_handler orelse return;
+        const ctx = p.open_ctx orelse return;
+        const widget = gesture.as(gtk.EventController).getWidget() orelse return;
+        const name_ptr = gobject.Object.getData(widget.as(gobject.Object), "pkg-name") orelse return;
+        const installed_ptr = gobject.Object.getData(widget.as(gobject.Object), "pkg-installed");
+        const name: []const u8 = std.mem.span(@as([*:0]const u8, @ptrCast(name_ptr)));
+        handler(ctx, name, installed_ptr != null);
     }
 
     fn on_install_clicked(button: *gtk.Button, _: ?*anyopaque) callconv(.c) void {
@@ -428,6 +473,9 @@ pub const RecommendPage = extern struct {
             p.arena = null;
         }
 
+        if (runtime.shellyIconsEnabled() and !p.resolver.loaded) {
+            p.resolver.load(runtime.io, runtime.environ_map) catch {};
+        }
         show_loading(self);
         const thread = std.Thread.spawn(.{}, load_worker, .{ self, p.generation, force }) catch {
             p.loading = false;
