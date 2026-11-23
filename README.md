@@ -1,6 +1,10 @@
+> [!WARNING]
+> This project is no longer maintained. The repository is
+> archived and the `shelly-gnome` AUR package is being removed.
+
 ### What is Shelly-ALPM-GNOME?
 `shelly-gnome` is a simple fork of Shelly-ALPM that attempts to implement Libadwaita for the GTK UI. This fixes integration issues with the GNOME desktop environment, making Shelly pretty and obedient to light/dark mode and accent colours from GNOME settings.
-This project mostly exists for a combination of my own use, and an exercise in git/package maintenance. I will do my best to keep it up to date. `cachyos-gnome` is also available on the AUR. I may add -bin and/or -git if people start using it at all.
+This project mostly exists for a combination of my own use, and an exercise in git/package maintenance. `cachyos-gnome` is also available on the AUR.
 Of course all credit and respect goes to [upstream](https://github.com/Seafoam-Labs/Shelly-ALPM) authors, doing all the actual work.
 
 ![shelly_banner.png](shelly_banner.png)
